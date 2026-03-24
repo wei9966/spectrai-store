@@ -1,0 +1,25 @@
+{
+  "name": "spectrai-claw",
+  "version": "0.1.0",
+  "description": "Desktop automation MCP Server for ClaudeOps",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "spectrai-claw": "dist/index.js"
+  },
+  "scripts": {
+    "build": "npx tsc && node -e \"const fs=require('fs');const p=require('path');const d=p.join('dist','scripts');fs.mkdirSync(d,{recursive:true});fs.readdirSync(p.join('src','scripts')).filter(f=>f.endsWith('.ps1')).forEach(f=>fs.copyFileSync(p.join('src','scripts',f),p.join(d,f)))\"",
+    "dev": "npx tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/node": "^22.0.0"
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "keywords": ["mcp", "desktop-automation", "claudeops"],
+  "license": "MIT"
+}

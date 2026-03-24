@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "mcps": [
+    {
+      "name": "spectrai-claw",
+      "displayName": "SpectrAI Claw",
+      "description": "桌面自动化 MCP Server，支持截图、鼠标键盘操控、UIA 元素识别、窗口管理、Shell 执行",
+      "version": "0.1.0",
+      "path": "mcps/spectrai-claw",
+      "command": "node",
+      "args": ["dist/index.js"],
+      "transport": "stdio",
+      "category": "automation",
+      "platform": ["win32"],
+      "tags": ["desktop", "screenshot", "mouse", "keyboard", "uia", "window"],
+      "toolCount": 22,
+      "author": "wei9966",
+      "homepage": "https://github.com/wei9966/spectrai-store"
+    }
+  ],
+  "skills": []
+}
