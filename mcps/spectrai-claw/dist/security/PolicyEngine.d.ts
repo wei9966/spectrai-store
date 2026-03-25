@@ -4,12 +4,21 @@
 export declare class PolicyEngine {
     /** Commands/keywords that are never allowed */
     private static BLOCKED_COMMANDS;
+    /** Dangerous macOS commands/keywords that are never allowed */
+    private static BLOCKED_COMMANDS_DARWIN;
     /** Patterns that indicate shell injection attempts */
     private static INJECTION_PATTERNS;
     /** System processes that must never be killed */
     private static PROTECTED_PROCESSES;
+    /** macOS processes that must never be killed */
+    private static PROTECTED_PROCESSES_DARWIN;
     /** Directories that should not be written to or deleted from */
     private static PROTECTED_PATHS;
+    /** macOS directories that should not be written to or deleted from */
+    private static PROTECTED_PATHS_DARWIN;
+    private static getBlockedCommands;
+    private static getProtectedProcesses;
+    private static getProtectedPaths;
     /**
      * Validate a shell command before execution.
      */

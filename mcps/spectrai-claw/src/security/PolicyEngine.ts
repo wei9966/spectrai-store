@@ -27,6 +27,24 @@ export class PolicyEngine {
     'start-process.*-verb runas',
   ]
 
+  /** Dangerous macOS commands/keywords that are never allowed */
+  private static BLOCKED_COMMANDS_DARWIN = [
+    'rm -rf /',
+    'rm -rf ~',
+    'mkfs',
+    'dd if=',
+    'diskutil eraseDisk',
+    'diskutil eraseVolume',
+    'csrutil disable',
+    'nvram boot-args',
+    'launchctl unload',
+    'killall WindowServer',
+    'killall loginwindow',
+    'killall Finder',
+    'defaults delete',
+    'sudo rm',
+  ]
+
   /** Patterns that indicate shell injection attempts */
   private static INJECTION_PATTERNS = [
     /[;&|`]/, // shell metacharacters (not $ since used in PS variables)
@@ -56,6 +74,24 @@ export class PolicyEngine {
     'wuauserv',
   ]
 
+  /** macOS processes that must never be killed */
+  private static PROTECTED_PROCESSES_DARWIN = [
+    'kernel_task',
+    'launchd',
+    'WindowServer',
+    'loginwindow',
+    'mds',
+    'mds_stores',
+    'opendirectoryd',
+    'coreaudiod',
+    'bluetoothd',
+    'fseventsd',
+    'notifyd',
+    'diskarbitrationd',
+    'configd',
+    'securityd',
+  ]
+
   /** Directories that should not be written to or deleted from */
   private static PROTECTED_PATHS = [
     'C:\\Windows',
@@ -65,6 +101,49 @@ export class PolicyEngine {
     'C:\\System Volume Information',
     'C:\\ProgramData\\Microsoft',
   ]
+
+  /** macOS directories that should not be written to or deleted from */
+  private static PROTECTED_PATHS_DARWIN = [
+    '/System',
+    '/usr/bin',
+    '/usr/sbin',
+    '/usr/lib',
+    '/Library/Apple',
+    '/private/var/db',
+  ]
+
+  private static getBlockedCommands(): string[] {
+    switch (process.platform) {
+      case 'darwin':
+        return this.BLOCKED_COMMANDS_DARWIN
+      case 'win32':
+        return this.BLOCKED_COMMANDS
+      default:
+        return [...this.BLOCKED_COMMANDS, ...this.BLOCKED_COMMANDS_DARWIN]
+    }
+  }
+
+  private static getProtectedProcesses(): string[] {
+    switch (process.platform) {
+      case 'darwin':
+        return this.PROTECTED_PROCESSES_DARWIN
+      case 'win32':
+        return this.PROTECTED_PROCESSES
+      default:
+        return [...this.PROTECTED_PROCESSES, ...this.PROTECTED_PROCESSES_DARWIN]
+    }
+  }
+
+  private static getProtectedPaths(): string[] {
+    switch (process.platform) {
+      case 'darwin':
+        return this.PROTECTED_PATHS_DARWIN
+      case 'win32':
+        return this.PROTECTED_PATHS
+      default:
+        return [...this.PROTECTED_PATHS, ...this.PROTECTED_PATHS_DARWIN]
+    }
+  }
 
   /**
    * Validate a shell command before execution.
@@ -76,7 +155,7 @@ export class PolicyEngine {
 
     const lower = command.toLowerCase().trim()
 
-    for (const blocked of this.BLOCKED_COMMANDS) {
+    for (const blocked of this.getBlockedCommands()) {
       if (lower.includes(blocked.toLowerCase())) {
         return { allowed: false, reason: `Blocked command pattern: ${blocked}` }
       }
@@ -102,7 +181,7 @@ export class PolicyEngine {
 
     const lower = script.toLowerCase().trim()
 
-    for (const blocked of this.BLOCKED_COMMANDS) {
+    for (const blocked of this.getBlockedCommands()) {
       if (lower.includes(blocked.toLowerCase())) {
         return { allowed: false, reason: `Blocked command pattern: ${blocked}` }
       }
@@ -121,8 +200,9 @@ export class PolicyEngine {
 
     const lower = name.toLowerCase().trim()
 
-    for (const protected_ of this.PROTECTED_PROCESSES) {
-      if (lower === protected_ || lower === `${protected_}.exe`) {
+    for (const protected_ of this.getProtectedProcesses()) {
+      const protectedLower = protected_.toLowerCase()
+      if (lower === protectedLower || lower === `${protectedLower}.exe`) {
         return { allowed: false, reason: `Protected system process: ${name}` }
       }
     }
@@ -146,8 +226,14 @@ export class PolicyEngine {
 
     // For write/delete, check protected paths
     if (operation !== 'read') {
-      for (const protectedPath of this.PROTECTED_PATHS) {
-        if (normalized.toLowerCase().startsWith(protectedPath.toLowerCase())) {
+      const normalizedLower = normalized.toLowerCase()
+      for (const protectedPath of this.getProtectedPaths()) {
+        const normalizedProtectedPath = path.resolve(protectedPath)
+        const protectedLower = normalizedProtectedPath.toLowerCase()
+        if (
+          normalizedLower === protectedLower ||
+          normalizedLower.startsWith(`${protectedLower}${path.sep}`)
+        ) {
           return {
             allowed: false,
             reason: `Cannot ${operation} in protected directory: ${protectedPath}`,
