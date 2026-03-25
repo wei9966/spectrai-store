@@ -1,1 +1,1 @@
-export declare function registerDesktopTools(): void;
+export declare function registerDesktopTools(): Promise<void>;

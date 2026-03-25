@@ -548,7 +548,7 @@ export function registerDarwinDesktopTools(): void {
     async (args) => {
       const key = args.key as string
       // Normalize key name for macOS — DarwinHelper handles key name mapping
-      const result = darwin.keyPress(key, [])
+      const result = darwin.keyPress(key)
       if (!result.success) {
         return { isError: true, content: [{ type: 'text', text: `Key press failed: ${result.error || 'unknown error'}` }] }
       }
@@ -578,7 +578,7 @@ export function registerDarwinDesktopTools(): void {
     },
     async (args) => {
       const keys = args.keys as string[]
-      const result = darwin.keyHotkey(keys)
+      const result = darwin.keyHotkey(keys.join('+'))
       if (!result.success) {
         return { isError: true, content: [{ type: 'text', text: `Hotkey failed: ${result.error || 'unknown error'}` }] }
       }
@@ -718,7 +718,7 @@ export function registerDarwinDesktopTools(): void {
       if (!result.success) {
         return { isError: true, content: [{ type: 'text', text: `Window list failed: ${result.error || 'unknown error'}` }] }
       }
-      const windows = result.data?.windows || []
+      const windows = Array.isArray(result.data) ? result.data : (result.data?.windows || [])
       // Format to match Windows output structure
       const formatted = windows.map((w: Record<string, unknown>) => ({
         Title: w.title || '',

@@ -143,7 +143,7 @@ export const darwin = {
         return callHelper('ocr', { image: imagePath, languages });
     },
     windowsList() {
-        return callHelper('windows', { action: 'list' });
+        return callHelper('windows', {});
     },
     windowFocus(pid, title) {
         const args = { pid };
@@ -161,6 +161,6 @@ export const darwin = {
         return callHelper('screen-info', {});
     },
     checkPermissions() {
-        return callHelper('permissions', { action: 'check' });
+        return callHelper('permissions', {});
     },
 };

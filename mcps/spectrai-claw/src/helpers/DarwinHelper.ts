@@ -181,7 +181,7 @@ export const darwin = {
   },
 
   windowsList() {
-    return callHelper('windows', { action: 'list' })
+    return callHelper('windows', {})
   },
 
   windowFocus(pid: number, title?: string) {
@@ -201,6 +201,6 @@ export const darwin = {
   },
 
   checkPermissions() {
-    return callHelper('permissions', { action: 'check' })
+    return callHelper('permissions', {})
   },
 }

@@ -43,7 +43,13 @@ const sp = PolicyEngine.sanitizeForPowerShell.bind(PolicyEngine);
 const screenshotMetaMap = new Map();
 let lastScreenshotPath = '';
 let lastAnnotatedPath = '';
-export function registerDesktopTools() {
+export async function registerDesktopTools() {
+    // Platform branch: use macOS implementation on Darwin
+    if (process.platform === 'darwin') {
+        const { registerDarwinDesktopTools } = await import('./desktop-tools-darwin.js');
+        registerDarwinDesktopTools();
+        return;
+    }
     // 1. screenshot — save to file, return path for AI to read natively
     // Grid labels show ABSOLUTE screen coordinates so AI can pass them directly to mouse_click.
     registerTool('screenshot', '★ STEP 1: Take a FULL screenshot at native resolution. Always start here.\n\n' +
