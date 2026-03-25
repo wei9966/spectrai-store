@@ -66,7 +66,14 @@ const screenshotMetaMap = new Map<string, ScreenshotMeta>()
 let lastScreenshotPath = ''
 let lastAnnotatedPath = ''
 
-export function registerDesktopTools(): void {
+export async function registerDesktopTools(): Promise<void> {
+  // Platform branch: use macOS implementation on Darwin
+  if (process.platform === 'darwin') {
+    const { registerDarwinDesktopTools } = await import('./desktop-tools-darwin.js')
+    registerDarwinDesktopTools()
+    return
+  }
+
   // 1. screenshot — save to file, return path for AI to read natively
   // Grid labels show ABSOLUTE screen coordinates so AI can pass them directly to mouse_click.
   registerTool(

@@ -28,11 +28,6 @@ registerTool(
   { title: 'Ping', readOnlyHint: true, destructiveHint: false, idempotentHint: true },
 )
 
-// Register all tool modules
-registerDesktopTools()
-registerShellTools()
-registerFileTools()
-
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: listTools() }
 })
@@ -43,8 +38,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 })
 
 async function main() {
-  // Eagerly bootstrap PersistentShell so first tool call doesn't pay cold-start cost
-  shell.start().catch(() => {})
+  // Register all tool modules (desktop tools is async for cross-platform dynamic import)
+  await registerDesktopTools()
+  registerShellTools()
+  registerFileTools()
+
+  // Only bootstrap PersistentShell on Windows — macOS uses DarwinHelper instead
+  if (process.platform === 'win32') {
+    shell.start().catch(() => {})
+  }
   const transport = new StdioServerTransport()
   await server.connect(transport)
 }
