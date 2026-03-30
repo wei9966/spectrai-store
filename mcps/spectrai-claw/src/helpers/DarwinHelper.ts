@@ -203,4 +203,32 @@ export const darwin = {
   checkPermissions() {
     return callHelper('permissions', {})
   },
+
+  axPress(pid: number, title?: string, role?: string) {
+    const args: Record<string, any> = { pid }
+    if (title) args.title = title
+    if (role) args.role = role
+    return callHelper('ax-press', args)
+  },
+
+  axSetValue(pid: number, value: string, title?: string, role?: string) {
+    const args: Record<string, any> = { pid, value }
+    if (title) args.title = title
+    if (role) args.role = role
+    return callHelper('ax-set-value', args)
+  },
+
+  axFocusElement(pid: number, title?: string, role?: string) {
+    const args: Record<string, any> = { pid }
+    if (title) args.title = title
+    if (role) args.role = role
+    return callHelper('ax-focus', args)
+  },
+
+  axActions(pid: number, title?: string, role?: string) {
+    const args: Record<string, any> = { pid }
+    if (title) args.title = title
+    if (role) args.role = role
+    return callHelper('ax-actions', args)
+  },
 }

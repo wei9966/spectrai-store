@@ -378,19 +378,19 @@ func axElementToDict(_ element: AXUIElement, depth: Int, maxDepth: Int, collecte
     }()
     let desc = descRef as? String ?? ""
 
-    var frame: [String: CGFloat] = ["x": 0, "y": 0, "w": 0, "h": 0]
+    var bounds: [String: CGFloat] = ["x": 0, "y": 0, "width": 0, "height": 0]
     if let posRef = positionRef {
         var point = CGPoint.zero
         if AXValueGetValue(posRef as! AXValue, .cgPoint, &point) {
-            frame["x"] = point.x
-            frame["y"] = point.y
+            bounds["x"] = point.x
+            bounds["y"] = point.y
         }
     }
     if let szRef = sizeRef {
         var size = CGSize.zero
         if AXValueGetValue(szRef as! AXValue, .cgSize, &size) {
-            frame["w"] = size.width
-            frame["h"] = size.height
+            bounds["width"] = size.width
+            bounds["height"] = size.height
         }
     }
 
@@ -402,7 +402,7 @@ func axElementToDict(_ element: AXUIElement, depth: Int, maxDepth: Int, collecte
     let isClickable = ["AXButton", "AXLink", "AXMenuItem", "AXCheckBox", "AXRadioButton",
                        "AXPopUpButton", "AXComboBox", "AXTextField", "AXTextArea",
                        "AXSlider", "AXIncrementor", "AXTab"].contains(role)
-    let isTooSmall = (frame["w"] ?? 0) < 2 && (frame["h"] ?? 0) < 2
+    let isTooSmall = (bounds["width"] ?? 0) < 2 && (bounds["height"] ?? 0) < 2
 
     if !isTooSmall && (hasName || isClickable) {
         var dict: [String: Any] = [
@@ -410,7 +410,7 @@ func axElementToDict(_ element: AXUIElement, depth: Int, maxDepth: Int, collecte
             "title": title,
             "value": value,
             "description": desc,
-            "frame": frame,
+            "bounds": bounds,
             "enabled": enabled,
             "focused": focused,
         ]
@@ -442,7 +442,7 @@ func cmdAxTree(args: [String]) {
     var collected: [[String: Any]] = []
     axElementToDict(app, depth: 0, maxDepth: maxDepth, collected: &collected, maxElements: 80)
 
-    jsonOutputArray(collected)
+    jsonOutput(["elements": collected])
 }
 
 func cmdAxElementAt(args: [String]) {
@@ -528,14 +528,14 @@ func cmdOCR(args: [String]) {
                 "bounds": [
                     "x": Int(pixelX),
                     "y": Int(pixelY),
-                    "w": Int(pixelW),
-                    "h": Int(pixelH),
+                    "width": Int(pixelW),
+                    "height": Int(pixelH),
                 ],
             ])
         }
     }
 
-    jsonOutputArray(results)
+    jsonOutput(["results": results])
 }
 
 // MARK: - Window Commands
@@ -574,7 +574,7 @@ func cmdWindowsList() {
         ])
     }
 
-    jsonOutputArray(windows)
+    jsonOutput(["windows": windows])
 }
 
 func cmdWindowFocus(args: [String]) {
@@ -738,6 +738,225 @@ func cmdPermissionsCheck() {
     ])
 }
 
+// MARK: - Accessibility Actions
+
+/// Recursively search for an AX element matching criteria, return it
+func axFindElement(_ root: AXUIElement, title: String?, role: String?, value: String?, depth: Int, maxDepth: Int) -> AXUIElement? {
+    guard depth <= maxDepth else { return nil }
+
+    var roleRef: CFTypeRef?
+    var titleRef: CFTypeRef?
+    var valueRef: CFTypeRef?
+    var descRef: CFTypeRef?
+    AXUIElementCopyAttributeValue(root, kAXRoleAttribute as CFString, &roleRef)
+    AXUIElementCopyAttributeValue(root, kAXTitleAttribute as CFString, &titleRef)
+    AXUIElementCopyAttributeValue(root, kAXValueAttribute as CFString, &valueRef)
+    AXUIElementCopyAttributeValue(root, kAXDescriptionAttribute as CFString, &descRef)
+
+    let elRole = roleRef as? String ?? ""
+    let elTitle = titleRef as? String ?? ""
+    let elValue: String = {
+        if let v = valueRef {
+            if let s = v as? String { return s }
+            if let n = v as? NSNumber { return n.stringValue }
+            return "\(v)"
+        }
+        return ""
+    }()
+    let elDesc = descRef as? String ?? ""
+
+    var matched = true
+    if let title = title, !title.isEmpty {
+        let lower = title.lowercased()
+        if !elTitle.lowercased().contains(lower) && !elDesc.lowercased().contains(lower) && !elValue.lowercased().contains(lower) {
+            matched = false
+        }
+    }
+    if let role = role, !role.isEmpty {
+        if !elRole.lowercased().contains(role.lowercased()) {
+            matched = false
+        }
+    }
+    if let value = value, !value.isEmpty {
+        if !elValue.lowercased().contains(value.lowercased()) {
+            matched = false
+        }
+    }
+
+    if matched && (title != nil || role != nil || value != nil) {
+        return root
+    }
+
+    // Recurse children
+    var childrenRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(root, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+       let children = childrenRef as? [AXUIElement] {
+        for child in children {
+            if let found = axFindElement(child, title: title, role: role, value: value, depth: depth + 1, maxDepth: maxDepth) {
+                return found
+            }
+        }
+    }
+    return nil
+}
+
+func axElementInfo(_ element: AXUIElement) -> [String: Any] {
+    var roleRef: CFTypeRef?
+    var titleRef: CFTypeRef?
+    var valueRef: CFTypeRef?
+    var descRef: CFTypeRef?
+    var positionRef: CFTypeRef?
+    var sizeRef: CFTypeRef?
+    AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+    AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleRef)
+    AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef)
+    AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &descRef)
+    AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionRef)
+    AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef)
+
+    var bounds: [String: CGFloat] = ["x": 0, "y": 0, "width": 0, "height": 0]
+    if let posRef = positionRef {
+        var point = CGPoint.zero
+        if AXValueGetValue(posRef as! AXValue, .cgPoint, &point) {
+            bounds["x"] = point.x; bounds["y"] = point.y
+        }
+    }
+    if let szRef = sizeRef {
+        var size = CGSize.zero
+        if AXValueGetValue(szRef as! AXValue, .cgSize, &size) {
+            bounds["width"] = size.width; bounds["height"] = size.height
+        }
+    }
+
+    let elValue: String = {
+        if let v = valueRef {
+            if let s = v as? String { return s }
+            if let n = v as? NSNumber { return n.stringValue }
+            return "\(v)"
+        }
+        return ""
+    }()
+
+    return [
+        "role": roleRef as? String ?? "",
+        "title": titleRef as? String ?? "",
+        "value": elValue,
+        "description": descRef as? String ?? "",
+        "bounds": bounds,
+    ]
+}
+
+/// ax-press: Find element and perform AXPress action
+func cmdAxPress(args: [String]) {
+    let pidStr = requireArg("pid", args: args)
+    guard let pid = pid_t(pidStr) else { errorExit("Invalid pid") }
+    let title = getArg("title", args: args)
+    let role = getArg("role", args: args)
+    let maxDepth = Int(getArg("depth", args: args) ?? "8") ?? 8
+
+    let app = AXUIElementCreateApplication(pid)
+    guard let element = axFindElement(app, title: title, role: role, value: nil, depth: 0, maxDepth: maxDepth) else {
+        errorExit("Element not found with title=\(title ?? "nil"), role=\(role ?? "nil")")
+    }
+
+    let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
+    if result != .success {
+        errorExit("AXPress failed with error code: \(result.rawValue)")
+    }
+
+    let info = axElementInfo(element)
+    jsonOutput(["success": true, "action": "press", "element": info])
+}
+
+/// ax-set-value: Find element and set its AXValue (for text fields)
+func cmdAxSetValue(args: [String]) {
+    let pidStr = requireArg("pid", args: args)
+    guard let pid = pid_t(pidStr) else { errorExit("Invalid pid") }
+    let newValue = requireArg("value", args: args)
+    let title = getArg("title", args: args)
+    let role = getArg("role", args: args)
+    let maxDepth = Int(getArg("depth", args: args) ?? "8") ?? 8
+
+    let app = AXUIElementCreateApplication(pid)
+    guard let element = axFindElement(app, title: title, role: role, value: nil, depth: 0, maxDepth: maxDepth) else {
+        errorExit("Element not found with title=\(title ?? "nil"), role=\(role ?? "nil")")
+    }
+
+    // Focus the element first
+    AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, true as CFTypeRef)
+    usleep(50000) // 50ms
+
+    // Set value
+    let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, newValue as CFTypeRef)
+    if result != .success {
+        errorExit("AXSetValue failed with error code: \(result.rawValue)")
+    }
+
+    let info = axElementInfo(element)
+    jsonOutput(["success": true, "action": "setValue", "newValue": newValue, "element": info])
+}
+
+/// ax-focus: Find element and set focus
+func cmdAxFocus(args: [String]) {
+    let pidStr = requireArg("pid", args: args)
+    guard let pid = pid_t(pidStr) else { errorExit("Invalid pid") }
+    let title = getArg("title", args: args)
+    let role = getArg("role", args: args)
+    let maxDepth = Int(getArg("depth", args: args) ?? "8") ?? 8
+
+    let app = AXUIElementCreateApplication(pid)
+    guard let element = axFindElement(app, title: title, role: role, value: nil, depth: 0, maxDepth: maxDepth) else {
+        errorExit("Element not found with title=\(title ?? "nil"), role=\(role ?? "nil")")
+    }
+
+    // Try raise action first (for windows)
+    AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+    // Then set focused
+    let result = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, true as CFTypeRef)
+    if result != .success {
+        errorExit("AXFocus failed with error code: \(result.rawValue)")
+    }
+
+    let info = axElementInfo(element)
+    jsonOutput(["success": true, "action": "focus", "element": info])
+}
+
+/// ax-actions: List available actions for an element
+func cmdAxActions(args: [String]) {
+    let pidStr = requireArg("pid", args: args)
+    guard let pid = pid_t(pidStr) else { errorExit("Invalid pid") }
+    let title = getArg("title", args: args)
+    let role = getArg("role", args: args)
+    let maxDepth = Int(getArg("depth", args: args) ?? "8") ?? 8
+
+    let app = AXUIElementCreateApplication(pid)
+    guard let element = axFindElement(app, title: title, role: role, value: nil, depth: 0, maxDepth: maxDepth) else {
+        errorExit("Element not found with title=\(title ?? "nil"), role=\(role ?? "nil")")
+    }
+
+    var actionsRef: CFArray?
+    AXUIElementCopyActionNames(element, &actionsRef)
+    let actions = (actionsRef as? [String]) ?? []
+
+    var attrsRef: CFArray?
+    AXUIElementCopyAttributeNames(element, &attrsRef)
+    let settableAttrs: [String] = {
+        guard let attrs = attrsRef as? [String] else { return [] }
+        return attrs.filter { attr in
+            var settable: DarwinBoolean = false
+            AXUIElementIsAttributeSettable(element, attr as CFString, &settable)
+            return settable.boolValue
+        }
+    }()
+
+    let info = axElementInfo(element)
+    jsonOutput([
+        "element": info,
+        "actions": actions,
+        "settableAttributes": settableAttrs,
+    ])
+}
+
 // MARK: - Main Entry Point
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -788,6 +1007,14 @@ case "ax-tree":
     cmdAxTree(args: subArgs)
 case "ax-element-at":
     cmdAxElementAt(args: subArgs)
+case "ax-press":
+    cmdAxPress(args: subArgs)
+case "ax-set-value":
+    cmdAxSetValue(args: subArgs)
+case "ax-focus":
+    cmdAxFocus(args: subArgs)
+case "ax-actions":
+    cmdAxActions(args: subArgs)
 case "ocr":
     cmdOCR(args: subArgs)
 case "windows":

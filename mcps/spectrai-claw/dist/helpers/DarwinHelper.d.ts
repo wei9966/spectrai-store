@@ -33,4 +33,8 @@ export declare const darwin: {
     windowClose(pid: number, title?: string): DarwinResult;
     screenInfo(): DarwinResult;
     checkPermissions(): DarwinResult;
+    axPress(pid: number, title?: string, role?: string): DarwinResult;
+    axSetValue(pid: number, value: string, title?: string, role?: string): DarwinResult;
+    axFocusElement(pid: number, title?: string, role?: string): DarwinResult;
+    axActions(pid: number, title?: string, role?: string): DarwinResult;
 };

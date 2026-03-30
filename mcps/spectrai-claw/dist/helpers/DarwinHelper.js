@@ -163,4 +163,36 @@ export const darwin = {
     checkPermissions() {
         return callHelper('permissions', {});
     },
+    axPress(pid, title, role) {
+        const args = { pid };
+        if (title)
+            args.title = title;
+        if (role)
+            args.role = role;
+        return callHelper('ax-press', args);
+    },
+    axSetValue(pid, value, title, role) {
+        const args = { pid, value };
+        if (title)
+            args.title = title;
+        if (role)
+            args.role = role;
+        return callHelper('ax-set-value', args);
+    },
+    axFocusElement(pid, title, role) {
+        const args = { pid };
+        if (title)
+            args.title = title;
+        if (role)
+            args.role = role;
+        return callHelper('ax-focus', args);
+    },
+    axActions(pid, title, role) {
+        const args = { pid };
+        if (title)
+            args.title = title;
+        if (role)
+            args.role = role;
+        return callHelper('ax-actions', args);
+    },
 };

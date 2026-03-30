@@ -18,6 +18,16 @@ function sn(val, fallback = 0) {
     const n = Number(val);
     return Number.isFinite(n) ? n : fallback;
 }
+/** Extract array from DarwinResult data, handling both wrapped and raw formats */
+function getArray(data, key) {
+    if (!data)
+        return [];
+    if (data[key] && Array.isArray(data[key]))
+        return data[key];
+    if (Array.isArray(data))
+        return data;
+    return [];
+}
 export function registerDarwinDesktopTools() {
     // ──────────────────────────────────────────────────────────────────────
     // 1. screenshot
@@ -114,12 +124,12 @@ export function registerDarwinDesktopTools() {
                 let idx = 1;
                 // Find frontmost app PID for accessibility tree
                 const winResult = darwin.windowsList();
-                if (winResult.success && winResult.data?.windows?.length > 0) {
-                    const frontPid = winResult.data.windows[0].ownerPid;
+                if (winResult.success && getArray(winResult.data, 'windows').length > 0) {
+                    const frontPid = getArray(winResult.data, 'windows')[0].ownerPid;
                     if (frontPid) {
                         const axResult = darwin.axTree(frontPid, 3);
-                        if (axResult.success && axResult.data?.elements) {
-                            for (const el of axResult.data.elements) {
+                        if (axResult.success && getArray(axResult.data, 'elements').length > 0) {
+                            for (const el of getArray(axResult.data, 'elements')) {
                                 if (!el.bounds)
                                     continue;
                                 const elCx = Math.round(el.bounds.x + el.bounds.width / 2);
@@ -155,8 +165,8 @@ export function registerDarwinDesktopTools() {
                 // OCR fallback if few accessibility elements
                 if (elements.length < 10) {
                     const ocrResult = darwin.ocr(filePath);
-                    if (ocrResult.success && ocrResult.data?.results) {
-                        for (const r of ocrResult.data.results) {
+                    if (ocrResult.success && getArray(ocrResult.data, 'results').length > 0) {
+                        for (const r of getArray(ocrResult.data, 'results')) {
                             if (!r.bounds)
                                 continue;
                             const cx = Math.round(r.bounds.x + r.bounds.width / 2);
@@ -508,8 +518,8 @@ export function registerDarwinDesktopTools() {
         else {
             // Use frontmost window's PID
             const winResult = darwin.windowsList();
-            if (winResult.success && winResult.data?.windows?.length > 0) {
-                pid = winResult.data.windows[0].ownerPid;
+            if (winResult.success && getArray(winResult.data, 'windows').length > 0) {
+                pid = getArray(winResult.data, 'windows')[0].ownerPid;
             }
         }
         if (!pid) {
@@ -520,7 +530,7 @@ export function registerDarwinDesktopTools() {
         if (!axResult.success) {
             return { isError: true, content: [{ type: 'text', text: `Accessibility query failed: ${axResult.error || 'unknown error'}` }] };
         }
-        const allElements = axResult.data?.elements || [];
+        const allElements = getArray(axResult.data, 'elements');
         const results = [];
         const searchName = args.name ? args.name.toLowerCase() : null;
         const searchId = args.automationId ? args.automationId.toLowerCase() : null;
@@ -568,8 +578,8 @@ export function registerDarwinDesktopTools() {
         }
         else {
             const winResult = darwin.windowsList();
-            if (winResult.success && winResult.data?.windows?.length > 0) {
-                pid = winResult.data.windows[0].ownerPid;
+            if (winResult.success && getArray(winResult.data, 'windows').length > 0) {
+                pid = getArray(winResult.data, 'windows')[0].ownerPid;
             }
         }
         if (!pid) {
@@ -589,7 +599,7 @@ export function registerDarwinDesktopTools() {
         if (!result.success) {
             return { isError: true, content: [{ type: 'text', text: `Window list failed: ${result.error || 'unknown error'}` }] };
         }
-        const windows = Array.isArray(result.data) ? result.data : (result.data?.windows || []);
+        const windows = result.data?.windows || (Array.isArray(result.data) ? result.data : []);
         // Format to match Windows output structure
         const formatted = windows.map((w) => ({
             Title: w.title || '',
@@ -620,8 +630,8 @@ export function registerDarwinDesktopTools() {
         if (args.title) {
             const searchTitle = args.title.toLowerCase();
             const winResult = darwin.windowsList();
-            if (winResult.success && winResult.data?.windows) {
-                const match = winResult.data.windows.find((w) => (w.title || '').toLowerCase().includes(searchTitle));
+            if (winResult.success && getArray(winResult.data, 'windows').length > 0) {
+                const match = getArray(winResult.data, 'windows').find((w) => (w.title || '').toLowerCase().includes(searchTitle));
                 if (match) {
                     pid = match.ownerPid;
                     title = match.title;
@@ -635,8 +645,8 @@ export function registerDarwinDesktopTools() {
             // Find by window ID
             const handle = sn(args.handle);
             const winResult = darwin.windowsList();
-            if (winResult.success && winResult.data?.windows) {
-                const match = winResult.data.windows.find((w) => w.windowId === handle);
+            if (winResult.success && getArray(winResult.data, 'windows').length > 0) {
+                const match = getArray(winResult.data, 'windows').find((w) => w.windowId === handle);
                 if (match) {
                     pid = match.ownerPid;
                     title = match.title;
@@ -671,8 +681,8 @@ export function registerDarwinDesktopTools() {
         if (args.title) {
             const searchTitle = args.title.toLowerCase();
             const winResult = darwin.windowsList();
-            if (winResult.success && winResult.data?.windows) {
-                const match = winResult.data.windows.find((w) => (w.title || '').toLowerCase().includes(searchTitle));
+            if (winResult.success && getArray(winResult.data, 'windows').length > 0) {
+                const match = getArray(winResult.data, 'windows').find((w) => (w.title || '').toLowerCase().includes(searchTitle));
                 if (match) {
                     pid = match.ownerPid;
                     title = match.title;
@@ -685,8 +695,8 @@ export function registerDarwinDesktopTools() {
         else {
             const handle = sn(args.handle);
             const winResult = darwin.windowsList();
-            if (winResult.success && winResult.data?.windows) {
-                const match = winResult.data.windows.find((w) => w.windowId === handle);
+            if (winResult.success && getArray(winResult.data, 'windows').length > 0) {
+                const match = getArray(winResult.data, 'windows').find((w) => w.windowId === handle);
                 if (match) {
                     pid = match.ownerPid;
                     title = match.title;
@@ -761,12 +771,12 @@ export function registerDarwinDesktopTools() {
                 let idx = 1;
                 // Accessibility detection
                 const winResult = darwin.windowsList();
-                if (winResult.success && winResult.data?.windows?.length > 0) {
-                    const frontPid = winResult.data.windows[0].ownerPid;
+                if (winResult.success && getArray(winResult.data, 'windows').length > 0) {
+                    const frontPid = getArray(winResult.data, 'windows')[0].ownerPid;
                     if (frontPid) {
                         const axResult = darwin.axTree(frontPid, 3);
-                        if (axResult.success && axResult.data?.elements) {
-                            for (const el of axResult.data.elements) {
+                        if (axResult.success && getArray(axResult.data, 'elements').length > 0) {
+                            for (const el of getArray(axResult.data, 'elements')) {
                                 if (!el.bounds)
                                     continue;
                                 const elCx = Math.round(el.bounds.x + el.bounds.width / 2);
@@ -800,8 +810,8 @@ export function registerDarwinDesktopTools() {
                 // OCR fallback
                 if (elements.length < 10) {
                     const ocrResult = darwin.ocr(filePath);
-                    if (ocrResult.success && ocrResult.data?.results) {
-                        for (const r of ocrResult.data.results) {
+                    if (ocrResult.success && getArray(ocrResult.data, 'results').length > 0) {
+                        for (const r of getArray(ocrResult.data, 'results')) {
                             if (!r.bounds)
                                 continue;
                             const cx = Math.round(r.bounds.x + r.bounds.width / 2);
@@ -853,4 +863,111 @@ export function registerDarwinDesktopTools() {
                 }],
         };
     }, { title: 'Zoom Screenshot', readOnlyHint: true });
+    // ──────────────────────────────────────────────────────────────────────
+    // 15. ax_press — Direct AX button press (no screenshot needed)
+    // ──────────────────────────────────────────────────────────────────────
+    registerTool('ax_press', '★ FAST ACTION: Press a UI element directly via Accessibility API — NO screenshot needed.\n\n' +
+        'Finds an element by title/role in the target process and performs AXPress. ' +
+        'Much faster and more reliable than screenshot → coordinate → click.\n' +
+        'Use window_list to get the processId first.', {
+        type: 'object',
+        properties: {
+            processId: { type: 'number', description: 'Process ID of the target application' },
+            title: { type: 'string', description: 'Element title/name to search for (partial match, case-insensitive)' },
+            role: { type: 'string', description: 'Element role filter, e.g. AXButton, AXMenuItem, AXLink' },
+        },
+        required: ['processId'],
+        additionalProperties: false,
+    }, async (args) => {
+        const pid = sn(args.processId);
+        const title = args.title;
+        const role = args.role;
+        if (!title && !role) {
+            return { isError: true, content: [{ type: 'text', text: 'Provide at least title or role to find the element' }] };
+        }
+        const result = darwin.axPress(pid, title, role);
+        if (!result.success) {
+            return { isError: true, content: [{ type: 'text', text: `ax_press failed: ${result.error || 'element not found'}` }] };
+        }
+        const el = result.data?.element || {};
+        return { content: [{ type: 'text', text: `Pressed "${el.title || el.description || title}" (${el.role || role})` }] };
+    }, { title: 'AX Press', destructiveHint: true });
+    // ──────────────────────────────────────────────────────────────────────
+    // 16. ax_set_value — Set text field value directly
+    // ──────────────────────────────────────────────────────────────────────
+    registerTool('ax_set_value', '★ FAST INPUT: Set text directly into a text field via Accessibility API — NO clipboard/keyboard needed.\n\n' +
+        'Finds a text field by title/role in the target process and sets its value. ' +
+        'Much faster than click → clipboard → paste for text input.\n' +
+        'Common roles: AXTextField, AXTextArea, AXComboBox.', {
+        type: 'object',
+        properties: {
+            processId: { type: 'number', description: 'Process ID of the target application' },
+            value: { type: 'string', description: 'Text value to set' },
+            title: { type: 'string', description: 'Element title/name to search for (partial match)' },
+            role: { type: 'string', description: 'Element role filter, e.g. AXTextField, AXTextArea' },
+        },
+        required: ['processId', 'value'],
+        additionalProperties: false,
+    }, async (args) => {
+        const pid = sn(args.processId);
+        const value = args.value;
+        const title = args.title;
+        const role = args.role;
+        const result = darwin.axSetValue(pid, value, title, role);
+        if (!result.success) {
+            return { isError: true, content: [{ type: 'text', text: `ax_set_value failed: ${result.error || 'element not found'}` }] };
+        }
+        return { content: [{ type: 'text', text: `Set value "${value}" on element` }] };
+    }, { title: 'AX Set Value', destructiveHint: true });
+    // ──────────────────────────────────────────────────────────────────────
+    // 17. ax_focus — Focus a UI element directly
+    // ──────────────────────────────────────────────────────────────────────
+    registerTool('ax_focus', 'Focus a specific UI element via Accessibility API. Useful for focusing text fields before typing.', {
+        type: 'object',
+        properties: {
+            processId: { type: 'number', description: 'Process ID of the target application' },
+            title: { type: 'string', description: 'Element title/name to search for (partial match)' },
+            role: { type: 'string', description: 'Element role filter, e.g. AXTextField, AXTextArea' },
+        },
+        required: ['processId'],
+        additionalProperties: false,
+    }, async (args) => {
+        const pid = sn(args.processId);
+        const title = args.title;
+        const role = args.role;
+        if (!title && !role) {
+            return { isError: true, content: [{ type: 'text', text: 'Provide at least title or role' }] };
+        }
+        const result = darwin.axFocusElement(pid, title, role);
+        if (!result.success) {
+            return { isError: true, content: [{ type: 'text', text: `ax_focus failed: ${result.error || 'element not found'}` }] };
+        }
+        const el = result.data?.element || {};
+        return { content: [{ type: 'text', text: `Focused "${el.title || el.description || title}" (${el.role || role})` }] };
+    }, { title: 'AX Focus', destructiveHint: false });
+    // ──────────────────────────────────────────────────────────────────────
+    // 18. ax_actions — List available actions for an element
+    // ──────────────────────────────────────────────────────────────────────
+    registerTool('ax_actions', 'List available actions and settable attributes for a UI element. Useful for discovering what operations are possible on an element.', {
+        type: 'object',
+        properties: {
+            processId: { type: 'number', description: 'Process ID of the target application' },
+            title: { type: 'string', description: 'Element title/name to search for (partial match)' },
+            role: { type: 'string', description: 'Element role filter' },
+        },
+        required: ['processId'],
+        additionalProperties: false,
+    }, async (args) => {
+        const pid = sn(args.processId);
+        const title = args.title;
+        const role = args.role;
+        if (!title && !role) {
+            return { isError: true, content: [{ type: 'text', text: 'Provide at least title or role' }] };
+        }
+        const result = darwin.axActions(pid, title, role);
+        if (!result.success) {
+            return { isError: true, content: [{ type: 'text', text: `ax_actions failed: ${result.error || 'element not found'}` }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+    }, { title: 'AX Actions', readOnlyHint: true });
 }
