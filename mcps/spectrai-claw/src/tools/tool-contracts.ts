@@ -72,7 +72,7 @@ const describeScreenInputSchema = z
     capture_area: describeScreenCaptureAreaSchema.optional().describe('可选截图区域'),
     annotated: z.boolean().optional().describe('是否生成带编号标注图（默认 true）'),
     allow_web_focus: z.boolean().optional().describe('是否尝试唤醒 AXWebArea（默认 true）'),
-    mode: z.enum(["auto", "ax_only", "ax_plus_vision", "ax_plus_cdp", "cdp_only", "vision_only"]).optional().describe('识别模式，默认 auto。Chrome/Edge 且开了 debug port 时建议 ax_plus_cdp；SpectrAI/Tauri 等 Electron 应用建议 ax_plus_vision'),
+    mode: z.enum(["auto", "ax_only", "ax_plus_vision", "ax_plus_cdp", "cdp_only", "vision_only"]).describe('识别模式，默认 auto（令 daemon 自动选择）。选择决策看 describe_screen 根描述。三路速度对比：ax=80ms, cdp=30ms, vision=+800ms。Vision 第一次调用额外冷启 500ms，后续快。').optional(),
   })
   .superRefine((value, ctx) => {
     if (value.target?.window_id != null && value.display_index != null) {
@@ -91,7 +91,7 @@ const describeScreenInputSchema = z
       })
     }
   })
-  .describe('截图并输出结构化屏幕语义，供后续 click/type_text 等工具引用')
+  .describe('★ STEP 1 （桌面自动化第一步必调）：抓取屏幕，生成编号的可操作元素列表和 snapshot_id。后续 click/type_text 用返回的 element.id 定位。\n\n标准工作流：\n1. activate_app 切到目标应用（如需）→ 等 300ms\n2. describe_screen({mode}) → 读返回的 annotated 图和 ui_elements\n3. 选中目标 element.id → click/type_text({snapshot_id, element_id})\n4. 如果界面有变化 → 重新 describe_screen\n\nmode 选择决策（按目标应用选）：\n- 原生 AppKit 应用（Finder / 设置 / Safari chrome / 记事 / 邮件）→ 用 ax_only。极快（~80ms），识别率 90%+。\n- Tauri/Electron 应用（SpectrAI / VSCode / Slack / Discord / Figma / Notion）→ 用 ax_only。Tauri 的 AXWebArea 能被唤醒，往往能拿到所有按钮（实测 128 元素→去重 64 个精准）。\n- Chrome/Edge/Brave 网页内容 → 优先 ax_plus_vision。Chrome 主线禁用了 AX 唤醒，单 AX 只能拿地址栏和菜单（约 48 个），需要 Vision OCR 补页面内按钮和文本（ax_plus_vision 可达 140 个，含「立即下载」等 CTA，加 ~800ms）。\n- 如果用户确认打开了 `open -a "Google Chrome" --args --remote-debugging-port=9222`，改用 ax_plus_cdp，30ms 拿完整 DOM。\n- 各种模式都几乎抓不到内容（特殊 Java/游戏应用）→ vision_only 兜底。\n- 不确定应用类型 → 不传 mode（auto），daemon 会自动判断。\n\n注意：snapshot_id 有 3-5 分钟有效期，LRU 25 个。过期或窗口移动后需要重新 describe_screen。')
 
 const describeScreenOutputSchema = z
   .object({
@@ -234,7 +234,7 @@ const clickInputSchema = z
       })
     }
   })
-  .describe('点击工具输入：优先元素模式，其次快照查询，最后坐标兜底')
+  .describe('★ STEP 2：点击元素。优先顺序：element_id > query > (x, y)。\n\n- 最稳：element_id 来自最近一次 describe_screen 返回的 ui_elements[].id（is_actionable=true 优先）。\n- 次优：query 在 snapshot 内按 role/label/identifier 模糊匹配。\n- 底牌：仅在前两种都找不到时用坐标（需手工读截图网格）。\n\n多个同名元素时的选择启发式：\n- is_actionable=true 优先于无行为的显示元素\n- source="ax" 优先（最稳）、source="cdp" 次之、source="vis" 最后（OCR 识别位置可能有偏差）\n- bounds 面积中等优先（过小可能是容器错报，过大可能是整个容器）\n- role 匹配预期（想点按钮选 AXButton，不选 AXImage）\n\n失败回退：\n- 返 eSnapshotStale → 重新 describe_screen 拿新 snapshot_id\n- 返 eNotFound → 界面变化了，重新 describe_screen\n- 点了没反应 → describe_screen 验证状态；考虑调整 mode 如果是 web 页面→ax_plus_vision\n\n不要连点两次同一按钮（toggle 会反转）。click_type=double 才是双击。')
 
 const clickOutputSchema = z
   .object({
@@ -282,7 +282,7 @@ const typeTextInputSchema = z
       })
     }
   })
-  .describe('文本输入工具输入')
+  .describe('★ 输入文本。支持 Unicode（中英日/emoji），绕开 IME 直接注入。\n\n工作流：\n1. 通常先 click 一个 AXTextField / AXTextArea 获得焦点\n2. 传 snapshot_id + element_id 会自动 focus + 清空（如 clear_existing=true）+ 输入\n3. 未传 element_id 时直接向当前焦点输入\n\ndelay_ms_per_char 默认 0（最快）；某些 web 表单有抖动限流时可设 5-20。\n长文本（>500 字）建议分段，中间调用一次 hotkey({keys: [\'cmd\',\'s\']}) 等避免内容丢失。')
 
 const typeTextOutputSchema = z
   .object({
@@ -316,7 +316,7 @@ const hotkeyInputSchema = z
       })
     }
   })
-  .describe('组合键工具输入')
+  .describe('按组合键（macOS 风格）。例：[\'cmd\',\'c\'] 复制 / [\'cmd\',\'shift\',\'s\'] 另存为 / [\'cmd\',\'tab\'] 切应用。\n\n键名：cmd/shift/option/control 修饰键 + 字母数字 / Enter/Tab/Escape/Space/Delete/Backspace/ArrowUp/ArrowDown/ArrowLeft/ArrowRight/F1-F12。无需先 focus（系统级事件）。\n\n不要用来快速打字——用 type_text。hotkey 专注快捷键/导航。')
 
 const hotkeyOutputSchema = z
   .object({
@@ -342,7 +342,7 @@ const scrollInputSchema = z
       })
     }
   })
-  .describe('滚动工具输入')
+  .describe('滚轮滚动。direction & amount（1≈10 帧等效）。传 x/y 先 move mouse 再滚。\n滞后加载场景需 scroll + describe_screen 重抓。长列表建议每滚一次再 describe，避免元素已滑出 viewport 后再 click。')
 
 const scrollOutputSchema = z
   .object({
@@ -364,7 +364,7 @@ const listAppsInputSchema = z
       })
     }
   })
-  .describe('列出运行中应用，无入参')
+  .describe('列出当前运行的应用。主要用途：确认目标应用的 bundle_id 或 name 以便 activate_app 切过去。is_active=true 的是当前 frontmost（不传 target 时 describe_screen 默认对它）。无入参。')
 
 const listAppsOutputSchema = z
   .object({
@@ -399,7 +399,7 @@ const activateAppInputSchema = z
       })
     }
   })
-  .describe('应用激活输入')
+  .describe('把应用切到前台（frontmost）。优先用 bundle_id（最稳）、次选 name。切换后建议 sleep 200-300ms 再 describe_screen，避免窗口还在动画中导致 AX 抓不稳。')
 
 const activateAppOutputSchema = z
   .object({
@@ -417,38 +417,38 @@ export const toolSchemas = {
     input: describeScreenInputSchema,
     output: describeScreenOutputSchema,
     description:
-      '截图 + AX 扫描 + SoM 标注，返回 snapshot_id、截图路径和元素列表。是桌面自动化第一步，建议优先调用。',
+      '★ STEP 1 必调：截图 + AX/Vision/CDP 扫描 + SoM 标注。返回 snapshot_id（后续工具引用）、annotated 截图和 ui_elements 列表。是桌面自动化入口，每次界面变化后重调。mode 选 ax_only 对原生/Tauri 应用，ax_plus_vision 对 Chrome 网页（单 AX 仅 48 个元素，vision 补至 140 个含 CTA），ax_plus_cdp 对开了远程调试的 Chrome（30ms 完整 DOM）。',
   },
   click: {
     input: clickInputSchema,
     output: clickOutputSchema,
     description:
-      '点击 UI 元素。优先 snapshot_id + element_id，其次 query，最后坐标兜底。',
+      '★ STEP 2：点击 UI 元素。优先 element_id（来自 describe_screen ui_elements，is_actionable=true 优先）> query 模糊匹配 > 坐标(x,y)兜底。失败时：eSnapshotStale→重新 describe_screen；eNotFound→界面变化，重新 describe_screen。',
   },
   type_text: {
     input: typeTextInputSchema,
     output: typeTextOutputSchema,
-    description: '输入文本，支持 Unicode/中文；可选先聚焦目标元素再输入。',
+    description: '向 UI 元素输入文本，支持 Unicode/中文，绕开 IME 直接注入。通常先 click 目标 AXTextField/AXTextArea，再传 snapshot_id+element_id 自动 focus+输入。web 表单有限流时设 delay_ms_per_char=5-20。',
   },
   hotkey: {
     input: hotkeyInputSchema,
     output: hotkeyOutputSchema,
-    description: '按下组合键，适用于系统或应用快捷操作。',
+    description: '按 macOS 组合键（cmd/shift/option/control + 字母数字/Enter/Tab/Escape/Arrow/F1-F12）。无需先 focus，系统级事件。打字用 type_text，快捷键/导航用 hotkey。',
   },
   scroll: {
     input: scrollInputSchema,
     output: scrollOutputSchema,
-    description: '执行滚动操作，可选先移动到指定坐标。',
+    description: '滚轮滚动（up/down/left/right）。可选先移动到 (x,y) 再滚。懒加载场景需 scroll 后重新 describe_screen 重抓元素；长列表每滚一次再 describe 避免 click 失效。',
   },
   list_apps: {
     input: listAppsInputSchema,
     output: listAppsOutputSchema,
-    description: '列出当前运行中的应用列表及前台状态。',
+    description: '列出运行中应用（bundle_id/name/pid/is_active）。主要用途：在 activate_app 前确认正确的 bundle_id。is_active=true 是当前 frontmost。',
   },
   activate_app: {
     input: activateAppInputSchema,
     output: activateAppOutputSchema,
-    description: '将指定应用激活并置前（bundle_id 或 name 至少一个）。',
+    description: '将应用置前（frontmost）。优先 bundle_id（最稳），次选 name。切换后等 200-300ms 再 describe_screen，避免动画中 AX 抓不稳。',
   },
 } satisfies Record<ToolName, ToolSchemaEntry>
 
