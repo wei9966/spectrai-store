@@ -114,7 +114,10 @@ public final class ElementDetectionService: @unchecked Sendable {
             )
         }
 
-        let appElement = Element(AXUIElementCreateApplication(targetPid))
+        let rawAppElement = AXUIElementCreateApplication(targetPid)
+        AXUIElementSetMessagingTimeout(rawAppElement, 3.0)
+        warnings.append("ax_timeout_set_3s")
+        let appElement = Element(rawAppElement)
         let appName = NSRunningApplication(processIdentifier: targetPid)?.localizedName
         let bundleId = NSRunningApplication(processIdentifier: targetPid)?.bundleIdentifier ?? ""
 
@@ -131,6 +134,52 @@ public final class ElementDetectionService: @unchecked Sendable {
         } else {
             windowTitle = nil
             windowBounds = nil
+        }
+
+        let screenshotResult = try await ScreenCaptureService.captureScreen()
+
+        // S9: kick off concurrent tasks for ax_plus_* modes before AX scan
+        let visionParallelHandle: Task<[VisionDetectedElement], Never>?
+        let cdpParallelHandle: Task<[DetectedElement], Never>?
+
+        if mode == .ax_plus_vision {
+            let path = screenshotResult.path
+            let origin = screenshotResult.displayBounds.origin
+            let size = screenshotResult.displayBounds.size
+            let mc = maxCount
+            visionParallelHandle = Task.detached {
+                return (try? await VisionFallbackService.detect(
+                    imagePath: path,
+                    captureOrigin: origin,
+                    captureSize: size,
+                    existingBounds: [],
+                    maxElements: mc
+                )) ?? []
+            }
+            cdpParallelHandle = nil
+            warnings.append("parallel_detection")
+        } else if mode == .ax_plus_cdp {
+            let pid = targetPid
+            let mc = maxCount
+            let wb = windowBounds
+            cdpParallelHandle = Task.detached {
+                let port = await BrowserControlService.detectDebugPort(pid: pid)
+                guard port > 0 else { return [] }
+                guard let tabs = try? await BrowserControlService.listTabs(port: port),
+                      let tab = tabs.first else { return [] }
+                let origin = wb.map { CGPoint(x: $0.x, y: $0.y) } ?? .zero
+                let elements = try? await BrowserControlService.detectElements(
+                    webSocketUrl: tab.webSocketUrl,
+                    windowOrigin: origin,
+                    maxElements: mc
+                )
+                return elements?.map { $0.toDetected() } ?? []
+            }
+            visionParallelHandle = nil
+            warnings.append("parallel_detection")
+        } else {
+            visionParallelHandle = nil
+            cdpParallelHandle = nil
         }
 
         // Phase 1: AX detection (skip for cdp_only / vision_only)
@@ -159,8 +208,6 @@ public final class ElementDetectionService: @unchecked Sendable {
                 warnings.append("deduped_\(beforeDedup)->_\(afterDedup)")
             }
         }
-
-        let screenshotResult = try await ScreenCaptureService.captureScreen()
 
         // Phase 2: Supplementary detection based on mode
         let isCdpCapable = Self.cdpCapableBundleIds.contains(bundleId)
@@ -194,20 +241,25 @@ public final class ElementDetectionService: @unchecked Sendable {
             break
 
         case .ax_plus_vision:
-            if let extras = await supplementWithVision(
-                screenshotPath: screenshotResult.path,
-                displayBounds: screenshotResult.displayBounds,
-                existing: collected, maxCount: maxCount, warnings: &warnings
-            ) {
-                collected.append(contentsOf: extras)
+            // Await concurrent vision task (started before AX scan), merge with IoU dedup
+            if let handle = visionParallelHandle {
+                let visionElements = await handle.value
+                let filtered = visionElements.filter { v in
+                    !collected.contains { ax in Self.iou(v.bounds, ax.bounds) >= 0.5 }
+                }
+                warnings.append("vision_supplemented_\(filtered.count)")
+                collected.append(contentsOf: filtered.map { $0.toDetected() })
             }
 
         case .ax_plus_cdp:
-            if let extras = await supplementWithCDP(
-                pid: targetPid, existing: collected, maxCount: maxCount,
-                windowBounds: windowBounds, warnings: &warnings
-            ) {
-                collected.append(contentsOf: extras)
+            // Await concurrent CDP task (started before AX scan), merge with IoU dedup
+            if let handle = cdpParallelHandle {
+                let cdpElements = await handle.value
+                let filtered = cdpElements.filter { el in
+                    !collected.contains { ax in Self.iou(el.bounds, ax.bounds) >= 0.5 }
+                }
+                warnings.append("cdp_supplemented_\(filtered.count)")
+                collected.append(contentsOf: filtered)
             }
 
         case .cdp_only:
@@ -438,6 +490,7 @@ public final class ElementDetectionService: @unchecked Sendable {
         warnings: inout [String]
     ) async {
         let appAX = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appAX, 3.0)
         AXUIElementSetAttributeValue(appAX, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(appAX, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
         warnings.append("ax_manual_accessibility_set")
@@ -452,6 +505,7 @@ public final class ElementDetectionService: @unchecked Sendable {
                     kAXFocusedAttribute as CFString,
                     kCFBooleanTrue
                 )
+                guard !Task.isCancelled else { break }
                 try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
                 collected = []
                 counter = 0
