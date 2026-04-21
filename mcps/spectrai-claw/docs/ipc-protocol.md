@@ -98,7 +98,7 @@ The SpectrAI Claw daemon communicates with the Node.js MCP server via a **Unix d
 | `captureScreen` | Capture entire screen | `{displayIndex?, maxWidth?, annotated?}` | `{path, width, height, displayBounds}` |
 | `captureWindow` | Capture specific window | `{windowId, maxWidth?}` | `{path, width, height, displayBounds}` |
 | `captureArea` | Capture rectangular area | `{x, y, width, height, maxWidth?}` | `{path, width, height, displayBounds}` |
-| `detectElements` | Detect UI elements via AX | `{windowId?, pid?, allowWebFocus?, maxDepth?, maxCount?}` | `{snapshotId, screenshotPath, annotatedPath, elements, ...}` |
+| `detectElements` | Detect UI elements via AX/Vision/CDP | `{windowId?, pid?, allowWebFocus?, maxDepth?, maxCount?, mode?}` | `{snapshotId, screenshotPath, annotatedPath, elements, ...}` |
 | `getSnapshot` | Retrieve cached snapshot | `{snapshotId}` | Same as detectElements result |
 | `listSnapshots` | List available snapshots | `{}` | `{snapshots: [{id, createdAt, windowTitle?}]}` |
 | `cleanSnapshot` | Remove snapshot(s) | `{snapshotId?}` | `{removed}` |
@@ -149,9 +149,22 @@ Response:
 
 ### detectElements
 
+The `mode` parameter controls which detection backends are used:
+
+| Mode | Behavior |
+|------|----------|
+| `auto` (default) | AX first; if actionable < 15 and target is CDP-capable Chromium, try CDP; if CDP unavailable, fall back to Vision |
+| `ax_only` | Only AX accessibility tree walk |
+| `ax_plus_vision` | AX + Apple Vision OCR/rectangle detection (merged, IoU ≥ 0.5 dedup) |
+| `ax_plus_cdp` | AX + Chrome DevTools Protocol (requires Chromium with debug port) |
+| `cdp_only` | CDP only (Chromium + debug port required) |
+| `vision_only` | Vision only (screenshot-based OCR + rectangle detection) |
+
+Element IDs carry a source prefix: `ax_N`, `vis_N`, or `cdp_N`. All prefixes are stored in the snapshot and can be used with `click` / `type` operations.
+
 Request:
 ```json
-{"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "op": "detectElements", "params": {"pid": 1234, "maxDepth": 5, "maxCount": 200}}
+{"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "op": "detectElements", "params": {"pid": 1234, "maxDepth": 5, "maxCount": 200, "mode": "ax_plus_vision"}}
 ```
 
 Response:

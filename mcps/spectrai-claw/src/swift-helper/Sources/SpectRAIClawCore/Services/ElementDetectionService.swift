@@ -9,6 +9,15 @@ public enum ElementDetectionError: Error, Sendable {
     case captureFailed(String)
 }
 
+public enum DetectionMode: String, Codable, Sendable, Hashable {
+    case auto
+    case ax_only
+    case ax_plus_vision
+    case ax_plus_cdp
+    case cdp_only
+    case vision_only
+}
+
 public struct ElementDetectionResult: Sendable {
     public let snapshotId: String?
     public let screenshotPath: String
@@ -25,6 +34,7 @@ public final class ElementDetectionService: @unchecked Sendable {
         let windowId: CGWindowID?
         let pid: pid_t?
         let allowWebFocus: Bool
+        let mode: DetectionMode
     }
 
     private struct CacheEntry {
@@ -57,6 +67,14 @@ public final class ElementDetectionService: @unchecked Sendable {
         "com.electron", "com.microsoft.VSCode", "com.tinyspeck.slackmacgap",
     ]
 
+    private static let cdpCapableBundleIds: Set<String> = [
+        "com.google.Chrome",
+        "com.microsoft.edgemac",
+        "com.brave.Browser",
+        "com.vivaldi.Vivaldi",
+        "com.operasoftware.Opera",
+    ]
+
     public init() {}
 
     @MainActor
@@ -65,7 +83,8 @@ public final class ElementDetectionService: @unchecked Sendable {
         pid: pid_t? = nil,
         allowWebFocus: Bool = true,
         maxDepth: Int = 12,
-        maxCount: Int = 500
+        maxCount: Int = 500,
+        mode: DetectionMode = .auto
     ) async throws -> ElementDetectionResult {
         var warnings: [String] = []
 
@@ -78,7 +97,7 @@ public final class ElementDetectionService: @unchecked Sendable {
             throw ElementDetectionError.axFailure("No frontmost application")
         }
 
-        let cacheKey = CacheKey(windowId: windowId, pid: targetPid, allowWebFocus: allowWebFocus)
+        let cacheKey = CacheKey(windowId: windowId, pid: targetPid, allowWebFocus: allowWebFocus, mode: mode)
         if let cached = cache[cacheKey], Date().timeIntervalSince(cached.timestamp) < cacheTTL {
             warnings.append("ax_cache_hit")
             let app = NSRunningApplication(processIdentifier: targetPid)
@@ -97,6 +116,7 @@ public final class ElementDetectionService: @unchecked Sendable {
 
         let appElement = Element(AXUIElementCreateApplication(targetPid))
         let appName = NSRunningApplication(processIdentifier: targetPid)?.localizedName
+        let bundleId = NSRunningApplication(processIdentifier: targetPid)?.bundleIdentifier ?? ""
 
         let windowTitle: String?
         let windowBounds: Bounds?
@@ -113,27 +133,99 @@ public final class ElementDetectionService: @unchecked Sendable {
             windowBounds = nil
         }
 
+        // Phase 1: AX detection (skip for cdp_only / vision_only)
         var collected: [DetectedElement] = []
-        var counter = 0
-        walkTree(appElement, depth: 0, maxDepth: maxDepth, maxCount: maxCount, parentFrame: nil, collected: &collected, counter: &counter, parentId: nil)
+        let needsAX = mode != .cdp_only && mode != .vision_only
+        if needsAX {
+            var counter = 0
+            walkTree(appElement, depth: 0, maxDepth: maxDepth, maxCount: maxCount, parentFrame: nil, collected: &collected, counter: &counter, parentId: nil)
 
-        // Always attempt web wakeup when allowWebFocus=true — Chromium AX is lazy-loaded
-        // regardless of whether a textField was already found.
-        if allowWebFocus {
-            await wakeUpWebContent(
-                appElement: appElement,
-                pid: targetPid,
-                maxDepth: maxDepth,
-                maxCount: maxCount,
-                collected: &collected,
-                counter: &counter,
-                warnings: &warnings
-            )
+            if allowWebFocus {
+                await wakeUpWebContent(
+                    appElement: appElement,
+                    pid: targetPid,
+                    maxDepth: maxDepth,
+                    maxCount: maxCount,
+                    collected: &collected,
+                    counter: &counter,
+                    warnings: &warnings
+                )
+            }
+        }
+
+        let screenshotResult = try await ScreenCaptureService.captureScreen()
+
+        // Phase 2: Supplementary detection based on mode
+        let isCdpCapable = Self.cdpCapableBundleIds.contains(bundleId)
+
+        switch mode {
+        case .auto:
+            let actionableCount = collected.filter(\.isActionable).count
+            if actionableCount < 15 {
+                var supplemented = false
+                if isCdpCapable {
+                    if let extras = await supplementWithCDP(
+                        pid: targetPid, existing: collected, maxCount: maxCount,
+                        windowBounds: windowBounds, warnings: &warnings
+                    ) {
+                        collected.append(contentsOf: extras)
+                        supplemented = true
+                    }
+                }
+                if !supplemented {
+                    if let extras = await supplementWithVision(
+                        screenshotPath: screenshotResult.path,
+                        displayBounds: screenshotResult.displayBounds,
+                        existing: collected, maxCount: maxCount, warnings: &warnings
+                    ) {
+                        collected.append(contentsOf: extras)
+                    }
+                }
+            }
+
+        case .ax_only:
+            break
+
+        case .ax_plus_vision:
+            if let extras = await supplementWithVision(
+                screenshotPath: screenshotResult.path,
+                displayBounds: screenshotResult.displayBounds,
+                existing: collected, maxCount: maxCount, warnings: &warnings
+            ) {
+                collected.append(contentsOf: extras)
+            }
+
+        case .ax_plus_cdp:
+            if let extras = await supplementWithCDP(
+                pid: targetPid, existing: collected, maxCount: maxCount,
+                windowBounds: windowBounds, warnings: &warnings
+            ) {
+                collected.append(contentsOf: extras)
+            }
+
+        case .cdp_only:
+            if let extras = await cdpOnlyDetect(
+                pid: targetPid, maxCount: maxCount,
+                windowBounds: windowBounds, warnings: &warnings
+            ) {
+                collected = extras
+            }
+
+        case .vision_only:
+            if let extras = await visionOnlyDetect(
+                screenshotPath: screenshotResult.path,
+                displayBounds: screenshotResult.displayBounds,
+                maxCount: maxCount, warnings: &warnings
+            ) {
+                collected = extras
+            }
+        }
+
+        if collected.count > maxCount {
+            collected = Array(collected.prefix(maxCount))
         }
 
         cache[cacheKey] = CacheEntry(result: collected, timestamp: Date())
-
-        let screenshotResult = try await ScreenCaptureService.captureScreen()
 
         var annotatedPath: String? = nil
         if !collected.isEmpty {
@@ -154,6 +246,140 @@ public final class ElementDetectionService: @unchecked Sendable {
             windowBounds: windowBounds,
             warnings: warnings
         )
+    }
+
+    // MARK: - Supplementary Detection
+
+    @MainActor
+    private func supplementWithVision(
+        screenshotPath: String,
+        displayBounds: CGRect,
+        existing: [DetectedElement],
+        maxCount: Int,
+        warnings: inout [String]
+    ) async -> [DetectedElement]? {
+        let remaining = maxCount - existing.count
+        guard remaining > 0 else { return nil }
+        let existingRects = existing.map {
+            CGRect(x: $0.bounds.x, y: $0.bounds.y, width: $0.bounds.width, height: $0.bounds.height)
+        }
+        do {
+            let visionElements = try await VisionFallbackService.detect(
+                imagePath: screenshotPath,
+                captureOrigin: displayBounds.origin,
+                captureSize: displayBounds.size,
+                existingBounds: existingRects,
+                maxElements: remaining
+            )
+            warnings.append("vision_supplemented_\(visionElements.count)")
+            return visionElements.map { $0.toDetected() }
+        } catch {
+            warnings.append("vision_failed_\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    @MainActor
+    private func supplementWithCDP(
+        pid: pid_t,
+        existing: [DetectedElement],
+        maxCount: Int,
+        windowBounds: Bounds?,
+        warnings: inout [String]
+    ) async -> [DetectedElement]? {
+        let port = await BrowserControlService.detectDebugPort(pid: pid)
+        guard port > 0 else {
+            warnings.append("cdp_no_debug_port")
+            return nil
+        }
+        do {
+            let tabs = try await BrowserControlService.listTabs(port: port)
+            guard let tab = tabs.first else {
+                warnings.append("cdp_no_tabs")
+                return nil
+            }
+            // Window bounds top-left approximates CDP coordinate origin
+            let origin = windowBounds.map { CGPoint(x: $0.x, y: $0.y) } ?? .zero
+            let remaining = maxCount - existing.count
+            let cdpElements = try await BrowserControlService.detectElements(
+                webSocketUrl: tab.webSocketUrl,
+                windowOrigin: origin,
+                maxElements: remaining
+            )
+            let existingRects = existing.map {
+                CGRect(x: $0.bounds.x, y: $0.bounds.y, width: $0.bounds.width, height: $0.bounds.height)
+            }
+            let filtered = cdpElements.filter { el in
+                !existingRects.contains { Self.iou(el.bounds, $0) >= 0.5 }
+            }
+            warnings.append("cdp_supplemented_\(filtered.count)")
+            return filtered.map { $0.toDetected() }
+        } catch {
+            warnings.append("cdp_failed_\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    @MainActor
+    private func cdpOnlyDetect(
+        pid: pid_t,
+        maxCount: Int,
+        windowBounds: Bounds?,
+        warnings: inout [String]
+    ) async -> [DetectedElement]? {
+        let port = await BrowserControlService.detectDebugPort(pid: pid)
+        guard port > 0 else {
+            warnings.append("cdp_no_debug_port")
+            return nil
+        }
+        do {
+            let tabs = try await BrowserControlService.listTabs(port: port)
+            guard let tab = tabs.first else {
+                warnings.append("cdp_no_tabs")
+                return nil
+            }
+            let origin = windowBounds.map { CGPoint(x: $0.x, y: $0.y) } ?? .zero
+            let cdpElements = try await BrowserControlService.detectElements(
+                webSocketUrl: tab.webSocketUrl,
+                windowOrigin: origin,
+                maxElements: maxCount
+            )
+            warnings.append("cdp_detected_\(cdpElements.count)")
+            return cdpElements.map { $0.toDetected() }
+        } catch {
+            warnings.append("cdp_failed_\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    @MainActor
+    private func visionOnlyDetect(
+        screenshotPath: String,
+        displayBounds: CGRect,
+        maxCount: Int,
+        warnings: inout [String]
+    ) async -> [DetectedElement]? {
+        do {
+            let visionElements = try await VisionFallbackService.detect(
+                imagePath: screenshotPath,
+                captureOrigin: displayBounds.origin,
+                captureSize: displayBounds.size,
+                maxElements: maxCount
+            )
+            warnings.append("vision_detected_\(visionElements.count)")
+            return visionElements.map { $0.toDetected() }
+        } catch {
+            warnings.append("vision_failed_\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private static func iou(_ a: CGRect, _ b: CGRect) -> Double {
+        let intersection = a.intersection(b)
+        if intersection.isNull || intersection.isEmpty { return 0 }
+        let interArea = Double(intersection.width * intersection.height)
+        let unionArea = Double(a.width * a.height) + Double(b.width * b.height) - interArea
+        return unionArea > 0 ? interArea / unionArea : 0
     }
 
     // MARK: - Private
@@ -304,5 +530,39 @@ public final class ElementDetectionService: @unchecked Sendable {
             }
         }
         return nil
+    }
+}
+
+// MARK: - Type Adapters
+
+extension VisionDetectedElement {
+    func toDetected() -> DetectedElement {
+        DetectedElement(
+            id: id,
+            role: role,
+            label: label,
+            bounds: bounds,
+            isEnabled: true,
+            isActionable: role != "AXVisionRegion"
+        )
+    }
+}
+
+extension CDPDetectedElement {
+    func toDetected() -> DetectedElement {
+        let aid = attributes["id"]
+        let elemBounds = Bounds(
+            x: bounds.origin.x, y: bounds.origin.y,
+            width: bounds.width, height: bounds.height
+        )
+        return DetectedElement(
+            id: id,
+            role: role,
+            label: label,
+            identifier: (aid?.isEmpty == false) ? aid : nil,
+            bounds: elemBounds,
+            isEnabled: true,
+            isActionable: isVisible
+        )
     }
 }

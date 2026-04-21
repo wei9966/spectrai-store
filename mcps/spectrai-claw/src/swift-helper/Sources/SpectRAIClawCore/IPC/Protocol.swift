@@ -282,6 +282,9 @@ public struct DetectElementsParams: Codable, Sendable {
     public let allowWebFocus: Bool?
     public let maxDepth: Int?
     public let maxCount: Int?
+    /// Detection mode: "auto", "ax_only", "ax_plus_vision", "ax_plus_cdp", "cdp_only", "vision_only".
+    /// Defaults to "auto" when nil.
+    public let mode: String?
 }
 public struct DetectElementsResult: Codable, Sendable {
     public let snapshotId: String

@@ -46,6 +46,7 @@ async function handleDescribeScreen(
   if (args.target?.app_bundle_id) detectParams.bundleId = args.target.app_bundle_id
   if (args.display_index != null) detectParams.displayIndex = args.display_index
   if (args.allow_web_focus != null) detectParams.allowWebFocus = args.allow_web_focus
+  if (args.mode) detectParams.mode = args.mode
 
   const detectResult = await tryCall(client, 'detectElements', detectParams)
 
@@ -55,6 +56,7 @@ async function handleDescribeScreen(
       role: el.role,
       label: el.label || el.title || el.description || '',
       is_actionable: el.isActionable ?? false,
+      source: el.id?.startsWith('vis_') ? 'vis' : el.id?.startsWith('cdp_') ? 'cdp' : 'ax',
     }))
 
     const content = await embedAnnotatedScreenshot({

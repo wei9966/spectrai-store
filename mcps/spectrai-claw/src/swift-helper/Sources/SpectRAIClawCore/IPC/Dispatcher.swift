@@ -92,12 +92,17 @@ public final class Dispatcher: @unchecked Sendable {
 
         case OpName.detectElements.rawValue:
             let p = try decodeParams(DetectElementsParams.self, from: request.params)
+            let detectionMode: DetectionMode = {
+                guard let modeStr = p.mode, let m = DetectionMode(rawValue: modeStr) else { return .auto }
+                return m
+            }()
             let result = try await detectionService.detect(
                 windowId: p.windowId.map { CGWindowID($0) },
                 pid: p.pid.map { pid_t($0) },
                 allowWebFocus: p.allowWebFocus ?? true,
                 maxDepth: p.maxDepth ?? 8,
-                maxCount: p.maxCount ?? 200
+                maxCount: p.maxCount ?? 200,
+                mode: detectionMode
             )
             let snapshotId = SnapshotManager.shared.createSnapshot()
             SnapshotManager.shared.storeDetectionResult(

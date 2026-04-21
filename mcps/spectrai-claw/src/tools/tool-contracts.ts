@@ -72,6 +72,7 @@ const describeScreenInputSchema = z
     capture_area: describeScreenCaptureAreaSchema.optional().describe('可选截图区域'),
     annotated: z.boolean().optional().describe('是否生成带编号标注图（默认 true）'),
     allow_web_focus: z.boolean().optional().describe('是否尝试唤醒 AXWebArea（默认 true）'),
+    mode: z.enum(["auto", "ax_only", "ax_plus_vision", "ax_plus_cdp", "cdp_only", "vision_only"]).optional().describe('识别模式，默认 auto。Chrome/Edge 且开了 debug port 时建议 ax_plus_cdp；SpectrAI/Tauri 等 Electron 应用建议 ax_plus_vision'),
   })
   .superRefine((value, ctx) => {
     if (value.target?.window_id != null && value.display_index != null) {
@@ -136,6 +137,7 @@ const describeScreenOutputSchema = z
             identifier: z.string().optional().describe('AX identifier'),
             keyboard_shortcut: z.string().optional().describe('快捷键提示'),
             is_actionable: z.boolean().describe('是否可执行点击/激活动作'),
+            source: z.enum(["ax", "vis", "cdp"]).optional().describe('元素来源：ax=AX无障碍, vis=Vision OCR, cdp=Chrome DevTools Protocol'),
             bounds: boundsSchema.describe('元素边界（AppKit 逻辑 point）'),
           })
           .describe('单个 UI 元素信息'),

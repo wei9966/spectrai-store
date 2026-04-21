@@ -36,6 +36,8 @@ async function handleDescribeScreen(client, args) {
         detectParams.displayIndex = args.display_index;
     if (args.allow_web_focus != null)
         detectParams.allowWebFocus = args.allow_web_focus;
+    if (args.mode)
+        detectParams.mode = args.mode;
     const detectResult = await tryCall(client, 'detectElements', detectParams);
     if (detectResult) {
         const uiElements = (detectResult.elements ?? []).map((el) => ({
@@ -43,6 +45,7 @@ async function handleDescribeScreen(client, args) {
             role: el.role,
             label: el.label || el.title || el.description || '',
             is_actionable: el.isActionable ?? false,
+            source: el.id?.startsWith('vis_') ? 'vis' : el.id?.startsWith('cdp_') ? 'cdp' : 'ax',
         }));
         const content = await embedAnnotatedScreenshot({
             rawPath: detectResult.screenshotPath,
