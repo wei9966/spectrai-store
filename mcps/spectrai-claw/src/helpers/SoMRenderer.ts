@@ -54,7 +54,8 @@ export async function imageContentFromFile(filePath: string): Promise<MCPImageCo
 
 /**
  * 把 annotated 截图嵌入 MCP content blocks。
- * 返回 [text 描述 + image content + text 元素列表]
+ * 默认返回 [text 描述 + image content + text 元素列表]。
+ * includeImage=false 时返回 [text 描述 + text 元素列表]。
  */
 export async function embedAnnotatedScreenshot(opts: {
   rawPath: string
@@ -64,26 +65,32 @@ export async function embedAnnotatedScreenshot(opts: {
   windowTitle?: string
   snapshotId: string
   warnings?: string[]
+  includeImage?: boolean
 }): Promise<MCPContent[]> {
-  const candidatePaths = opts.annotatedPath ? [opts.annotatedPath, opts.rawPath] : [opts.rawPath]
+  const includeImage = opts.includeImage ?? true
+  const screenshotPath = opts.annotatedPath || opts.rawPath
 
   let screenshotContent: MCPImageContent | null = null
-  let lastError: unknown = null
 
-  for (const candidatePath of candidatePaths) {
-    try {
-      screenshotContent = await imageContentFromFile(candidatePath)
-      break
-    } catch (error) {
-      lastError = error
-    }
-  }
+  if (includeImage) {
+    const candidatePaths = opts.annotatedPath ? [opts.annotatedPath, opts.rawPath] : [opts.rawPath]
+    let lastError: unknown = null
 
-  if (!screenshotContent) {
-    if (lastError instanceof Error) {
-      throw lastError
+    for (const candidatePath of candidatePaths) {
+      try {
+        screenshotContent = await imageContentFromFile(candidatePath)
+        break
+      } catch (error) {
+        lastError = error
+      }
     }
-    throw new Error('Failed to load screenshot for MCP embedding.')
+
+    if (!screenshotContent) {
+      if (lastError instanceof Error) {
+        throw lastError
+      }
+      throw new Error('Failed to load screenshot for MCP embedding.')
+    }
   }
 
   const summaryLines = ['UI snapshot captured.', `snapshot_id: ${opts.snapshotId}`]
@@ -100,6 +107,10 @@ export async function embedAnnotatedScreenshot(opts: {
     summaryLines.push(`warnings: ${opts.warnings.join(' | ')}`)
   }
 
+  if (!includeImage) {
+    summaryLines.push(`screenshot_path: ${screenshotPath}`)
+  }
+
   const actionableElements = opts.uiElements.filter((item) => item.is_actionable)
   const elementLines = ['Actionable elements:']
 
@@ -111,15 +122,21 @@ export async function embedAnnotatedScreenshot(opts: {
     }
   }
 
-  return [
+  const content: MCPContent[] = [
     {
       type: 'text',
       text: summaryLines.join('\n'),
     },
-    screenshotContent,
-    {
-      type: 'text',
-      text: elementLines.join('\n'),
-    },
   ]
+
+  if (includeImage && screenshotContent) {
+    content.push(screenshotContent)
+  }
+
+  content.push({
+    type: 'text',
+    text: elementLines.join('\n'),
+  })
+
+  return content
 }

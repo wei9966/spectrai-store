@@ -67,6 +67,7 @@ async function handleDescribeScreen(
       windowTitle: detectResult.windowTitle || undefined,
       snapshotId: detectResult.snapshotId,
       warnings: detectResult.warnings || [],
+      includeImage: args.annotated !== false,
     })
 
     return { content }
