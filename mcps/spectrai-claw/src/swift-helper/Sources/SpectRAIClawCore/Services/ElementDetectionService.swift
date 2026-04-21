@@ -151,6 +151,13 @@ public final class ElementDetectionService: @unchecked Sendable {
                     warnings: &warnings
                 )
             }
+
+            let beforeDedup = collected.count
+            collected = dedupElements(collected)
+            let afterDedup = collected.count
+            if beforeDedup > 0 && Double(beforeDedup - afterDedup) / Double(beforeDedup) > 0.3 {
+                warnings.append("deduped_\(beforeDedup)->_\(afterDedup)")
+            }
         }
 
         let screenshotResult = try await ScreenCaptureService.captureScreen()
@@ -380,6 +387,37 @@ public final class ElementDetectionService: @unchecked Sendable {
         let interArea = Double(intersection.width * intersection.height)
         let unionArea = Double(a.width * a.height) + Double(b.width * b.height) - interArea
         return unionArea > 0 ? interArea / unionArea : 0
+    }
+
+    private static func iou(_ a: Bounds, _ b: Bounds) -> Double {
+        let ix1 = max(a.x, b.x), iy1 = max(a.y, b.y)
+        let ix2 = min(a.x + a.width, b.x + b.width), iy2 = min(a.y + a.height, b.y + b.height)
+        guard ix2 > ix1 && iy2 > iy1 else { return 0 }
+        let interArea = (ix2 - ix1) * (iy2 - iy1)
+        let unionArea = a.width * a.height + b.width * b.height - interArea
+        return unionArea > 0 ? interArea / unionArea : 0
+    }
+
+    // MARK: - Deduplication
+
+    func dedupElements(_ elements: [DetectedElement]) -> [DetectedElement] {
+        var result: [DetectedElement] = []
+        for element in elements {
+            var shouldKeep = true
+            for (idx, kept) in result.enumerated() {
+                if element.role == kept.role && element.label == kept.label && Self.iou(element.bounds, kept.bounds) > 0.9 {
+                    let elArea = element.bounds.width * element.bounds.height
+                    let keptArea = kept.bounds.width * kept.bounds.height
+                    if elArea < keptArea {
+                        result[idx] = element
+                    }
+                    shouldKeep = false
+                    break
+                }
+            }
+            if shouldKeep { result.append(element) }
+        }
+        return result
     }
 
     // MARK: - Private
