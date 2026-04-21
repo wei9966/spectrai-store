@@ -530,9 +530,11 @@ public final class ElementDetectionService: @unchecked Sendable {
         AXUIElementSetAttributeValue(appAX, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(appAX, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
         warnings.append("ax_manual_accessibility_set")
-        warnings.append("web_wakeup_attempted_3x")
 
-        for _ in 0..<3 {
+        var iteration = 0
+        var prevCount = -1
+        for i in 0..<3 {
+            iteration = i
             if let webArea = findWebArea(appElement, maxDepth: 8) {
                 _ = try? webArea.performAction(.press)
                 // Drive focus into the web area so Blink schedules a full AX sync.
@@ -546,8 +548,12 @@ public final class ElementDetectionService: @unchecked Sendable {
                 collected = []
                 counter = 0
                 walkTree(appElement, depth: 0, maxDepth: maxDepth, maxCount: maxCount, parentFrame: nil, collected: &collected, counter: &counter, parentId: nil)
+                if collected.count >= 50 { break }
+                if collected.count == prevCount { break }
+                prevCount = collected.count
             }
         }
+        warnings.append("web_wakeup_done_\(iteration + 1)x_\(collected.count)elems")
     }
 
     @MainActor
