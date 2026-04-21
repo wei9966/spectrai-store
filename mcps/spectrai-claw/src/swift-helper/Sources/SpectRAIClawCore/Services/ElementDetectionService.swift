@@ -90,6 +90,9 @@ public final class ElementDetectionService: @unchecked Sendable {
         captureMaxWidth: Int? = nil
     ) async throws -> ElementDetectionResult {
         var warnings: [String] = []
+        if WarmupService.shared.isPending {
+            warnings.append("warmup_pending")
+        }
         let effectiveCaptureMaxWidth = captureMaxWidth ?? 1280
 
         let targetPid: pid_t

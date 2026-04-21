@@ -34,6 +34,7 @@ public final class DaemonCoordinator: @unchecked Sendable {
             self?.syncQueue.async { self?._connectionsActive -= 1 }
         }
 
+        WarmupService.shared.startIfNeeded()
         try host.start(dispatcher: dispatcher)
 
         syncQueue.sync {
