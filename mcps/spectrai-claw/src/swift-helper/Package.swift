@@ -11,9 +11,17 @@ let package = Package(
         .executable(
             name: "spectrai-claw-helper",
             targets: ["SpectRAIClaw"]
+        ),
+        .library(
+            name: "SpectRAIClawCore",
+            targets: ["SpectRAIClawCore"]
         )
     ],
     targets: [
+        .target(
+            name: "SpectRAIClawCore",
+            path: "Sources/SpectRAIClawCore"
+        ),
         .executableTarget(
             name: "SpectRAIClaw",
             path: "Sources/SpectRAIClaw",
