@@ -29,7 +29,10 @@ let package = Package(
             dependencies: [
                 .product(name: "AXorcist", package: "AXorcist")
             ],
-            path: "Sources/SpectRAIClawCore"
+            path: "Sources/SpectRAIClawCore",
+            linkerSettings: [
+                .linkedFramework("Vision"),
+            ]
         ),
         .executableTarget(
             name: "SpectRAIClaw",
