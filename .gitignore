@@ -6,3 +6,13 @@ Thumbs.db
 
 # SpectrAI worktree isolation
 .spectrai-worktrees/
+
+# Swift build artifacts
+.build/
+*.pcm
+*.swiftmodule
+*.swiftdoc
+*.swiftsourceinfo
+
+# TS build artifacts
+dist/
