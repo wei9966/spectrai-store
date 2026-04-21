@@ -35,11 +35,21 @@ public final class ElementDetectionService: @unchecked Sendable {
     private var cache: [CacheKey: CacheEntry] = [:]
     private let cacheTTL: TimeInterval = 1.5
 
+    // Extended role set: added web/container roles alongside standard actionable roles.
     private static let actionableRoles: Set<String> = [
         "AXButton", "AXLink", "AXMenuItem", "AXCheckBox", "AXRadioButton",
         "AXPopUpButton", "AXComboBox", "AXTextField", "AXTextArea",
         "AXSlider", "AXTab", "AXImage", "AXMenuBarItem", "AXIncrementor",
         "AXSearchField", "AXSwitch",
+        // Web/container roles for Chromium SPA and WKWebView pages
+        "AXStaticText", "AXGroup", "AXGenericElement",
+        "AXOutline", "AXList", "AXListItem",
+        "AXDisclosureTriangle", "AXTabGroup", "AXSplitter",
+    ]
+
+    // These roles produce too many empty wrapper nodes unless they carry a label.
+    private static let requiresLabelRoles: Set<String> = [
+        "AXGroup", "AXGenericElement",
     ]
 
     private static let chromiumBundleIds: Set<String> = [
@@ -54,8 +64,8 @@ public final class ElementDetectionService: @unchecked Sendable {
         windowId: CGWindowID? = nil,
         pid: pid_t? = nil,
         allowWebFocus: Bool = true,
-        maxDepth: Int = 8,
-        maxCount: Int = 200
+        maxDepth: Int = 12,
+        maxCount: Int = 500
     ) async throws -> ElementDetectionResult {
         var warnings: [String] = []
 
@@ -105,23 +115,20 @@ public final class ElementDetectionService: @unchecked Sendable {
 
         var collected: [DetectedElement] = []
         var counter = 0
-        walkTree(appElement, depth: 0, maxDepth: maxDepth, maxCount: maxCount, collected: &collected, counter: &counter, parentId: nil)
+        walkTree(appElement, depth: 0, maxDepth: maxDepth, maxCount: maxCount, parentFrame: nil, collected: &collected, counter: &counter, parentId: nil)
 
-        if allowWebFocus && shouldAttemptWebFocus(collected, pid: targetPid) {
-            for attempt in 0..<2 {
-                let webArea = findWebArea(appElement, maxDepth: 4)
-                if let wa = webArea {
-                    _ = try? wa.performAction(.press)
-                    try await Task.sleep(nanoseconds: 150_000_000)
-                    collected = []
-                    counter = 0
-                    walkTree(appElement, depth: 0, maxDepth: maxDepth, maxCount: maxCount, collected: &collected, counter: &counter, parentId: nil)
-                    if !shouldAttemptWebFocus(collected, pid: targetPid) { break }
-                } else {
-                    break
-                }
-                _ = attempt
-            }
+        // Always attempt web wakeup when allowWebFocus=true — Chromium AX is lazy-loaded
+        // regardless of whether a textField was already found.
+        if allowWebFocus {
+            await wakeUpWebContent(
+                appElement: appElement,
+                pid: targetPid,
+                maxDepth: maxDepth,
+                maxCount: maxCount,
+                collected: &collected,
+                counter: &counter,
+                warnings: &warnings
+            )
         }
 
         cache[cacheKey] = CacheEntry(result: collected, timestamp: Date())
@@ -151,12 +158,51 @@ public final class ElementDetectionService: @unchecked Sendable {
 
     // MARK: - Private
 
+    /// Forces Chromium-family browsers and Electron/Tauri apps to sync their full AX tree.
+    ///
+    /// AXManualAccessibility + AXEnhancedUserInterface are undocumented but widely-used
+    /// hints that tell Blink/WebKit to stop lazy-loading the accessibility tree. Without
+    /// them, describe_screen returns only the initially-visible AX nodes (~8–41 elements).
+    @MainActor
+    private func wakeUpWebContent(
+        appElement: Element,
+        pid: pid_t,
+        maxDepth: Int,
+        maxCount: Int,
+        collected: inout [DetectedElement],
+        counter: inout Int,
+        warnings: inout [String]
+    ) async {
+        let appAX = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(appAX, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(appAX, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        warnings.append("ax_manual_accessibility_set")
+        warnings.append("web_wakeup_attempted_3x")
+
+        for _ in 0..<3 {
+            if let webArea = findWebArea(appElement, maxDepth: 8) {
+                _ = try? webArea.performAction(.press)
+                // Drive focus into the web area so Blink schedules a full AX sync.
+                AXUIElementSetAttributeValue(
+                    webArea.underlyingElement,
+                    kAXFocusedAttribute as CFString,
+                    kCFBooleanTrue
+                )
+                try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
+                collected = []
+                counter = 0
+                walkTree(appElement, depth: 0, maxDepth: maxDepth, maxCount: maxCount, parentFrame: nil, collected: &collected, counter: &counter, parentId: nil)
+            }
+        }
+    }
+
     @MainActor
     private func walkTree(
         _ element: Element,
         depth: Int,
         maxDepth: Int,
         maxCount: Int,
+        parentFrame: CGRect?,
         collected: inout [DetectedElement],
         counter: inout Int,
         parentId: String?
@@ -185,12 +231,27 @@ public final class ElementDetectionService: @unchecked Sendable {
         }
 
         let isTooSmall = bounds.width < 5 && bounds.height < 5
+
+        // AXGroup / AXGenericElement: reject elements that fill >90% of their parent —
+        // those are transparent overlay containers, not meaningful UI nodes.
+        let isContainerRole = Self.requiresLabelRoles.contains(role)
+        let fillsParent: Bool = {
+            guard isContainerRole, let pf = parentFrame, pf.width > 0, pf.height > 0 else { return false }
+            let areaRatio = (bounds.width * bounds.height) / (pf.width * pf.height)
+            return areaRatio > 0.9
+        }()
+
         let isActionable = Self.actionableRoles.contains(role)
         let hasContent = (title != nil && !title!.isEmpty) || (desc != nil && !desc!.isEmpty) || (value != nil && !value!.isEmpty)
 
-        if !isTooSmall && (isActionable || hasContent) {
+        // Container roles are only useful when they carry a visible label.
+        let passesContainerFilter = !isContainerRole || (hasContent && !fillsParent)
+
+        let currentFrame = frame  // pass down so children can check against parent
+
+        if !isTooSmall && passesContainerFilter && (isActionable || hasContent) {
             counter += 1
-            let elemId = "elem_\(counter)"
+            let elemId = "ax_\(counter)"
             let label = title ?? desc ?? value ?? ""
             collected.append(DetectedElement(
                 id: elemId,
@@ -212,7 +273,7 @@ public final class ElementDetectionService: @unchecked Sendable {
                 if let children = element.children() {
                     for child in children {
                         guard collected.count < maxCount else { break }
-                        walkTree(child, depth: depth + 1, maxDepth: maxDepth, maxCount: maxCount, collected: &collected, counter: &counter, parentId: elemId)
+                        walkTree(child, depth: depth + 1, maxDepth: maxDepth, maxCount: maxCount, parentFrame: currentFrame, collected: &collected, counter: &counter, parentId: elemId)
                     }
                 }
             }
@@ -221,22 +282,11 @@ public final class ElementDetectionService: @unchecked Sendable {
                 if let children = element.children() {
                     for child in children {
                         guard collected.count < maxCount else { break }
-                        walkTree(child, depth: depth + 1, maxDepth: maxDepth, maxCount: maxCount, collected: &collected, counter: &counter, parentId: parentId)
+                        walkTree(child, depth: depth + 1, maxDepth: maxDepth, maxCount: maxCount, parentFrame: currentFrame ?? parentFrame, collected: &collected, counter: &counter, parentId: parentId)
                     }
                 }
             }
         }
-    }
-
-    @MainActor
-    private func shouldAttemptWebFocus(_ elements: [DetectedElement], pid: pid_t) -> Bool {
-        let hasTextField = elements.contains { $0.role == "AXTextField" || $0.role == "AXTextArea" }
-        if hasTextField { return false }
-        guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
-        if let bundleId = app.bundleIdentifier, Self.chromiumBundleIds.contains(bundleId) {
-            return true
-        }
-        return false
     }
 
     @MainActor
