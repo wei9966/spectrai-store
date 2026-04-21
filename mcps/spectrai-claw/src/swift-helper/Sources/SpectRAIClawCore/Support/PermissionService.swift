@@ -1,8 +1,19 @@
-// TODO: Check and prompt for screen recording (CGPreflightScreenCaptureAccess)
-// and accessibility (AXIsProcessTrustedWithOptions) permissions at daemon start.
-
 import Foundation
+import CoreGraphics
+import ApplicationServices
 
-internal enum PermissionService {
-    // Placeholder.
+public enum PermissionService {
+    public static func screenRecording() -> Bool {
+        CGPreflightScreenCaptureAccess()
+    }
+
+    public static func accessibility() -> Bool {
+        AXIsProcessTrustedWithOptions(
+            [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): false] as CFDictionary
+        )
+    }
+
+    public static func currentStatus() -> [String: Bool] {
+        ["screenRecording": screenRecording(), "accessibility": accessibility()]
+    }
 }
