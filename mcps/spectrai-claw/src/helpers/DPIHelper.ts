@@ -1,67 +1,92 @@
-import { runPowerShell } from './PowerShellRunner.js'
+/**
+ * macOS coordinate scaling helper aligned with Anthropic computer-use-demo.
+ *
+ * NOTE: This replaces the previous Windows DPI helper implementation.
+ */
+export const SCALING_TARGETS = [
+  { name: 'XGA', width: 1024, height: 768 },
+  { name: 'WXGA', width: 1280, height: 800 },
+  { name: 'FWXGA', width: 1366, height: 768 },
+] as const
 
-export interface ScreenInfo {
-  width: number
-  height: number
-  dpiX: number
-  dpiY: number
-  scaleFactor: number
+export type ScalingSource = 'api' | 'computer'
+
+export type ScalingTarget = (typeof SCALING_TARGETS)[number]
+
+export interface ScalingResult {
+  x: number
+  y: number
+  scale: number
+  target: ScalingTarget | null
 }
 
-let cachedScreenInfo: ScreenInfo | null = null
+const ASPECT_RATIO_TOLERANCE = 0.02
 
-export async function getScreenInfo(): Promise<ScreenInfo> {
-  if (cachedScreenInfo) return cachedScreenInfo
-
-  const script = `
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$screen = [System.Windows.Forms.Screen]::PrimaryScreen
-$bounds = $screen.Bounds
-$g = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
-$dpiX = $g.DpiX
-$dpiY = $g.DpiY
-$g.Dispose()
-@{
-  Width = $bounds.Width
-  Height = $bounds.Height
-  DpiX = $dpiX
-  DpiY = $dpiY
-  ScaleFactor = $dpiX / 96.0
-} | ConvertTo-Json
-`
-
-  const result = await runPowerShell(script)
-  if (result.exitCode !== 0) {
-    throw new Error(`Failed to get screen info: ${result.stderr}`)
+/**
+ * 计算给 AI 用的截图目标尺寸。
+ * 返回 null 表示不需要缩放（屏幕与训练分辨率比例不匹配，或小于最小 target）。
+ */
+export function selectScalingTarget(screenWidth: number, screenHeight: number): ScalingTarget | null {
+  if (screenWidth <= 0 || screenHeight <= 0) {
+    return null
   }
 
-  const data = JSON.parse(result.stdout)
-  cachedScreenInfo = {
-    width: data.Width,
-    height: data.Height,
-    dpiX: data.DpiX,
-    dpiY: data.DpiY,
-    scaleFactor: data.ScaleFactor,
+  const screenAspectRatio = screenWidth / screenHeight
+
+  const matchingTargets = SCALING_TARGETS.filter((target) => {
+    const targetAspectRatio = target.width / target.height
+    const aspectRatioDiff = Math.abs(targetAspectRatio - screenAspectRatio)
+
+    return aspectRatioDiff < ASPECT_RATIO_TOLERANCE && target.width <= screenWidth
+  })
+
+  if (matchingTargets.length === 0) {
+    return null
   }
 
-  return cachedScreenInfo
+  return matchingTargets.reduce((best, current) => {
+    return current.width > best.width ? current : best
+  })
 }
 
-export function logicalToPhysical(x: number, y: number, scaleFactor: number): { x: number; y: number } {
+/**
+ * 在 "AI 看到的坐标"（target dim）和 "真实屏幕坐标"（screen dim）之间转换。
+ * source='api'：输入坐标来自 AI，放大到真实分辨率（用于实际 click）。
+ * source='computer'：输入坐标来自真实屏幕，缩小到 AI 分辨率（用于截图标注）。
+ */
+export function scaleCoordinates(
+  source: ScalingSource,
+  x: number,
+  y: number,
+  screenWidth: number,
+  screenHeight: number,
+): ScalingResult {
+  const target = selectScalingTarget(screenWidth, screenHeight)
+
+  if (!target) {
+    return {
+      x: Math.round(x),
+      y: Math.round(y),
+      scale: 1,
+      target: null,
+    }
+  }
+
+  const scale = target.width / screenWidth
+
+  if (source === 'api') {
+    return {
+      x: Math.round(x / scale),
+      y: Math.round(y / scale),
+      scale,
+      target,
+    }
+  }
+
   return {
-    x: Math.round(x * scaleFactor),
-    y: Math.round(y * scaleFactor),
+    x: Math.round(x * scale),
+    y: Math.round(y * scale),
+    scale,
+    target,
   }
-}
-
-export function physicalToLogical(x: number, y: number, scaleFactor: number): { x: number; y: number } {
-  return {
-    x: Math.round(x / scaleFactor),
-    y: Math.round(y / scaleFactor),
-  }
-}
-
-export function clearCache(): void {
-  cachedScreenInfo = null
 }
