@@ -1,53 +1,101 @@
 # SpectrAI Claw
 
-桌面自动化 MCP Server，为 AI 提供操控桌面的能力。
+跨平台桌面自动化 MCP Server，macOS 端已升级为常驻 daemon 架构（Node.js 长连接 Swift daemon）。
 
-## 功能
+## 架构图
 
-- **截图** — 全屏/区域截图，自动标注可交互元素
-- **鼠标操控** — 点击、移动、滚轮
-- **键盘操控** — 打字、按键、快捷键组合
-- **UIA 自动化** — Windows UI Automation 元素查找与树结构获取
-- **窗口管理** — 列表、聚焦、关闭窗口
-- **Shell 执行** — cmd / PowerShell 命令执行
-- **文件操作** — 读写文件、目录列举
-
-## 工具列表（22 个）
-
-| 工具 | 说明 |
-|------|------|
-| screenshot | 截屏并自动标注 UI 元素 |
-| zoom_screenshot | 区域放大截图，带坐标网格 |
-| click_element | 点击标注编号的元素 |
-| screenshot_click | 按百分比位置点击 |
-| mouse_click | 精确坐标点击 |
-| mouse_move | 移动光标 |
-| mouse_scroll | 滚轮滚动 |
-| keyboard_type | 输入文本 |
-| keyboard_press | 按键 |
-| keyboard_hotkey | 快捷键组合 |
-| uia_find_element | UIA 元素查找 |
-| uia_get_tree | UIA 元素树 |
-| window_list | 列出窗口 |
-| window_focus | 聚焦窗口 |
-| window_close | 关闭窗口 |
-| get_screen_info | 获取屏幕信息 |
-| shell_execute | 执行 cmd 命令 |
-| shell_powershell | 执行 PowerShell |
-| file_read | 读取文件 |
-| file_write | 写入文件 |
-| file_list | 列举目录 |
-| ping | 连通性检查 |
+```text
+AI Agent
+   │
+   │ MCP Tool Call
+   ▼
+Node.js MCP Server
+   │
+   │ zod 校验 / 参数转换
+   ▼
+DaemonClient (Unix socket)
+   │
+   ▼
+Swift daemon (spectrai-claw-helper)
+   │
+   ├─ AXorcist (Accessibility)
+   ├─ ScreenCaptureKit + CoreGraphics
+   └─ CGEvent (mouse / keyboard)
+```
 
 ## 安装
+
+### 从源码构建
 
 ```bash
 cd mcps/spectrai-claw
 npm install
-npm start
+npm run build:all
 ```
 
-## 平台要求
+### 运行要求
 
-- Windows 10/11
-- Node.js >= 18
+- macOS 14+
+- Node.js 18+
+- Xcode Command Line Tools（或完整 Xcode）
+- 首次运行会触发系统权限请求：
+  - Screen Recording
+  - Accessibility
+
+## MCP 工具（macOS daemon 路径）
+
+| 工具 | 用途 | 关键参数 |
+|---|---|---|
+| `describe_screen` | 截图 + AX 扫描 + SoM 标注 | `target?`, `annotated?`, `allow_web_focus?` |
+| `click` | 点击元素或坐标 | `element_id`（优先）, `snapshot_id?`, `x?`, `y?` |
+| `type_text` | Unicode 输入（中文可用） | `text`, `element_id?`, `snapshot_id?` |
+| `hotkey` | 发送组合键 | `keys[]`, `hold_ms?` |
+| `scroll` | 滚轮滚动 | `direction`, `amount`, `x?`, `y?` |
+| `list_apps` | 列出运行中的应用 | - |
+| `activate_app` | 激活应用到前台 | `bundle_id` 或 `name` |
+
+## 性能数据（估计值）
+
+> 以下数据为 **估计值**，用于说明架构收益；属于本地环境观察与工程估算，后续可补充统一基准测试报告。
+
+| 操作 | 旧架构（execFileSync） | 新架构（daemon） | 比值 |
+|---|---:|---:|---:|
+| ping | N/A | ~1ms | - |
+| listApplications | ~150ms | ~5ms | ~30x |
+| captureScreen (full) | ~200ms | ~80ms | ~2.5x |
+| AX tree scan（cached） | ~800ms | ~3ms | ~240x |
+
+## daemon 管理
+
+- 自动拉起：`DaemonLifecycle.ensure()` 会先尝试连接，失败时自动 spawn daemon。
+- 手动启动：
+
+```bash
+./src/swift-helper/.build/release/spectrai-claw-helper daemon run --socket <path>
+```
+
+- 默认 socket：`~/Library/Application Support/spectrai-claw/claw.sock`
+- 健康检查（推荐）：
+
+```bash
+node scripts/smoke-daemon.mjs
+```
+
+- 低层协议见：`docs/ipc-protocol.md`
+
+## 综合测试
+
+```bash
+# 单测（mock socket）
+npm run test:daemon-client
+
+# E2E（真实 spawn daemon）
+npm run test:e2e
+```
+
+## 已知局限
+
+- 仅 macOS 14+（依赖 ScreenCaptureKit）
+- Windows 端当前仍为旧路径，尚未迁移到 daemon 架构
+- Chrome / Electron 首次 `detectElements` 可能有约 150ms 额外延迟（AX Web 唤醒）
+- 在仅 Xcode CLT 环境下，`swift test` 可能不可用（建议完整 Xcode.app）
