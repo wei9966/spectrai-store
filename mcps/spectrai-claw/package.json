@@ -12,7 +12,8 @@
     "build:swift": "cd src/swift-helper && swift build -c release",
     "build:all": "npm run build && ([ $(uname) = 'Darwin' ] && npm run build:swift || true)",
     "dev": "npx tsx src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test:daemon-client": "node --test src/helpers/__tests__/DaemonClient.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

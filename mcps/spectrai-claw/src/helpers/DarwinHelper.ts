@@ -6,6 +6,8 @@ import { execFileSync, execFile } from 'child_process'
 import { existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { DaemonClient } from './DaemonClient.js'
+import { DaemonLifecycle } from './DaemonLifecycle.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -31,6 +33,31 @@ function getHelperPath(): string {
     helperPath = findHelper()
   }
   return helperPath
+}
+
+function findDaemonHelperBinary(): string {
+  for (const p of HELPER_PATHS) {
+    if (existsSync(p)) return p
+  }
+  return HELPER_PATHS[0]
+}
+
+let daemonLifecycle: DaemonLifecycle | null = null
+export let daemonClient: DaemonClient | null = null
+
+export async function getDaemonClient(): Promise<DaemonClient> {
+  if (daemonClient) {
+    return daemonClient
+  }
+
+  if (!daemonLifecycle) {
+    daemonLifecycle = new DaemonLifecycle({
+      helperBinary: findDaemonHelperBinary(),
+    })
+  }
+
+  daemonClient = await daemonLifecycle.ensure()
+  return daemonClient
 }
 
 export interface DarwinResult {
@@ -127,6 +154,7 @@ export function callHelperAsync(
 }
 
 // Convenience functions for common operations
+// TODO(T9): replace execFileSync calls with daemonClient.call()
 export const darwin = {
   screenshot(options?: {
     region?: string
