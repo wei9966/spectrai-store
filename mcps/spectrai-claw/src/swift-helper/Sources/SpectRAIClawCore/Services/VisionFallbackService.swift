@@ -29,7 +29,8 @@ public enum VisionFallbackService {
         captureSize: CGSize,
         existingBounds: [CGRect] = [],
         languages: [String] = ["zh-Hans", "en-US"],
-        maxElements: Int = 200
+        maxElements: Int = 200,
+        excludeRegions: [CGRect] = []
     ) async throws -> [VisionDetectedElement] {
         guard FileManager.default.fileExists(atPath: imagePath) else {
             throw VisionFallbackError.imageNotFound("Image not found: \(imagePath)")
@@ -43,11 +44,18 @@ public enum VisionFallbackService {
             throw VisionFallbackError.imageLoadFailed("Could not load PNG: \(imagePath)")
         }
 
-        let imgW = CGFloat(cgImage.width)
-        let imgH = CGFloat(cgImage.height)
+        let visionImage = applyExclusionMask(
+            to: cgImage,
+            excludeRegions: excludeRegions,
+            captureOrigin: captureOrigin,
+            captureSize: captureSize
+        ) ?? cgImage
 
-        async let ocrResults = runOCR(cgImage: cgImage, languages: languages)
-        async let rectResults = runRectangleDetection(cgImage: cgImage)
+        let imgW = CGFloat(visionImage.width)
+        let imgH = CGFloat(visionImage.height)
+
+        async let ocrResults = runOCR(cgImage: visionImage, languages: languages)
+        async let rectResults = runRectangleDetection(cgImage: visionImage)
 
         let ocrObs = (try? await ocrResults) ?? []
         let rectObs = (try? await rectResults) ?? []
@@ -186,6 +194,70 @@ public enum VisionFallbackService {
                 cont.resume(throwing: error)
             }
         }
+    }
+
+    private static func applyExclusionMask(
+        to cgImage: CGImage,
+        excludeRegions: [CGRect],
+        captureOrigin: CGPoint,
+        captureSize: CGSize
+    ) -> CGImage? {
+        guard !excludeRegions.isEmpty, captureSize.width > 0, captureSize.height > 0 else {
+            return cgImage
+        }
+
+        let imgW = CGFloat(cgImage.width)
+        let imgH = CGFloat(cgImage.height)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: cgImage.width,
+            height: cgImage.height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        let imageRect = CGRect(x: 0, y: 0, width: imgW, height: imgH)
+        context.draw(cgImage, in: imageRect)
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+
+        for region in excludeRegions {
+            let imageRegion = screenRectToImageRect(
+                region,
+                captureOrigin: captureOrigin,
+                captureSize: captureSize,
+                imageWidth: imgW,
+                imageHeight: imgH
+            ).intersection(imageRect)
+            if !imageRegion.isNull, !imageRegion.isEmpty {
+                context.fill(imageRegion)
+            }
+        }
+
+        return context.makeImage()
+    }
+
+    private static func screenRectToImageRect(
+        _ rect: CGRect,
+        captureOrigin: CGPoint,
+        captureSize: CGSize,
+        imageWidth: CGFloat,
+        imageHeight: CGFloat
+    ) -> CGRect {
+        let scaleX = imageWidth / captureSize.width
+        let scaleY = imageHeight / captureSize.height
+
+        let x = (rect.origin.x - captureOrigin.x) * scaleX
+        let yTop = (rect.origin.y - captureOrigin.y) * scaleY
+        let width = rect.width * scaleX
+        let height = rect.height * scaleY
+        let y = imageHeight - yTop - height
+
+        return CGRect(x: x, y: y, width: width, height: height)
     }
 
     // MARK: - Coordinate Conversion

@@ -35,6 +35,7 @@ public final class ElementDetectionService: @unchecked Sendable {
         let pid: pid_t?
         let allowWebFocus: Bool
         let mode: DetectionMode
+        let captureMaxWidth: Int?
     }
 
     private struct CacheEntry {
@@ -84,9 +85,11 @@ public final class ElementDetectionService: @unchecked Sendable {
         allowWebFocus: Bool = true,
         maxDepth: Int = 12,
         maxCount: Int = 500,
-        mode: DetectionMode = .auto
+        mode: DetectionMode = .auto,
+        captureMaxWidth: Int? = nil
     ) async throws -> ElementDetectionResult {
         var warnings: [String] = []
+        let effectiveCaptureMaxWidth = captureMaxWidth ?? 1280
 
         let targetPid: pid_t
         if let p = pid {
@@ -97,11 +100,22 @@ public final class ElementDetectionService: @unchecked Sendable {
             throw ElementDetectionError.axFailure("No frontmost application")
         }
 
-        let cacheKey = CacheKey(windowId: windowId, pid: targetPid, allowWebFocus: allowWebFocus, mode: mode)
+        let cacheKey = CacheKey(
+            windowId: windowId,
+            pid: targetPid,
+            allowWebFocus: allowWebFocus,
+            mode: mode,
+            captureMaxWidth: captureMaxWidth
+        )
         if let cached = cache[cacheKey], Date().timeIntervalSince(cached.timestamp) < cacheTTL {
             warnings.append("ax_cache_hit")
             let app = NSRunningApplication(processIdentifier: targetPid)
-            let screenshotResult = try await ScreenCaptureService.captureScreen()
+            let screenshotResult = try await ScreenCaptureService.captureScreen(maxWidth: effectiveCaptureMaxWidth)
+            Self.appendScreenshotResizedWarningIfNeeded(
+                screenshotResult,
+                requestedMaxWidth: captureMaxWidth,
+                warnings: &warnings
+            )
             return ElementDetectionResult(
                 snapshotId: nil,
                 screenshotPath: screenshotResult.path,
@@ -136,29 +150,17 @@ public final class ElementDetectionService: @unchecked Sendable {
             windowBounds = nil
         }
 
-        let screenshotResult = try await ScreenCaptureService.captureScreen()
+        let screenshotResult = try await ScreenCaptureService.captureScreen(maxWidth: effectiveCaptureMaxWidth)
+        Self.appendScreenshotResizedWarningIfNeeded(
+            screenshotResult,
+            requestedMaxWidth: captureMaxWidth,
+            warnings: &warnings
+        )
 
-        // S9: kick off concurrent tasks for ax_plus_* modes before AX scan
-        let visionParallelHandle: Task<[VisionDetectedElement], Never>?
+        // S10: keep CDP parallel path, but switch ax_plus_vision to serial AX -> masked Vision.
         let cdpParallelHandle: Task<[DetectedElement], Never>?
 
-        if mode == .ax_plus_vision {
-            let path = screenshotResult.path
-            let origin = screenshotResult.displayBounds.origin
-            let size = screenshotResult.displayBounds.size
-            let mc = maxCount
-            visionParallelHandle = Task.detached {
-                return (try? await VisionFallbackService.detect(
-                    imagePath: path,
-                    captureOrigin: origin,
-                    captureSize: size,
-                    existingBounds: [],
-                    maxElements: mc
-                )) ?? []
-            }
-            cdpParallelHandle = nil
-            warnings.append("parallel_detection")
-        } else if mode == .ax_plus_cdp {
+        if mode == .ax_plus_cdp {
             let pid = targetPid
             let mc = maxCount
             let wb = windowBounds
@@ -175,11 +177,12 @@ public final class ElementDetectionService: @unchecked Sendable {
                 )
                 return elements?.map { $0.toDetected() } ?? []
             }
-            visionParallelHandle = nil
             warnings.append("parallel_detection")
         } else {
-            visionParallelHandle = nil
             cdpParallelHandle = nil
+            if mode == .ax_plus_vision {
+                warnings.append("serial_ax_then_masked_vision")
+            }
         }
 
         // Phase 1: AX detection (skip for cdp_only / vision_only)
@@ -241,14 +244,31 @@ public final class ElementDetectionService: @unchecked Sendable {
             break
 
         case .ax_plus_vision:
-            // Await concurrent vision task (started before AX scan), merge with IoU dedup
-            if let handle = visionParallelHandle {
-                let visionElements = await handle.value
+            let remaining = maxCount - collected.count
+            guard remaining > 0 else { break }
+
+            let axRects = collected.map {
+                CGRect(x: $0.bounds.x, y: $0.bounds.y, width: $0.bounds.width, height: $0.bounds.height)
+            }
+            let excludeRegions = axRects.count >= 10 ? axRects : []
+            warnings.append("vision_with_ax_mask_\(excludeRegions.count)")
+
+            do {
+                let visionElements = try await VisionFallbackService.detect(
+                    imagePath: screenshotResult.path,
+                    captureOrigin: screenshotResult.displayBounds.origin,
+                    captureSize: screenshotResult.displayBounds.size,
+                    existingBounds: axRects,
+                    maxElements: remaining,
+                    excludeRegions: excludeRegions
+                )
                 let filtered = visionElements.filter { v in
                     !collected.contains { ax in Self.iou(v.bounds, ax.bounds) >= 0.5 }
                 }
                 warnings.append("vision_supplemented_\(filtered.count)")
                 collected.append(contentsOf: filtered.map { $0.toDetected() })
+            } catch {
+                warnings.append("vision_failed_\(error.localizedDescription)")
             }
 
         case .ax_plus_cdp:
@@ -430,6 +450,18 @@ public final class ElementDetectionService: @unchecked Sendable {
         } catch {
             warnings.append("vision_failed_\(error.localizedDescription)")
             return nil
+        }
+    }
+
+    private static func appendScreenshotResizedWarningIfNeeded(
+        _ screenshot: ScreenCaptureService.CaptureResult,
+        requestedMaxWidth: Int?,
+        warnings: inout [String]
+    ) {
+        guard requestedMaxWidth == nil else { return }
+        let nativeWidth = Int(round(screenshot.displayBounds.width * 2))
+        if screenshot.width < nativeWidth {
+            warnings.append("screenshot_resized_1280")
         }
     }
 
