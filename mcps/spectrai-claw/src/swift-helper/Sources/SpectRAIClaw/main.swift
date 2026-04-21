@@ -3,6 +3,7 @@ import CoreGraphics
 import AppKit
 import Vision
 import ApplicationServices
+import SpectRAIClawCore
 
 // MARK: - JSON Output Helpers
 
@@ -957,6 +958,50 @@ func cmdAxActions(args: [String]) {
     ])
 }
 
+// MARK: - Daemon Helpers
+
+func defaultSocketPath() -> String {
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+    let dir = appSupport.appendingPathComponent("spectrai-claw")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir.appendingPathComponent("claw.sock").path
+}
+
+func cmdDaemon(args: [String]) -> Never {
+    guard let subcommand = args.first else {
+        errorExit("Usage: spectrai-claw-helper daemon <run|status|stop> [options]")
+    }
+
+    let daemonArgs = Array(args.dropFirst())
+
+    switch subcommand {
+    case "run":
+        let socketPath = getArg("socket", args: daemonArgs) ?? defaultSocketPath()
+        Task {
+            do {
+                try await runDaemon(socketPath: socketPath)
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("Daemon failed: \(error)\n".utf8))
+                exit(1)
+            }
+        }
+        RunLoop.main.run()
+        exit(0)
+    case "status":
+        let socketPath = getArg("socket", args: daemonArgs) ?? defaultSocketPath()
+        jsonOutput(["status": "use-ts-client", "socketPath": socketPath])
+        exit(0)
+    case "stop":
+        let socketPath = getArg("socket", args: daemonArgs) ?? defaultSocketPath()
+        jsonOutput(["stop": "use-ts-client", "socketPath": socketPath])
+        exit(0)
+    default:
+        errorExit("Unknown daemon subcommand: \(subcommand). Use: run, status, stop")
+    }
+}
+
 // MARK: - Main Entry Point
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -966,6 +1011,7 @@ guard let command = arguments.first else {
     Usage: spectrai-claw-helper <command> [options]
 
     Commands:
+      daemon         Run as persistent daemon (daemon run|status|stop)
       screenshot     Capture screen, window, or region
       mouse-move     Move mouse cursor
       mouse-click    Click mouse button
@@ -989,6 +1035,8 @@ guard let command = arguments.first else {
 let subArgs = Array(arguments.dropFirst())
 
 switch command {
+case "daemon":
+    cmdDaemon(args: subArgs)
 case "screenshot":
     cmdScreenshot(args: subArgs)
 case "mouse-move":

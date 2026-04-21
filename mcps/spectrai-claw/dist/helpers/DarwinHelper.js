@@ -6,6 +6,7 @@ import { execFileSync, execFile } from 'child_process';
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { DaemonLifecycle } from './DaemonLifecycle.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 // Swift helper binary path — look for compiled binary, fall back to swift run
@@ -27,6 +28,27 @@ function getHelperPath() {
         helperPath = findHelper();
     }
     return helperPath;
+}
+function findDaemonHelperBinary() {
+    for (const p of HELPER_PATHS) {
+        if (existsSync(p))
+            return p;
+    }
+    return HELPER_PATHS[0];
+}
+let daemonLifecycle = null;
+export let daemonClient = null;
+export async function getDaemonClient() {
+    if (daemonClient) {
+        return daemonClient;
+    }
+    if (!daemonLifecycle) {
+        daemonLifecycle = new DaemonLifecycle({
+            helperBinary: findDaemonHelperBinary(),
+        });
+    }
+    daemonClient = await daemonLifecycle.ensure();
+    return daemonClient;
 }
 /**
  * Call the Swift helper with a command and arguments.
@@ -99,6 +121,7 @@ export function callHelperAsync(command, args = {}) {
     });
 }
 // Convenience functions for common operations
+// TODO(T9): replace execFileSync calls with daemonClient.call()
 export const darwin = {
     screenshot(options) {
         const args = {};

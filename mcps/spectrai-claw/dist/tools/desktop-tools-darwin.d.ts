@@ -1,1 +1,1 @@
-export declare function registerDarwinDesktopTools(): void;
+export declare function registerDarwinDesktopTools(): Promise<void>;

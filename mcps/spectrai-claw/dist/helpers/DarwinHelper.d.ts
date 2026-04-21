@@ -1,3 +1,6 @@
+import { DaemonClient } from './DaemonClient.js';
+export declare let daemonClient: DaemonClient | null;
+export declare function getDaemonClient(): Promise<DaemonClient>;
 export interface DarwinResult {
     success: boolean;
     data?: any;
