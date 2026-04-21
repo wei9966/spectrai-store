@@ -45,6 +45,7 @@ public final class ElementDetectionService: @unchecked Sendable {
 
     private var cache: [CacheKey: CacheEntry] = [:]
     private let cacheTTL: TimeInterval = 1.5
+    private let autoVisionSkipThreshold = 50
 
     // Extended role set: added web/container roles alongside standard actionable roles.
     private static let actionableRoles: Set<String> = [
@@ -218,6 +219,7 @@ public final class ElementDetectionService: @unchecked Sendable {
         switch mode {
         case .auto:
             let actionableCount = collected.filter(\.isActionable).count
+            let axElementCount = collected.count
             if actionableCount < 15 {
                 var supplemented = false
                 if isCdpCapable {
@@ -230,7 +232,9 @@ public final class ElementDetectionService: @unchecked Sendable {
                     }
                 }
                 if !supplemented {
-                    if let extras = await supplementWithVision(
+                    if axElementCount >= autoVisionSkipThreshold {
+                        warnings.append("auto_skipped_vision_ax_count_\(axElementCount)")
+                    } else if let extras = await supplementWithVision(
                         screenshotPath: screenshotResult.path,
                         displayBounds: screenshotResult.displayBounds,
                         existing: collected, maxCount: maxCount, warnings: &warnings
