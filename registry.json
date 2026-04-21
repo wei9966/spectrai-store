@@ -4,15 +4,19 @@
     {
       "name": "spectrai-claw",
       "displayName": "SpectrAI Claw",
-      "description": "跨平台桌面自动化 MCP Server，支持截图、鼠标键盘操控、UI 元素识别(Windows UIA / macOS Accessibility)、窗口管理、Shell 执行、OCR；三路检测：AX 主路 + Vision OCR 兵底 + CDP 浏览器专路",
-      "version": "0.2.0",
+      "description": "跨平台桌面自动化 MCP Server。macOS 端常驻 Swift daemon（Unix socket + AXorcist + ScreenCaptureKit），三路检测：AX 主路 + Vision OCR 兵底 + CDP 浏览器专路；Windows 端仍走 UIA + PowerShell。支持截图、鼠标键盘、元素识别、窗口管理、应用激活。",
+      "version": "0.4.0",
       "path": "mcps/spectrai-claw",
       "command": "node",
       "args": ["dist/index.js"],
       "transport": "stdio",
       "category": "automation",
       "platform": ["win32", "darwin"],
-      "tags": ["desktop", "screenshot", "mouse", "keyboard", "uia", "accessibility", "window", "ocr", "cross-platform", "vision-ocr", "cdp"],
+      "platformRequirements": {
+        "darwin": "macOS 14+, Screen Recording + Accessibility permissions",
+        "win32": "Windows 10/11, PowerShell 5.1+"
+      },
+      "tags": ["desktop", "screenshot", "mouse", "keyboard", "uia", "accessibility", "axorcist", "screencapturekit", "daemon", "vision-ocr", "cdp", "window", "cross-platform"],
       "toolCount": 22,
       "author": "wei9966",
       "homepage": "https://github.com/wei9966/spectrai-store"
