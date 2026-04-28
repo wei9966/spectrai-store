@@ -122,6 +122,7 @@ export class DaemonClient {
           requestId,
           new DaemonError("eTimeout", `Operation ${op} timed out after ${effectiveTimeoutMs}ms`),
         );
+        this.markReconnectNeeded();
       }, effectiveTimeoutMs);
 
       this.pending.set(requestId, {
@@ -290,9 +291,18 @@ export class DaemonClient {
   }
 
   private markReconnectNeeded(): void {
-    if (this.socket && !this.socket.destroyed) {
-      this.socket.destroy();
-      return;
+    const socket = this.socket;
+
+    if (socket) {
+      this.socket = null;
+      this._connected = false;
+      this.readBuffer = Buffer.alloc(0);
+      this.rejectAllPending(new DaemonError("eInternal", "Connection reset for reconnect"));
+
+      if (!socket.destroyed) {
+        socket.destroy();
+      }
+      this.onClose?.();
     }
 
     if (!this.intentionallyClosing && this.reconnectMaxAttempts > 0) {

@@ -207,13 +207,16 @@ public struct DetectedElement: Codable, Equatable, Sendable {
     public let isEnabled: Bool
     public let isActionable: Bool
     public let parentId: String?
+    /// Child-index path from AXUIElementCreateApplication(pid) to this element.
+    /// Present only for AX-sourced elements; Vision/CDP entries keep nil for protocol compatibility.
+    public let axPath: [Int]?
 
-    public init(id: String, role: String, subrole: String? = nil, label: String, title: String? = nil, value: String? = nil, description: String? = nil, identifier: String? = nil, keyboardShortcut: String? = nil, bounds: Bounds, isEnabled: Bool, isActionable: Bool, parentId: String? = nil) {
+    public init(id: String, role: String, subrole: String? = nil, label: String, title: String? = nil, value: String? = nil, description: String? = nil, identifier: String? = nil, keyboardShortcut: String? = nil, bounds: Bounds, isEnabled: Bool, isActionable: Bool, parentId: String? = nil, axPath: [Int]? = nil) {
         self.id = id; self.role = role; self.subrole = subrole; self.label = label
         self.title = title; self.value = value; self.description = description
         self.identifier = identifier; self.keyboardShortcut = keyboardShortcut
         self.bounds = bounds; self.isEnabled = isEnabled; self.isActionable = isActionable
-        self.parentId = parentId
+        self.parentId = parentId; self.axPath = axPath
     }
 }
 
@@ -295,6 +298,7 @@ public struct DetectElementsResult: Codable, Sendable {
     public let windowTitle: String?
     public let windowBounds: Bounds?
     public let warnings: [String]
+    public let processId: Int32?
 }
 
 // --- GetSnapshot ---
@@ -334,6 +338,7 @@ public struct ClickParams: Codable, Sendable {
 public struct ClickResult: Codable, Sendable {
     public let clickedAt: ClickPoint
     public let targetElement: DetectedElement?
+    public let method: String?
 }
 public struct ClickPoint: Codable, Equatable, Sendable {
     public let x: Double
@@ -350,6 +355,7 @@ public struct TypeParams: Codable, Sendable {
 }
 public struct TypeResult: Codable, Sendable {
     public let typedChars: Int
+    public let method: String?
 }
 
 // --- Hotkey ---

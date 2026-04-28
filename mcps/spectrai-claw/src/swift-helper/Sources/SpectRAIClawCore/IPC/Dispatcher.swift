@@ -117,7 +117,8 @@ public final class Dispatcher: @unchecked Sendable {
                 applicationName: result.applicationName,
                 windowTitle: result.windowTitle,
                 windowBounds: result.windowBounds,
-                warnings: result.warnings
+                warnings: result.warnings,
+                processId: result.processId
             ))
 
         case OpName.getSnapshot.rawValue:
@@ -134,7 +135,8 @@ public final class Dispatcher: @unchecked Sendable {
                 applicationName: r.applicationName,
                 windowTitle: r.windowTitle,
                 windowBounds: r.windowBounds,
-                warnings: r.warnings
+                warnings: r.warnings,
+                processId: r.processId
             ))
 
         case OpName.listSnapshots.rawValue:
@@ -151,21 +153,59 @@ public final class Dispatcher: @unchecked Sendable {
         case OpName.click.rawValue:
             let p = try decodeParams(ClickParams.self, from: request.params)
             let (point, target) = try resolveClickTarget(from: p)
+            let button = parseButton(p.button)
+            let clickType: ClickService.ClickType = p.clickCount >= 2 ? .double : .single
+            let modifiers = parseModifiers(p.modifiers)
+
+            if let sid = p.snapshotId, let eid = p.elementId,
+               button == .left, clickType == .single, modifiers.isEmpty,
+               let ref = SnapshotManager.shared.getElementReference(snapshotId: sid, elementId: eid),
+               let pid = ref.processId, let axPath = ref.element.axPath {
+                do {
+                    try NativeAXActionService.press(pid: pid, axPath: axPath, expected: ref.element)
+                    return try encodeResult(ClickResult(
+                        clickedAt: ClickPoint(x: point.x, y: point.y),
+                        targetElement: target,
+                        method: "axPress"
+                    ))
+                } catch {
+                    // Native AX actions are opportunistic; stale/unsupported elements fall back to HID click.
+                }
+            }
+
             try await ClickService.click(
                 at: point,
-                button: parseButton(p.button),
-                type: p.clickCount >= 2 ? .double : .single,
-                modifiers: parseModifiers(p.modifiers)
+                button: button,
+                type: clickType,
+                modifiers: modifiers
             )
             return try encodeResult(ClickResult(
                 clickedAt: ClickPoint(x: point.x, y: point.y),
-                targetElement: target
+                targetElement: target,
+                method: "hidClick"
             ))
 
         case OpName.type.rawValue:
             let p = try decodeParams(TypeParams.self, from: request.params)
+            let method = "hidType"
             if let sid = p.snapshotId, let eid = p.elementId,
-               let elem = SnapshotManager.shared.getElement(snapshotId: sid, elementId: eid) {
+               let ref = SnapshotManager.shared.getElementReference(snapshotId: sid, elementId: eid) {
+                if let pid = ref.processId, let axPath = ref.element.axPath {
+                    do {
+                        try NativeAXActionService.setValue(
+                            pid: pid,
+                            axPath: axPath,
+                            expected: ref.element,
+                            text: p.text,
+                            clearExisting: p.clearExisting ?? false
+                        )
+                        return try encodeResult(TypeResult(typedChars: p.text.count, method: "axSetValue"))
+                    } catch {
+                        // Fall through to the existing focus-by-click + CGEvent typing path.
+                    }
+                }
+
+                let elem = ref.element
                 let pt = CGPoint(
                     x: elem.bounds.x + elem.bounds.width / 2,
                     y: elem.bounds.y + elem.bounds.height / 2
@@ -178,7 +218,7 @@ public final class Dispatcher: @unchecked Sendable {
                 clearExisting: p.clearExisting ?? false,
                 delayMsPerChar: p.delayMsPerChar ?? 0
             )
-            return try encodeResult(TypeResult(typedChars: p.text.count))
+            return try encodeResult(TypeResult(typedChars: p.text.count, method: method))
 
         case OpName.hotkey.rawValue:
             let p = try decodeParams(HotkeyParams.self, from: request.params)

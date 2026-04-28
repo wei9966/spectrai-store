@@ -103,18 +103,17 @@ async function handleClick(client, args) {
         if (!element) {
             return errorResult(`Element "${args.element_id}" not found in snapshot "${args.snapshot_id}".`);
         }
-        const cx = element.bounds.x + element.bounds.width / 2;
-        const cy = element.bounds.y + element.bounds.height / 2;
         const result = await client.call('click', {
-            x: cx,
-            y: cy,
+            snapshotId: args.snapshot_id,
+            elementId: args.element_id,
             button,
             clickCount,
             modifiers,
         });
+        const method = result.method ? ` via ${result.method}` : '';
         return {
             content: [
-                textContent(`Clicked element [${args.element_id}] (${element.role}) at (${result.clickedAt.x}, ${result.clickedAt.y}).`),
+                textContent(`Clicked element [${args.element_id}] (${element.role}) at (${result.clickedAt.x}, ${result.clickedAt.y})${method}.`),
             ],
         };
     }
@@ -131,18 +130,17 @@ async function handleClick(client, args) {
             return errorResult(`Element matching query not found in snapshot "${args.snapshot_id}".`);
         }
         const el = waitResult.element;
-        const cx = el.bounds.x + el.bounds.width / 2;
-        const cy = el.bounds.y + el.bounds.height / 2;
         const result = await client.call('click', {
-            x: cx,
-            y: cy,
+            snapshotId: args.snapshot_id,
+            elementId: el.id,
             button,
             clickCount,
             modifiers,
         });
+        const method = result.method ? ` via ${result.method}` : '';
         return {
             content: [
-                textContent(`Clicked element [${el.id}] (${el.role}) at (${result.clickedAt.x}, ${result.clickedAt.y}).`),
+                textContent(`Clicked element [${el.id}] (${el.role}) at (${result.clickedAt.x}, ${result.clickedAt.y})${method}.`),
             ],
         };
     }
@@ -154,8 +152,9 @@ async function handleClick(client, args) {
             clickCount,
             modifiers,
         });
+        const method = result.method ? ` via ${result.method}` : '';
         const content = [
-            textContent(`Clicked at (${result.clickedAt.x}, ${result.clickedAt.y}).`),
+            textContent(`Clicked at (${result.clickedAt.x}, ${result.clickedAt.y})${method}.`),
         ];
         try {
             const verifyCapture = await client.call('captureArea', {
@@ -187,8 +186,9 @@ async function handleTypeText(client, args) {
     if (args.element_id)
         params.elementId = args.element_id;
     const result = await client.call('type', params);
+    const method = result.method ? ` via ${result.method}` : '';
     return {
-        content: [textContent(`Typed ${result.typedChars} character(s).`)],
+        content: [textContent(`Typed ${result.typedChars} character(s)${method}.`)],
     };
 }
 async function handleHotkey(client, args) {

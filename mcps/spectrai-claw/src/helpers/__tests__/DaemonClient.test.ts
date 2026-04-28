@@ -178,6 +178,42 @@ describe("DaemonClient", () => {
     await assert.rejects(client.call("ping", {}), (error: unknown) => assertDaemonErrorCode(error, "eTimeout"));
   });
 
+  it("drops a timed-out socket so later calls do not queue behind it", async () => {
+    const { dir, socketPath } = createSocketPath("timeout-recover");
+    let lastConnectionCount = 0;
+
+    const daemon = await startMockDaemon(socketPath, (request, socket, ctx) => {
+      lastConnectionCount = ctx.connectionCount;
+      if (ctx.requestCount === 1) {
+        // Simulate the Swift side being stuck on the old connection.
+        return;
+      }
+
+      writeSuccess(socket, request.id, {
+        pong: true,
+        timestamp: Date.now(),
+        daemonVersion: "1.0.0",
+      });
+    });
+
+    cleanups.push(() => daemon.close());
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+    const client = new DaemonClient({
+      socketPath,
+      defaultTimeoutMs: 60,
+      reconnectMaxAttempts: 0,
+    });
+    cleanups.push(() => client.close());
+
+    await assert.rejects(client.call("ping", {}), (error: unknown) => assertDaemonErrorCode(error, "eTimeout"));
+    assert.strictEqual(client.connected, false);
+
+    const recovered = await client.call("ping", {}, 1_000);
+    assert.strictEqual(recovered.pong, true);
+    assert.ok(lastConnectionCount >= 2);
+  });
+
   it("rejects all pending calls when connection is lost", async () => {
     const { dir, socketPath } = createSocketPath("disconnect");
 

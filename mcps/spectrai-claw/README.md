@@ -83,6 +83,16 @@ npm run build:all
 | `list_apps` | 列出运行中的应用 | - |
 | `activate_app` | 激活应用到前台 | `bundle_id` 或 `name` |
 
+### v0.4+ 原生 AX 动作优先
+
+`click` / `type_text` 在传入 `snapshot_id + element_id` 时会优先使用 macOS Accessibility 原生动作：
+
+- 左键单击且无修饰键时，先尝试 `AXUIElementPerformAction(kAXPressAction)`，成功则不会移动真实鼠标光标。
+- 文本输入命中 `AXTextField` / `AXTextArea` / `AXSearchField` 等输入元素时，先尝试 `AXFocused + AXSetValue(kAXValueAttribute)`；`clear_existing=true` 直接替换，默认追加现有值。
+- AX 元素不可重找、已 stale、action/value 不可用或失败时，自动回退到原有 CGEvent 坐标点击 / 键盘输入。
+
+这也是接近 Codex App Computer Use “后台式 / 无光标移动”体验的关键：识别仍依赖 AX 树/截图，执行优先走程序化 UI action。
+
 ## daemon 管理
 
 - 自动拉起：`DaemonLifecycle.ensure()` 会先尝试连接，失败时自动 spawn daemon。

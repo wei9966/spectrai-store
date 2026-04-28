@@ -130,21 +130,19 @@ async function handleClick(
       return errorResult(`Element "${args.element_id}" not found in snapshot "${args.snapshot_id}".`)
     }
 
-    const cx = element.bounds.x + element.bounds.width / 2
-    const cy = element.bounds.y + element.bounds.height / 2
-
     const result = await client.call('click', {
-      x: cx,
-      y: cy,
+      snapshotId: args.snapshot_id,
+      elementId: args.element_id,
       button,
       clickCount,
       modifiers,
     })
 
+    const method = result.method ? ` via ${result.method}` : ''
     return {
       content: [
         textContent(
-          `Clicked element [${args.element_id}] (${element.role}) at (${result.clickedAt.x}, ${result.clickedAt.y}).`,
+          `Clicked element [${args.element_id}] (${element.role}) at (${result.clickedAt.x}, ${result.clickedAt.y})${method}.`,
         ),
       ],
     }
@@ -168,21 +166,20 @@ async function handleClick(
     }
 
     const el = waitResult.element
-    const cx = el.bounds.x + el.bounds.width / 2
-    const cy = el.bounds.y + el.bounds.height / 2
 
     const result = await client.call('click', {
-      x: cx,
-      y: cy,
+      snapshotId: args.snapshot_id,
+      elementId: el.id,
       button,
       clickCount,
       modifiers,
     })
 
+    const method = result.method ? ` via ${result.method}` : ''
     return {
       content: [
         textContent(
-          `Clicked element [${el.id}] (${el.role}) at (${result.clickedAt.x}, ${result.clickedAt.y}).`,
+          `Clicked element [${el.id}] (${el.role}) at (${result.clickedAt.x}, ${result.clickedAt.y})${method}.`,
         ),
       ],
     }
@@ -197,8 +194,9 @@ async function handleClick(
       modifiers,
     })
 
+    const method = result.method ? ` via ${result.method}` : ''
     const content: ContentBlock[] = [
-      textContent(`Clicked at (${result.clickedAt.x}, ${result.clickedAt.y}).`),
+      textContent(`Clicked at (${result.clickedAt.x}, ${result.clickedAt.y})${method}.`),
     ]
 
     try {
@@ -233,8 +231,9 @@ async function handleTypeText(
   if (args.element_id) params.elementId = args.element_id
 
   const result = await client.call('type', params as any)
+  const method = result.method ? ` via ${result.method}` : ''
   return {
-    content: [textContent(`Typed ${result.typedChars} character(s).`)],
+    content: [textContent(`Typed ${result.typedChars} character(s)${method}.`)],
   }
 }
 

@@ -77,6 +77,7 @@ const DetectedElementSchema = z.object({
   isEnabled: z.boolean(),
   isActionable: z.boolean(),
   parentId: z.string().nullable(),
+  axPath: z.array(z.number()).nullable().optional(),
 });
 export type DetectedElement = z.infer<typeof DetectedElementSchema>;
 
@@ -96,6 +97,7 @@ const DetectElementsResultSchema = z.object({
   windowTitle: z.string().nullable(),
   windowBounds: BoundsSchema.nullable(),
   warnings: z.array(z.string()),
+  processId: z.number().nullable().optional(),
 });
 
 // --- Op definitions ---
@@ -197,6 +199,7 @@ const opDefs = {
     result: z.object({
       clickedAt: z.object({ x: z.number(), y: z.number() }),
       targetElement: DetectedElementSchema.nullable(),
+      method: z.string().optional(),
     }),
   },
   type: {
@@ -207,7 +210,7 @@ const opDefs = {
       snapshotId: z.string().optional(),
       elementId: z.string().optional(),
     }),
-    result: z.object({ typedChars: z.number() }),
+    result: z.object({ typedChars: z.number(), method: z.string().optional() }),
   },
   hotkey: {
     params: z.object({

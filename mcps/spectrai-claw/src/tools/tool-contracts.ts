@@ -239,6 +239,7 @@ const clickInputSchema = z
 const clickOutputSchema = z
   .object({
     clicked_at: pointSchema.describe('实际点击坐标（AppKit 逻辑 point）'),
+    method: z.enum(['axPress', 'hidClick']).optional().describe('实际执行方式：axPress=原生 AXPress；hidClick=坐标 CGEvent 回退'),
     target_element: z
       .object({
         id: z.string().min(1).describe('目标元素 ID'),
@@ -287,6 +288,7 @@ const typeTextInputSchema = z
 const typeTextOutputSchema = z
   .object({
     typed_chars: z.number().int().min(0).describe('实际输入字符数'),
+    method: z.enum(['axSetValue', 'hidType']).optional().describe('实际执行方式：axSetValue=原生 AX 设置值；hidType=CGEvent 键盘回退'),
     focused_element: z
       .object({
         id: z.string().min(1).describe('聚焦元素 ID'),
@@ -423,12 +425,12 @@ export const toolSchemas = {
     input: clickInputSchema,
     output: clickOutputSchema,
     description:
-      '★ STEP 2：点击 UI 元素。优先 element_id（来自 describe_screen ui_elements，is_actionable=true 优先）> query 模糊匹配 > 坐标(x,y)兜底。失败时：eSnapshotStale→重新 describe_screen；eNotFound→界面变化，重新 describe_screen。',
+      '★ STEP 2：点击 UI 元素。snapshot_id+element_id 左键单击会优先 AXPress（不移动真实光标），失败回退 HID 坐标点击；也支持 query 模糊匹配和坐标(x,y)兜底。失败时：eSnapshotStale→重新 describe_screen；eNotFound→界面变化，重新 describe_screen。',
   },
   type_text: {
     input: typeTextInputSchema,
     output: typeTextOutputSchema,
-    description: '向 UI 元素输入文本，支持 Unicode/中文，绕开 IME 直接注入。通常先 click 目标 AXTextField/AXTextArea，再传 snapshot_id+element_id 自动 focus+输入。web 表单有限流时设 delay_ms_per_char=5-20。',
+    description: '向 UI 元素输入文本，支持 Unicode/中文。snapshot_id+element_id 指向 AXTextField/AXTextArea/AXSearchField 时优先 AXFocused+AXSetValue（不移动光标），失败回退点击聚焦+CGEvent 键盘输入。web 表单有限流时设 delay_ms_per_char=5-20。',
   },
   hotkey: {
     input: hotkeyInputSchema,

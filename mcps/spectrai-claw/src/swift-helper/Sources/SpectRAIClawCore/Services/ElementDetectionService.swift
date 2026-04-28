@@ -27,6 +27,29 @@ public struct ElementDetectionResult: Sendable {
     public let windowTitle: String?
     public let windowBounds: Bounds?
     public let warnings: [String]
+    public let processId: Int32?
+
+    public init(
+        snapshotId: String?,
+        screenshotPath: String,
+        annotatedPath: String?,
+        elements: [DetectedElement],
+        applicationName: String?,
+        windowTitle: String?,
+        windowBounds: Bounds?,
+        warnings: [String],
+        processId: Int32? = nil
+    ) {
+        self.snapshotId = snapshotId
+        self.screenshotPath = screenshotPath
+        self.annotatedPath = annotatedPath
+        self.elements = elements
+        self.applicationName = applicationName
+        self.windowTitle = windowTitle
+        self.windowBounds = windowBounds
+        self.warnings = warnings
+        self.processId = processId
+    }
 }
 
 public final class ElementDetectionService: @unchecked Sendable {
@@ -46,6 +69,27 @@ public final class ElementDetectionService: @unchecked Sendable {
     private var cache: [CacheKey: CacheEntry] = [:]
     private let cacheTTL: TimeInterval = 1.5
     private let autoVisionSkipThreshold = 50
+    private let axMessagingTimeout: Float = 0.4
+    private let axScanBudgetSeconds: TimeInterval = 6.0
+    private let axWakeBudgetSeconds: TimeInterval = 2.5
+
+    private final class AXScanBudget {
+        let deadline: Date
+        private(set) var deadlineExceeded = false
+
+        init(seconds: TimeInterval) {
+            self.deadline = Date().addingTimeInterval(seconds)
+        }
+
+        func shouldContinue() -> Bool {
+            if deadlineExceeded { return false }
+            if Date() >= deadline {
+                deadlineExceeded = true
+                return false
+            }
+            return true
+        }
+    }
 
     // Extended role set: added web/container roles alongside standard actionable roles.
     private static let actionableRoles: Set<String> = [
@@ -128,13 +172,14 @@ public final class ElementDetectionService: @unchecked Sendable {
                 applicationName: app?.localizedName,
                 windowTitle: nil,
                 windowBounds: nil,
-                warnings: warnings
+                warnings: warnings,
+                processId: targetPid
             )
         }
 
         let rawAppElement = AXUIElementCreateApplication(targetPid)
-        AXUIElementSetMessagingTimeout(rawAppElement, 3.0)
-        warnings.append("ax_timeout_set_3s")
+        AXUIElementSetMessagingTimeout(rawAppElement, axMessagingTimeout)
+        warnings.append("ax_timeout_set_0.4s")
         let appElement = Element(rawAppElement)
         let appName = NSRunningApplication(processIdentifier: targetPid)?.localizedName
         let bundleId = NSRunningApplication(processIdentifier: targetPid)?.bundleIdentifier ?? ""
@@ -194,9 +239,24 @@ public final class ElementDetectionService: @unchecked Sendable {
         let needsAX = mode != .cdp_only && mode != .vision_only
         if needsAX {
             var counter = 0
-            walkTree(appElement, depth: 0, maxDepth: maxDepth, maxCount: maxCount, parentFrame: nil, collected: &collected, counter: &counter, parentId: nil)
+            let initialBudget = AXScanBudget(seconds: axScanBudgetSeconds)
+            walkTree(
+                appElement,
+                depth: 0,
+                maxDepth: maxDepth,
+                maxCount: maxCount,
+                parentFrame: nil,
+                collected: &collected,
+                counter: &counter,
+                parentId: nil,
+                axPath: [],
+                budget: initialBudget
+            )
+            if initialBudget.deadlineExceeded {
+                warnings.append("ax_deadline_exceeded_initial")
+            }
 
-            if allowWebFocus {
+            if allowWebFocus && !initialBudget.deadlineExceeded {
                 await wakeUpWebContent(
                     appElement: appElement,
                     pid: targetPid,
@@ -330,7 +390,8 @@ public final class ElementDetectionService: @unchecked Sendable {
             applicationName: appName,
             windowTitle: windowTitle,
             windowBounds: windowBounds,
-            warnings: warnings
+            warnings: warnings,
+            processId: targetPid
         )
     }
 
@@ -529,16 +590,18 @@ public final class ElementDetectionService: @unchecked Sendable {
         warnings: inout [String]
     ) async {
         let appAX = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(appAX, 3.0)
+        AXUIElementSetMessagingTimeout(appAX, axMessagingTimeout)
         AXUIElementSetAttributeValue(appAX, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(appAX, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
         warnings.append("ax_manual_accessibility_set")
 
+        let wakeBudget = AXScanBudget(seconds: axWakeBudgetSeconds)
         var iteration = 0
         var prevCount = -1
         for i in 0..<3 {
+            guard wakeBudget.shouldContinue() else { break }
             iteration = i
-            if let webArea = findWebArea(appElement, maxDepth: 8) {
+            if let webArea = findWebArea(appElement, maxDepth: 8, budget: wakeBudget) {
                 _ = try? webArea.performAction(.press)
                 // Drive focus into the web area so Blink schedules a full AX sync.
                 AXUIElementSetAttributeValue(
@@ -546,15 +609,35 @@ public final class ElementDetectionService: @unchecked Sendable {
                     kAXFocusedAttribute as CFString,
                     kCFBooleanTrue
                 )
-                guard !Task.isCancelled else { break }
+                guard !Task.isCancelled, wakeBudget.shouldContinue() else { break }
                 try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
-                collected = []
-                counter = 0
-                walkTree(appElement, depth: 0, maxDepth: maxDepth, maxCount: maxCount, parentFrame: nil, collected: &collected, counter: &counter, parentId: nil)
+                let previousCount = collected.count
+                var nextCollected: [DetectedElement] = []
+                var nextCounter = 0
+                walkTree(
+                    appElement,
+                    depth: 0,
+                    maxDepth: maxDepth,
+                    maxCount: maxCount,
+                    parentFrame: nil,
+                    collected: &nextCollected,
+                    counter: &nextCounter,
+                    parentId: nil,
+                    axPath: [],
+                    budget: wakeBudget
+                )
+                if wakeBudget.deadlineExceeded && nextCollected.count < previousCount {
+                    break
+                }
+                collected = nextCollected
+                counter = nextCounter
                 if collected.count >= 50 { break }
                 if collected.count == prevCount { break }
                 prevCount = collected.count
             }
+        }
+        if wakeBudget.deadlineExceeded {
+            warnings.append("ax_deadline_exceeded_web_wakeup")
         }
         warnings.append("web_wakeup_done_\(iteration + 1)x_\(collected.count)elems")
     }
@@ -568,9 +651,12 @@ public final class ElementDetectionService: @unchecked Sendable {
         parentFrame: CGRect?,
         collected: inout [DetectedElement],
         counter: inout Int,
-        parentId: String?
+        parentId: String?,
+        axPath: [Int],
+        budget: AXScanBudget
     ) {
-        guard collected.count < maxCount, depth <= maxDepth else { return }
+        guard collected.count < maxCount, depth <= maxDepth, budget.shouldContinue() else { return }
+        AXUIElementSetMessagingTimeout(element.underlyingElement, axMessagingTimeout)
 
         let role = element.role() ?? ""
         let title = element.title()
@@ -629,23 +715,46 @@ public final class ElementDetectionService: @unchecked Sendable {
                 bounds: bounds,
                 isEnabled: enabled,
                 isActionable: isActionable,
-                parentId: parentId
+                parentId: parentId,
+                axPath: axPath
             ))
 
             if depth < maxDepth {
                 if let children = element.children() {
-                    for child in children {
-                        guard collected.count < maxCount else { break }
-                        walkTree(child, depth: depth + 1, maxDepth: maxDepth, maxCount: maxCount, parentFrame: currentFrame, collected: &collected, counter: &counter, parentId: elemId)
+                    for (index, child) in children.enumerated() {
+                        guard collected.count < maxCount, budget.shouldContinue() else { break }
+                        walkTree(
+                            child,
+                            depth: depth + 1,
+                            maxDepth: maxDepth,
+                            maxCount: maxCount,
+                            parentFrame: currentFrame,
+                            collected: &collected,
+                            counter: &counter,
+                            parentId: elemId,
+                            axPath: axPath + [index],
+                            budget: budget
+                        )
                     }
                 }
             }
         } else {
             if depth < maxDepth {
                 if let children = element.children() {
-                    for child in children {
-                        guard collected.count < maxCount else { break }
-                        walkTree(child, depth: depth + 1, maxDepth: maxDepth, maxCount: maxCount, parentFrame: currentFrame ?? parentFrame, collected: &collected, counter: &counter, parentId: parentId)
+                    for (index, child) in children.enumerated() {
+                        guard collected.count < maxCount, budget.shouldContinue() else { break }
+                        walkTree(
+                            child,
+                            depth: depth + 1,
+                            maxDepth: maxDepth,
+                            maxCount: maxCount,
+                            parentFrame: currentFrame ?? parentFrame,
+                            collected: &collected,
+                            counter: &counter,
+                            parentId: parentId,
+                            axPath: axPath + [index],
+                            budget: budget
+                        )
                     }
                 }
             }
@@ -653,15 +762,17 @@ public final class ElementDetectionService: @unchecked Sendable {
     }
 
     @MainActor
-    private func findWebArea(_ element: Element, maxDepth: Int, depth: Int = 0) -> Element? {
-        guard depth <= maxDepth else { return nil }
+    private func findWebArea(_ element: Element, maxDepth: Int, depth: Int = 0, budget: AXScanBudget) -> Element? {
+        guard depth <= maxDepth, budget.shouldContinue() else { return nil }
+        AXUIElementSetMessagingTimeout(element.underlyingElement, axMessagingTimeout)
         let role = element.role() ?? ""
         if role == "AXWebArea" { return element }
         let roleDesc = element.roleDescription() ?? ""
         if roleDesc.lowercased().contains("web area") { return element }
         if let children = element.children() {
             for child in children {
-                if let found = findWebArea(child, maxDepth: maxDepth, depth: depth + 1) {
+                guard budget.shouldContinue() else { break }
+                if let found = findWebArea(child, maxDepth: maxDepth, depth: depth + 1, budget: budget) {
                     return found
                 }
             }

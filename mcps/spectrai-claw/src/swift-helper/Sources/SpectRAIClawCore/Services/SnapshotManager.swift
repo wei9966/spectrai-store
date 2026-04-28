@@ -20,6 +20,12 @@ private struct SnapshotEntry {
     let createdAt: TimeInterval
     var lastAccessedAt: TimeInterval
     let windowId: CGWindowID?
+    let processId: pid_t?
+}
+
+public struct SnapshotElementReference: Sendable {
+    public let element: DetectedElement
+    public let processId: pid_t?
 }
 
 /// In-memory LRU snapshot store. Thread-safe via NSLock.
@@ -56,7 +62,8 @@ public final class SnapshotManager: @unchecked Sendable {
             result: result,
             createdAt: now,
             lastAccessedAt: now,
-            windowId: windowId
+            windowId: windowId,
+            processId: result.processId.map { pid_t($0) }
         )
         lruOrder.removeAll { $0 == snapshotId }
         lruOrder.append(snapshotId)
@@ -86,8 +93,16 @@ public final class SnapshotManager: @unchecked Sendable {
     }
 
     public func getElement(snapshotId: String, elementId: String) -> DetectedElement? {
+        getElementReference(snapshotId: snapshotId, elementId: elementId)?.element
+    }
+
+    public func getElementReference(snapshotId: String, elementId: String) -> SnapshotElementReference? {
         guard let result = getDetectionResult(snapshotId: snapshotId) else { return nil }
-        return result.elements.first { $0.id == elementId }
+        guard let element = result.elements.first(where: { $0.id == elementId }) else { return nil }
+        lock.lock()
+        let processId = entries[snapshotId]?.processId ?? result.processId.map { pid_t($0) }
+        lock.unlock()
+        return SnapshotElementReference(element: element, processId: processId)
     }
 
     /// Filter elements by role/label/identifier (case-insensitive contains on each non-nil criterion).
@@ -207,7 +222,8 @@ extension ElementDetectionResult {
             applicationName: applicationName,
             windowTitle: windowTitle,
             windowBounds: windowBounds,
-            warnings: warnings
+            warnings: warnings,
+            processId: processId
         )
     }
 }
