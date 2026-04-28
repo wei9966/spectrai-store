@@ -127,4 +127,4 @@ npm run test:e2e
 - Vision OCR 冷启约 500ms，后续走 cache；且需要 Screen Recording 权限
 - CDP 需手动启用 debug port，不能动态唤醒已启动的 Chrome
 - 仅 macOS 14+（依赖 ScreenCaptureKit）
-- Windows 端当前仍为旧路径，尚未迁移到 daemon 架构
+- Windows 端仍为旧路径（未迁移到 Swift daemon 架构），但 `click_element` / `keyboard_type` 已升级为 UIA 原生动作优先：优先尝试 Invoke/Toggle/Selection/ExpandCollapse/Focus 与 ValuePattern.SetValue，失败自动回退 HID 鼠标事件 / SendKeys。

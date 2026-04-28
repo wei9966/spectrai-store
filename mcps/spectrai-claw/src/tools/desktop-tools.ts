@@ -51,6 +51,14 @@ interface AnnotatedElement {
   controlType: string
   screenX: number
   screenY: number
+  automationId?: string
+  className?: string
+  processId?: number
+  rectX?: number
+  rectY?: number
+  rectW?: number
+  rectH?: number
+  source?: 'UIA' | 'OCR'
 }
 
 interface ScreenshotMeta {
@@ -65,6 +73,384 @@ interface ScreenshotMeta {
 const screenshotMetaMap = new Map<string, ScreenshotMeta>()
 let lastScreenshotPath = ''
 let lastAnnotatedPath = ''
+let lastActionableElement: AnnotatedElement | null = null
+
+interface UiaActionResult {
+  ok: boolean
+  method: string
+  reason: string
+  screenX: number
+  screenY: number
+  rectW: number
+  rectH: number
+}
+
+function getMouseClickFlags(button: string, clickType: string): string {
+  switch (button) {
+    case 'right': return clickType === 'double' ? '0x0008;0x0010;0x0008;0x0010' : '0x0008;0x0010'
+    case 'middle': return clickType === 'double' ? '0x0020;0x0040;0x0020;0x0040' : '0x0020;0x0040'
+    default: return clickType === 'double' ? '0x0002;0x0004;0x0002;0x0004' : '0x0002;0x0004'
+  }
+}
+
+function getMouseClickEvents(flags: string): string {
+  return flags.split(';').map(f => `[Win32]::mouse_event(${f}, 0, 0, 0, [UIntPtr]::Zero)`).join('\n')
+}
+
+function isUiaElementCandidate(element: AnnotatedElement): boolean {
+  if (!element || element.controlType.startsWith('OCR') || element.source === 'OCR') return false
+  return Boolean(element.name || element.automationId || element.className)
+}
+
+function parseUiaActionResult(stdout: string): UiaActionResult {
+  const marker = '__SPECTRAI_UIA_JSON__'
+  const line = stdout
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+    .reverse()
+    .find(l => l.startsWith(marker))
+
+  if (!line) {
+    return { ok: false, method: '', reason: 'uia_no_result', screenX: 0, screenY: 0, rectW: 0, rectH: 0 }
+  }
+
+  const payload = line.slice(marker.length)
+  try {
+    const parsed = JSON.parse(payload) as Partial<UiaActionResult>
+    return {
+      ok: parsed.ok === true,
+      method: typeof parsed.method === 'string' ? parsed.method : '',
+      reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+      screenX: typeof parsed.screenX === 'number' && Number.isFinite(parsed.screenX) ? parsed.screenX : 0,
+      screenY: typeof parsed.screenY === 'number' && Number.isFinite(parsed.screenY) ? parsed.screenY : 0,
+      rectW: typeof parsed.rectW === 'number' && Number.isFinite(parsed.rectW) ? parsed.rectW : 0,
+      rectH: typeof parsed.rectH === 'number' && Number.isFinite(parsed.rectH) ? parsed.rectH : 0,
+    }
+  } catch {
+    return { ok: false, method: '', reason: 'uia_result_parse_failed', screenX: 0, screenY: 0, rectW: 0, rectH: 0 }
+  }
+}
+
+async function tryUiaAction(
+  element: AnnotatedElement,
+  action: 'click' | 'setValue',
+  text?: string,
+): Promise<UiaActionResult> {
+  if (!isUiaElementCandidate(element)) {
+    return { ok: false, method: '', reason: 'uia_metadata_not_available', screenX: element.screenX, screenY: element.screenY, rectW: element.rectW ?? 0, rectH: element.rectH ?? 0 }
+  }
+
+  const processId = element.processId != null ? sn(element.processId) : 0
+  const rectX = element.rectX != null ? sn(element.rectX) : sn(element.screenX)
+  const rectY = element.rectY != null ? sn(element.rectY) : sn(element.screenY)
+  const rectW = element.rectW != null ? sn(element.rectW) : 0
+  const rectH = element.rectH != null ? sn(element.rectH) : 0
+
+  const script = `
+$meta = @{
+  Name = '${sp(element.name || '')}'
+  AutomationId = '${sp(element.automationId || '')}'
+  ClassName = '${sp(element.className || '')}'
+  ControlType = '${sp(element.controlType || '')}'
+  ProcessId = ${processId}
+  CenterX = ${sn(element.screenX)}
+  CenterY = ${sn(element.screenY)}
+  RectX = ${rectX}
+  RectY = ${rectY}
+  RectW = ${rectW}
+  RectH = ${rectH}
+}
+$actionKind = '${action}'
+$targetText = '${sp(text || '')}'
+$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH }
+
+function Add-Candidate {
+  param([Windows.Automation.AutomationElement]$el)
+  if ($null -eq $el) { return }
+  try {
+    $cur = $el.Current
+    $rect = $cur.BoundingRectangle
+    if ($rect.IsEmpty -or $rect.Width -le 1 -or $rect.Height -le 1) { return }
+    $key = "$($cur.ProcessId)|$($cur.AutomationId)|$($cur.ClassName)|$([int]$rect.X)|$([int]$rect.Y)|$([int]$rect.Width)|$([int]$rect.Height)"
+    if ($script:seen.ContainsKey($key)) { return }
+    $script:seen[$key] = $true
+    $script:candidates += $el
+  } catch {}
+}
+
+function Find-ByCondition {
+  param([Windows.Automation.AutomationElement]$root, [Windows.Automation.Condition]$cond, [int]$maxCount = 120)
+  if ($null -eq $root -or $null -eq $cond) { return }
+  try {
+    $found = $root.FindAll([Windows.Automation.TreeScope]::Descendants, $cond)
+    $limit = [Math]::Min($found.Count, $maxCount)
+    for ($i = 0; $i -lt $limit; $i++) {
+      Add-Candidate $found.Item($i)
+    }
+  } catch {}
+}
+
+try {
+  $roots = @()
+  if ($meta.ProcessId -gt 0) {
+    try {
+      $pidCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$meta.ProcessId)
+      $pidWindows = [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children, $pidCond)
+      for ($i = 0; $i -lt $pidWindows.Count; $i++) { $roots += $pidWindows.Item($i) }
+    } catch {}
+  }
+
+  if ($roots.Count -eq 0) {
+    try {
+      $pt = New-Object System.Windows.Point($meta.CenterX, $meta.CenterY)
+      $hit = [Windows.Automation.AutomationElement]::FromPoint($pt)
+      if ($hit) {
+        $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+        $cur = $hit
+        $window = $null
+        while ($cur -ne $null -and $cur -ne [Windows.Automation.AutomationElement]::RootElement) {
+          if ($cur.Current.ControlType -eq [Windows.Automation.ControlType]::Window) { $window = $cur; break }
+          $cur = $walker.GetParent($cur)
+        }
+        if ($window) { $roots += $window }
+      }
+    } catch {}
+  }
+
+  if ($roots.Count -eq 0) { $roots = @([Windows.Automation.AutomationElement]::RootElement) }
+
+  $script:candidates = @()
+  $script:seen = @{}
+
+  $hasAid = -not [string]::IsNullOrWhiteSpace($meta.AutomationId)
+  $hasName = -not [string]::IsNullOrWhiteSpace($meta.Name)
+  $hasClass = -not [string]::IsNullOrWhiteSpace($meta.ClassName)
+
+  $aidCond = $null
+  $nameCond = $null
+  $classCond = $null
+  $pidCondAny = $null
+
+  if ($hasAid) {
+    $aidCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::AutomationIdProperty, $meta.AutomationId)
+  }
+  if ($hasName) {
+    $nameCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::NameProperty, $meta.Name)
+  }
+  if ($hasClass) {
+    $classCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ClassNameProperty, $meta.ClassName)
+  }
+  if ($meta.ProcessId -gt 0) {
+    $pidCondAny = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$meta.ProcessId)
+  }
+
+  foreach ($root in $roots) {
+    if ($hasAid -and $pidCondAny) {
+      Find-ByCondition $root (New-Object Windows.Automation.AndCondition($aidCond, $pidCondAny)) 50
+    }
+    if ($hasAid -and $hasName) {
+      Find-ByCondition $root (New-Object Windows.Automation.AndCondition($aidCond, $nameCond)) 80
+    }
+    if ($hasAid) {
+      Find-ByCondition $root $aidCond 120
+    }
+    if ($hasName -and $hasClass) {
+      Find-ByCondition $root (New-Object Windows.Automation.AndCondition($nameCond, $classCond)) 80
+    }
+    if ($hasName) {
+      Find-ByCondition $root $nameCond 120
+    }
+    if ($hasClass) {
+      Find-ByCondition $root $classCond 80
+    }
+  }
+
+  if ($script:candidates.Count -eq 0) {
+    try {
+      $pt = New-Object System.Windows.Point($meta.CenterX, $meta.CenterY)
+      Add-Candidate ([Windows.Automation.AutomationElement]::FromPoint($pt))
+    } catch {}
+  }
+
+  if ($script:candidates.Count -eq 0) {
+    $result.reason = 'uia_element_not_found'
+  } else {
+    $best = $null
+    $bestScore = -999999.0
+    foreach ($candidate in $script:candidates) {
+      try {
+        $cur = $candidate.Current
+        if ($meta.ProcessId -gt 0 -and $cur.ProcessId -ne [int]$meta.ProcessId) { continue }
+        $rect = $cur.BoundingRectangle
+        if ($rect.IsEmpty -or $rect.Width -le 1 -or $rect.Height -le 1) { continue }
+
+        $score = 0.0
+        if ($hasAid -and $cur.AutomationId -eq $meta.AutomationId) { $score += 90.0 }
+        if ($hasName -and $cur.Name -eq $meta.Name) { $score += 45.0 }
+        if ($hasClass -and $cur.ClassName -eq $meta.ClassName) { $score += 30.0 }
+        if (-not [string]::IsNullOrWhiteSpace($meta.ControlType) -and $cur.ControlType.ProgrammaticName -eq $meta.ControlType) { $score += 20.0 }
+        if ($meta.ProcessId -gt 0 -and $cur.ProcessId -eq [int]$meta.ProcessId) { $score += 15.0 }
+
+        $cx = $rect.X + ($rect.Width / 2)
+        $cy = $rect.Y + ($rect.Height / 2)
+        $dx = $cx - $meta.CenterX
+        $dy = $cy - $meta.CenterY
+        $dist = [Math]::Sqrt(($dx * $dx) + ($dy * $dy))
+        $score += [Math]::Max(0.0, 35.0 - ($dist / 8.0))
+
+        if ($meta.RectW -gt 0 -and $meta.RectH -gt 0) {
+          $dw = [Math]::Abs($rect.Width - $meta.RectW)
+          $dh = [Math]::Abs($rect.Height - $meta.RectH)
+          $score += [Math]::Max(0.0, 15.0 - (($dw + $dh) / 20.0))
+        }
+
+        if ($score -gt $bestScore) {
+          $bestScore = $score
+          $best = $candidate
+        }
+      } catch {}
+    }
+
+    if ($null -eq $best) {
+      $result.reason = 'uia_element_not_match'
+    } else {
+      try {
+        $bestRect = $best.Current.BoundingRectangle
+        $result.screenX = [int]($bestRect.X + ($bestRect.Width / 2))
+        $result.screenY = [int]($bestRect.Y + ($bestRect.Height / 2))
+        $result.rectW = [int]$bestRect.Width
+        $result.rectH = [int]$bestRect.Height
+      } catch {}
+
+      if ($actionKind -eq 'setValue') {
+        try { $best.SetFocus() } catch {}
+        $valuePatternObj = $null
+        if ($best.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$valuePatternObj)) {
+          try {
+            ([Windows.Automation.ValuePattern]$valuePatternObj).SetValue($targetText)
+            $result.ok = $true
+            $result.method = 'uiaValue'
+          } catch {
+            $result.reason = 'uia_value_set_failed:' + $_.Exception.Message
+          }
+        } else {
+          $result.reason = 'uia_value_pattern_unavailable'
+        }
+      } else {
+        function Try-InvokePattern {
+          param([Windows.Automation.AutomationElement]$el)
+          $obj = $null
+          if ($el.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$obj)) {
+            ([Windows.Automation.InvokePattern]$obj).Invoke()
+            return $true
+          }
+          return $false
+        }
+        function Try-TogglePattern {
+          param([Windows.Automation.AutomationElement]$el)
+          $obj = $null
+          if ($el.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$obj)) {
+            ([Windows.Automation.TogglePattern]$obj).Toggle()
+            return $true
+          }
+          return $false
+        }
+        function Try-SelectionPattern {
+          param([Windows.Automation.AutomationElement]$el)
+          $obj = $null
+          if ($el.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$obj)) {
+            ([Windows.Automation.SelectionItemPattern]$obj).Select()
+            return $true
+          }
+          return $false
+        }
+        function Try-ExpandCollapsePattern {
+          param([Windows.Automation.AutomationElement]$el)
+          $obj = $null
+          if ($el.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$obj)) {
+            $pattern = [Windows.Automation.ExpandCollapsePattern]$obj
+            $state = $pattern.Current.ExpandCollapseState
+            if ($state -eq [Windows.Automation.ExpandCollapseState]::Collapsed -or $state -eq [Windows.Automation.ExpandCollapseState]::PartiallyExpanded) {
+              $pattern.Expand()
+            } else {
+              $pattern.Collapse()
+            }
+            return $true
+          }
+          return $false
+        }
+
+        $preferInvoke = $meta.ControlType -match 'Button|Hyperlink|MenuItem|SplitButton'
+        try {
+          if ($preferInvoke -and (Try-InvokePattern $best)) {
+            $result.ok = $true
+            $result.method = 'uiaInvoke'
+          }
+          if (-not $result.ok -and (Try-TogglePattern $best)) {
+            $result.ok = $true
+            $result.method = 'uiaToggle'
+          }
+          if (-not $result.ok -and (Try-SelectionPattern $best)) {
+            $result.ok = $true
+            $result.method = 'uiaSelect'
+          }
+          if (-not $result.ok -and (Try-ExpandCollapsePattern $best)) {
+            $result.ok = $true
+            $result.method = 'uiaExpandCollapse'
+          }
+          if (-not $result.ok -and -not $preferInvoke -and (Try-InvokePattern $best)) {
+            $result.ok = $true
+            $result.method = 'uiaInvoke'
+          }
+          if (-not $result.ok) {
+            try {
+              $best.SetFocus()
+              $result.ok = $true
+              $result.method = 'uiaFocus'
+            } catch {
+              $result.reason = 'uia_focus_failed:' + $_.Exception.Message
+            }
+          }
+        } catch {
+          if (-not $result.reason) {
+            $result.reason = 'uia_pattern_failed:' + $_.Exception.Message
+          }
+        }
+      }
+    }
+  }
+} catch {
+  $result.reason = 'uia_unexpected:' + $_.Exception.Message
+}
+Write-Output "__SPECTRAI_UIA_JSON__$($result | ConvertTo-Json -Compress)"
+`
+
+  const execResult = await shell.exec(script, action === 'setValue' ? 7000 : 6000)
+  if (execResult.exitCode !== 0) {
+    return {
+      ok: false,
+      method: '',
+      reason: `uia_exec_failed:${execResult.stderr || 'unknown'}`,
+      screenX: element.screenX,
+      screenY: element.screenY,
+      rectW: element.rectW ?? 0,
+      rectH: element.rectH ?? 0,
+    }
+  }
+
+  const parsed = parseUiaActionResult(execResult.stdout)
+  if (!parsed.ok && !parsed.reason) {
+    parsed.reason = 'uia_action_failed'
+  }
+  if (parsed.screenX === 0 && parsed.screenY === 0) {
+    parsed.screenX = element.screenX
+    parsed.screenY = element.screenY
+  }
+  if (parsed.rectW === 0 && element.rectW != null) parsed.rectW = element.rectW
+  if (parsed.rectH === 0 && element.rectH != null) parsed.rectH = element.rectH
+  return parsed
+}
 
 export async function registerDesktopTools(): Promise<void> {
   // Platform branch: use macOS implementation on Darwin
@@ -354,7 +740,7 @@ try {
         $isClickable = ($ct -match 'Button|Hyperlink|MenuItem|TabItem|ListItem|CheckBox|RadioButton|ComboBox|Slider|Image')
         if (-not $label -and -not $isClickable) { continue }
         if (-not $label) { $label = $ct -replace 'ControlType\\.', '' }
-        $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; Src='UIA'}
+        $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'}
         $idx++
         if ($idx -gt 80) { break }
     }
@@ -391,7 +777,11 @@ if ($filtered.Count -lt 10) {
             foreach ($ol in $ocrLines) {
                 $parts = $ol.Split('|')
                 if ($parts.Count -ge 5) {
-                    $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=[int]$parts[1]; CY=[int]$parts[2]; W=[int]$parts[3]; H=[int]$parts[4]; Src='OCR'}
+                    $ocrW = [int]$parts[3]
+                    $ocrH = [int]$parts[4]
+                    $ocrX = [int]$parts[1] - [int]($ocrW / 2)
+                    $ocrY = [int]$parts[2] - [int]($ocrH / 2)
+                    $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=[int]$parts[1]; CY=[int]$parts[2]; W=$ocrW; H=$ocrH; X=$ocrX; Y=$ocrY; AID=''; CLS=''; PID=0; Src='OCR'}
                     $idx++
                     $ocrCount++
                     if ($idx -gt 80) { break }
@@ -457,12 +847,16 @@ if ($filtered.Count -gt 0) {
 }
 
 # Output element list
-foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.CX)|$($el.CY)" }
+foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.CX)|$($el.CY)|$($el.AID)|$($el.CLS)|$($el.PID)|$($el.X)|$($el.Y)|$($el.W)|$($el.H)|$($el.Src)" }
 `
           const annotateResult = await shell.exec(annotateScript, 45000)
           const elements: AnnotatedElement[] = []
           const rawLines = annotateResult.stdout.trim().split('\n')
           const debugLines: string[] = []
+          const parseNum = (v: string | undefined): number => {
+            const n = parseInt(v ?? '', 10)
+            return Number.isFinite(n) ? n : 0
+          }
           for (const line of rawLines) {
             const trimmed = line.trim()
             if (trimmed.startsWith('UIA_ERROR:') || trimmed.startsWith('UIA_STATS:') || trimmed.startsWith('CHROME_FORCE_ERR:') || trimmed.startsWith('OCR_ERROR:') || trimmed.startsWith('OCR_DEBUG:') || trimmed.startsWith('OCR_DIAG:') || trimmed.startsWith('OCR_PROC_ERR:')) {
@@ -471,12 +865,24 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
             }
             const p = trimmed.split('|')
             if (p.length >= 5 && p[0] && p[3] && p[4]) {
+              const number = parseNum(p[0])
+              if (!Number.isFinite(number) || number <= 0) continue
+              const rectW = parseNum(p[10])
+              const rectH = parseNum(p[11])
               elements.push({
-                number: parseInt(p[0], 10),
+                number,
                 name: p[1] || '',
                 controlType: p[2] || '',
-                screenX: parseInt(p[3], 10),
-                screenY: parseInt(p[4], 10),
+                screenX: parseNum(p[3]),
+                screenY: parseNum(p[4]),
+                automationId: p[5] || '',
+                className: p[6] || '',
+                processId: parseNum(p[7]),
+                rectX: parseNum(p[8]),
+                rectY: parseNum(p[9]),
+                rectW,
+                rectH,
+                source: p[12] === 'OCR' ? 'OCR' : 'UIA',
               })
             }
           }
@@ -629,7 +1035,7 @@ Write-Output "clicked|$vPath"
   // 1c. click_element — click annotated element by number (100% precise)
   registerTool(
     'click_element',
-    '★ STEP 2 (BEST): Click an annotated element by its NUMBER from screenshot. This is the MOST PRECISE click method — uses exact element center coordinates, zero estimation.\n\nTake a screenshot first, then use the element number shown on the image.\nReturns verification screenshot showing exact click position with red crosshair.',
+    '★ STEP 2 (BEST): Click an annotated element by its NUMBER from screenshot. This is the MOST PRECISE click method — uses exact element center coordinates, zero estimation.\n\nTake a screenshot first, then use the element number shown on the image.\nUses UIA native action first (Invoke/Toggle/Selection/ExpandCollapse/Focus), and falls back to HID click + verification screenshot if native action is not applicable or fails.',
     {
       type: 'object',
       properties: {
@@ -659,17 +1065,41 @@ Write-Output "clicked|$vPath"
 
       const clickX = element.screenX
       const clickY = element.screenY
-
       const button = (args.button === 'right' || args.button === 'middle') ? args.button as string : 'left'
       const clickType = args.clickType === 'double' ? 'double' : 'single'
+      lastActionableElement = element
 
-      let clickFlags: string
-      switch (button) {
-        case 'right': clickFlags = clickType === 'double' ? '0x0008;0x0010;0x0008;0x0010' : '0x0008;0x0010'; break
-        case 'middle': clickFlags = clickType === 'double' ? '0x0020;0x0040;0x0020;0x0040' : '0x0020;0x0040'; break
-        default: clickFlags = clickType === 'double' ? '0x0002;0x0004;0x0002;0x0004' : '0x0002;0x0004'; break
+      let uiaFallbackReason = ''
+      if (button === 'left' && clickType === 'single' && isUiaElementCandidate(element)) {
+        try {
+          const uiaResult = await tryUiaAction(element, 'click')
+          if (uiaResult.ok) {
+            lastActionableElement = {
+              ...element,
+              screenX: uiaResult.screenX || element.screenX,
+              screenY: uiaResult.screenY || element.screenY,
+              rectW: uiaResult.rectW || element.rectW,
+              rectH: uiaResult.rectH || element.rectH,
+            }
+            return {
+              content: [{
+                type: 'text',
+                text: `Clicked [${elemNum}] "${element.name}" via method=${uiaResult.method} (native UIA, cursor unchanged).`,
+              }],
+            }
+          }
+          uiaFallbackReason = uiaResult.reason || 'uia_action_failed'
+        } catch (err: unknown) {
+          uiaFallbackReason = `uia_exception:${err instanceof Error ? err.message : String(err)}`
+        }
+      } else if (button !== 'left' || clickType !== 'single') {
+        uiaFallbackReason = 'uia_not_applicable_for_non_left_single'
+      } else {
+        uiaFallbackReason = 'uia_metadata_not_available'
       }
-      const events = clickFlags.split(';').map(f => `[Win32]::mouse_event(${f}, 0, 0, 0, [UIntPtr]::Zero)`).join('\n')
+
+      const clickFlags = getMouseClickFlags(button, clickType)
+      const events = getMouseClickEvents(clickFlags)
 
       const script = `
 [Win32]::SetCursorPos(${clickX}, ${clickY})
@@ -711,10 +1141,11 @@ Write-Output "clicked|$vPath"
       }
       const vParts = result.stdout.trim().split('|')
       const verifyImgPath = vParts[1] || ''
+      const fallbackReasonText = uiaFallbackReason ? `, uiaFallback=${uiaFallbackReason}` : ''
       return {
         content: [{
           type: 'text',
-          text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — ${button} ${clickType}\n\nVerification image: ${verifyImgPath}\nShows 300x300 region centered on click with RED crosshair. Use Read tool to confirm it hit the right target.`,
+          text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText})\n\nVerification image: ${verifyImgPath}\nShows 300x300 region centered on click with RED crosshair. Use Read tool to confirm it hit the right target.`,
         }],
       }
     },
@@ -898,17 +1329,69 @@ Write-Output "scrolled"
   // 6. keyboard_type
   registerTool(
     'keyboard_type',
-    'Type text using the keyboard (supports Unicode).',
+    'Type text (supports Unicode). Tries UIA ValuePattern.SetValue first when a target input element is known, then falls back to SendKeys.',
     {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Text to type' },
+        number: { type: 'number', description: 'Optional element number from annotated screenshot to target ValuePattern.SetValue.' },
+        screenshotPath: { type: 'string', description: 'Optional annotated screenshot path used with number. Default: last annotated screenshot.' },
       },
       required: ['text'],
       additionalProperties: false,
     },
     async (args) => {
       const text = args.text as string
+      let targetElement: AnnotatedElement | null = null
+
+      if (args.number != null) {
+        const targetNum = sn(args.number)
+        const ssPath = (args.screenshotPath as string) || lastAnnotatedPath
+        if (!ssPath) {
+          return { isError: true, content: [{ type: 'text', text: 'No annotated screenshot available for keyboard target. Take screenshot(annotate=true) first or click_element before typing.' }] }
+        }
+        const meta = screenshotMetaMap.get(ssPath)
+        if (!meta?.elements || meta.elements.length === 0) {
+          return { isError: true, content: [{ type: 'text', text: `No annotated elements found for: ${ssPath}` }] }
+        }
+        targetElement = meta.elements.find(e => e.number === targetNum) || null
+        if (!targetElement) {
+          const available = meta.elements.map(e => `[${e.number}] "${e.name}"`).join(', ')
+          return { isError: true, content: [{ type: 'text', text: `Element #${targetNum} not found. Available: ${available}` }] }
+        }
+      } else if (lastActionableElement) {
+        targetElement = lastActionableElement
+      }
+
+      let uiaFallbackReason = ''
+      if (targetElement && isUiaElementCandidate(targetElement)) {
+        try {
+          const uiaResult = await tryUiaAction(targetElement, 'setValue', text)
+          if (uiaResult.ok) {
+            lastActionableElement = {
+              ...targetElement,
+              screenX: uiaResult.screenX || targetElement.screenX,
+              screenY: uiaResult.screenY || targetElement.screenY,
+              rectW: uiaResult.rectW || targetElement.rectW,
+              rectH: uiaResult.rectH || targetElement.rectH,
+            }
+            return {
+              content: [{
+                type: 'text',
+                text: `typed ${text.length} chars via method=uiaValue${targetElement ? ` on [${targetElement.number}] "${targetElement.name}"` : ''}`,
+              }],
+            }
+          }
+          uiaFallbackReason = uiaResult.reason || 'uia_value_failed'
+        } catch (err: unknown) {
+          uiaFallbackReason = `uia_exception:${err instanceof Error ? err.message : String(err)}`
+        }
+      } else if (targetElement) {
+        uiaFallbackReason = 'uia_metadata_not_available'
+      } else {
+        uiaFallbackReason = 'uia_target_not_set'
+      }
+
       const sanitized = sp(text)
       const sendKeySafe = sanitized.replace(/[+^%~(){}[\]]/g, '{$&}')
       const script = `
@@ -920,7 +1403,8 @@ Write-Output "typed"
       if (result.exitCode !== 0) {
         return { isError: true, content: [{ type: 'text', text: `Type failed: ${result.stderr}` }] }
       }
-      return { content: [{ type: 'text', text: `typed ${text.length} chars` }] }
+      const fallbackText = uiaFallbackReason ? ` (uiaFallback=${uiaFallbackReason})` : ''
+      return { content: [{ type: 'text', text: `typed ${text.length} chars via method=sendKeys${fallbackText}` }] }
     },
     { title: 'Keyboard Type', destructiveHint: true },
   )
@@ -1455,7 +1939,7 @@ try {
         $isClickable = ($ct -match 'Button|Hyperlink|MenuItem|TabItem|ListItem|CheckBox|RadioButton|ComboBox|Image')
         if (-not $label -and -not $isClickable) { continue }
         if (-not $label) { $label = $ct -replace 'ControlType\\.', '' }
-        $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; Src='UIA'}
+        $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'}
         $idx++
         if ($idx -gt 60) { break }
     }
@@ -1480,7 +1964,11 @@ if ($filtered.Count -lt 10) {
             foreach ($ol in (Get-Content $ocrOut -Encoding UTF8)) {
                 $parts = $ol.Split('|')
                 if ($parts.Count -ge 5) {
-                    $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=[int]$parts[1]; CY=[int]$parts[2]; W=[int]$parts[3]; H=[int]$parts[4]; Src='OCR'}
+                    $ocrW = [int]$parts[3]
+                    $ocrH = [int]$parts[4]
+                    $ocrX = [int]$parts[1] - [int]($ocrW / 2)
+                    $ocrY = [int]$parts[2] - [int]($ocrH / 2)
+                    $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=[int]$parts[1]; CY=[int]$parts[2]; W=$ocrW; H=$ocrH; X=$ocrX; Y=$ocrY; AID=''; CLS=''; PID=0; Src='OCR'}
                     $idx++
                     if ($idx -gt 80) { break }
                 }
@@ -1531,19 +2019,35 @@ if ($filtered.Count -gt 0) {
     $bmp.Save($imgPath, [System.Drawing.Imaging.ImageFormat]::Png)
     $bmp.Dispose(); $ms.Dispose()
 }
-foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.CX)|$($el.CY)" }
+foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.CX)|$($el.CY)|$($el.AID)|$($el.CLS)|$($el.PID)|$($el.X)|$($el.Y)|$($el.W)|$($el.H)|$($el.Src)" }
 `
           const annotateResult = await shell.exec(annotateScript, 45000)
           const elements: AnnotatedElement[] = []
+          const parseNum = (v: string | undefined): number => {
+            const n = parseInt(v ?? '', 10)
+            return Number.isFinite(n) ? n : 0
+          }
           for (const line of annotateResult.stdout.trim().split('\n')) {
             const p = line.trim().split('|')
             if (p.length >= 5 && p[0] && p[3] && p[4]) {
+              const number = parseNum(p[0])
+              if (!Number.isFinite(number) || number <= 0) continue
+              const rectW = parseNum(p[10])
+              const rectH = parseNum(p[11])
               elements.push({
-                number: parseInt(p[0], 10),
+                number,
                 name: p[1] || '',
                 controlType: p[2] || '',
-                screenX: parseInt(p[3], 10),
-                screenY: parseInt(p[4], 10),
+                screenX: parseNum(p[3]),
+                screenY: parseNum(p[4]),
+                automationId: p[5] || '',
+                className: p[6] || '',
+                processId: parseNum(p[7]),
+                rectX: parseNum(p[8]),
+                rectY: parseNum(p[9]),
+                rectW,
+                rectH,
+                source: p[12] === 'OCR' ? 'OCR' : 'UIA',
               })
             }
           }
