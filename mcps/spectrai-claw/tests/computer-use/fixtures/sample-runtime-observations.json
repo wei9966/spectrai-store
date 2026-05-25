@@ -1,0 +1,492 @@
+{
+  "schemaVersion": "computer-use-runtime-observations/v1",
+  "name": "sample simulated runtime observations for canonical report",
+  "generatedAt": "2026-05-25T00:00:00.000Z",
+  "notes": [
+    "This fixture is deterministic and does not require Windows UIA, macOS AX or Chrome CDP to be available.",
+    "Provider teams can replace this file with real observations emitted by the runtime adapter without changing the report schema.",
+    "Skipped and unsupported cases are first-class report states and must not fail CI by themselves."
+  ],
+  "environment": {
+    "platform": "cross-platform-fixture",
+    "osRelease": "simulated",
+    "nodeVersion": "node-test-compatible",
+    "runtimeBuild": "universal-computer-use-prototype",
+    "isSimulatedFixture": true
+  },
+  "cases": [
+    {
+      "id": "win32-native-controls",
+      "title": "Windows 原生控件：WinForms demo 的 Button/CheckBox/TextBox/ComboBox",
+      "platform": "windows",
+      "category": "native-app",
+      "status": "passed",
+      "target": {
+        "app": "windows-native-controls-demo.ps1",
+        "appType": "win32-winforms"
+      },
+      "provider": {
+        "name": "windows-uia",
+        "mode": "uia_only",
+        "available": true,
+        "capabilities": {
+          "semanticTree": true,
+          "selectorQuery": true,
+          "backgroundRead": true,
+          "backgroundInvoke": true,
+          "backgroundInput": true,
+          "foregroundFallback": true,
+          "visionFallback": true,
+          "hidFallback": true,
+          "postActionVerification": true
+        }
+      },
+      "detection": {
+        "totalElementCount": 14,
+        "semanticElementCount": 13,
+        "actionableElementCount": 6,
+        "semanticTreeCoverage": 0.9286
+      },
+      "actions": [
+        {
+          "id": "win-read-tree",
+          "operation": "read",
+          "selectorStrategy": "windowTitle+controlType",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": true,
+          "background": true,
+          "foregroundRequired": false,
+          "visionFallbackUsed": false,
+          "hidFallbackUsed": false,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": false,
+          "latencyMs": 42,
+          "misClickIncident": false,
+          "misClickRisk": "low"
+        },
+        {
+          "id": "win-invoke-apply",
+          "operation": "invoke",
+          "method": "InvokePattern",
+          "selectorStrategy": "automationId+controlType",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": true,
+          "background": true,
+          "foregroundRequired": false,
+          "visionFallbackUsed": false,
+          "hidFallbackUsed": false,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": true,
+          "postActionVerified": true,
+          "latencyMs": 55,
+          "misClickIncident": false,
+          "misClickRisk": "low"
+        },
+        {
+          "id": "win-input-text",
+          "operation": "input",
+          "method": "ValuePattern.SetValue",
+          "selectorStrategy": "automationId+controlType",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": true,
+          "background": true,
+          "foregroundRequired": false,
+          "visionFallbackUsed": false,
+          "hidFallbackUsed": false,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": true,
+          "postActionVerified": true,
+          "latencyMs": 61,
+          "misClickIncident": false,
+          "misClickRisk": "low"
+        },
+        {
+          "id": "win-toggle-checkbox",
+          "operation": "invoke",
+          "method": "TogglePattern",
+          "selectorStrategy": "automationId+controlType",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": true,
+          "background": true,
+          "foregroundRequired": false,
+          "visionFallbackUsed": false,
+          "hidFallbackUsed": false,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": true,
+          "postActionVerified": true,
+          "latencyMs": 47,
+          "misClickIncident": false,
+          "misClickRisk": "low"
+        }
+      ],
+      "notes": [
+        "Expected HID fallback rate for this case is 0 when UIA patterns are available."
+      ]
+    },
+    {
+      "id": "chrome-baidu-search",
+      "title": "Chrome/Baidu 搜索：DOM selector 后台输入与提交",
+      "platform": "browser",
+      "category": "browser-page",
+      "status": "passed",
+      "target": {
+        "app": "Chrome/Chromium",
+        "url": "https://www.baidu.com/ or browser-search-fixture.html",
+        "appType": "chromium-browser"
+      },
+      "provider": {
+        "name": "browser-cdp",
+        "mode": "dom_selector",
+        "available": true,
+        "capabilities": {
+          "semanticTree": true,
+          "selectorQuery": true,
+          "backgroundRead": true,
+          "backgroundInvoke": true,
+          "backgroundInput": true,
+          "foregroundFallback": false,
+          "visionFallback": true,
+          "hidFallback": false,
+          "postActionVerification": true
+        }
+      },
+      "detection": {
+        "totalElementCount": 32,
+        "semanticElementCount": 32,
+        "actionableElementCount": 4,
+        "semanticTreeCoverage": 1
+      },
+      "actions": [
+        {
+          "id": "browser-read-dom",
+          "operation": "read",
+          "selectorStrategy": "css",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": true,
+          "background": true,
+          "foregroundRequired": false,
+          "visionFallbackUsed": false,
+          "hidFallbackUsed": false,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": false,
+          "latencyMs": 28,
+          "misClickIncident": false,
+          "misClickRisk": "low"
+        },
+        {
+          "id": "browser-input-query",
+          "operation": "input",
+          "method": "DOM.setValue",
+          "selectorStrategy": "css",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": true,
+          "background": true,
+          "foregroundRequired": false,
+          "visionFallbackUsed": false,
+          "hidFallbackUsed": false,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": true,
+          "postActionVerified": true,
+          "latencyMs": 34,
+          "misClickIncident": false,
+          "misClickRisk": "low"
+        },
+        {
+          "id": "browser-submit-search",
+          "operation": "invoke",
+          "method": "DOM.click",
+          "selectorStrategy": "css",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": true,
+          "background": true,
+          "foregroundRequired": false,
+          "visionFallbackUsed": false,
+          "hidFallbackUsed": false,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": true,
+          "postActionVerified": true,
+          "latencyMs": 81,
+          "misClickIncident": false,
+          "misClickRisk": "low"
+        }
+      ],
+      "notes": [
+        "Online Baidu target may be skipped in CI; local HTML fixture remains deterministic."
+      ]
+    },
+    {
+      "id": "electron-spectrai-controls",
+      "title": "Electron/SpectrAI：应用级语义树和按钮/输入动作",
+      "platform": "cross-platform",
+      "category": "electron-app",
+      "status": "skipped",
+      "skipReason": "No running Electron/SpectrAI sample is guaranteed in deterministic CI.",
+      "target": {
+        "app": "SpectrAI or Electron/Tauri demo",
+        "appType": "electron-or-tauri"
+      },
+      "provider": {
+        "name": "electron-adapter",
+        "mode": "uia-or-ax-or-cdp",
+        "available": false,
+        "reason": "sample app not running"
+      },
+      "detection": {
+        "totalElementCount": 0,
+        "semanticElementCount": 0,
+        "actionableElementCount": 0
+      },
+      "actions": [],
+      "notes": [
+        "SpectrAI is intentionally only one sample; the scenario allows any Electron/Tauri app."
+      ]
+    },
+    {
+      "id": "macos-ax-demo",
+      "title": "macOS AX demo：TextEdit/AppleScript 可访问性读取与输入",
+      "platform": "macos",
+      "category": "native-app",
+      "status": "unsupported",
+      "unsupportedReason": "Current deterministic fixture is not executing on macOS; real run requires process.platform === darwin.",
+      "permissionBlockers": [
+        "macOS Accessibility permission required for AX tree/actions",
+        "macOS Screen Recording permission required when vision fallback is exercised"
+      ],
+      "target": {
+        "app": "TextEdit",
+        "appType": "appkit"
+      },
+      "provider": {
+        "name": "macos-ax",
+        "mode": "ax_only",
+        "available": false,
+        "reason": "non-macOS fixture environment"
+      },
+      "detection": {
+        "totalElementCount": 0,
+        "semanticElementCount": 0,
+        "actionableElementCount": 0
+      },
+      "actions": [],
+      "notes": [
+        "Unsupported is expected on Windows/Linux and must not fail the benchmark."
+      ]
+    },
+    {
+      "id": "vision-hid-fallback-canvas",
+      "title": "不可语义访问 fallback：Canvas/自绘 UI 触发 Vision + HID",
+      "platform": "browser",
+      "category": "fallback",
+      "status": "passed",
+      "target": {
+        "app": "Chrome/Chromium",
+        "url": "vision-fallback-canvas.html",
+        "appType": "canvas-or-custom-drawn-ui"
+      },
+      "provider": {
+        "name": "vision-hid-fallback",
+        "mode": "vision_then_hid",
+        "available": true,
+        "capabilities": {
+          "semanticTree": false,
+          "selectorQuery": false,
+          "backgroundRead": false,
+          "backgroundInvoke": false,
+          "backgroundInput": false,
+          "foregroundFallback": true,
+          "visionFallback": true,
+          "hidFallback": true,
+          "postActionVerification": true
+        }
+      },
+      "detection": {
+        "totalElementCount": 2,
+        "semanticElementCount": 1,
+        "actionableElementCount": 1,
+        "semanticTreeCoverage": 0.5
+      },
+      "actions": [
+        {
+          "id": "canvas-semantic-miss",
+          "operation": "read",
+          "selectorStrategy": "dom-text",
+          "selectorAttempted": true,
+          "selectorResolved": false,
+          "semantic": true,
+          "background": true,
+          "foregroundRequired": false,
+          "visionFallbackUsed": false,
+          "hidFallbackUsed": false,
+          "actionSucceeded": false,
+          "postActionVerificationRequired": false,
+          "latencyMs": 19,
+          "misClickIncident": false,
+          "misClickRisk": "none"
+        },
+        {
+          "id": "canvas-vision-read",
+          "operation": "read",
+          "selectorStrategy": "ocrText",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": false,
+          "background": false,
+          "foregroundRequired": true,
+          "visionFallbackUsed": true,
+          "hidFallbackUsed": false,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": false,
+          "latencyMs": 820,
+          "misClickIncident": false,
+          "misClickRisk": "medium"
+        },
+        {
+          "id": "canvas-hid-click",
+          "operation": "invoke",
+          "method": "hidClick",
+          "selectorStrategy": "ocrText+bounds-center",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": false,
+          "background": false,
+          "foregroundRequired": true,
+          "visionFallbackUsed": true,
+          "hidFallbackUsed": true,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": true,
+          "postActionVerified": true,
+          "latencyMs": 95,
+          "misClickIncident": false,
+          "misClickRisk": "medium"
+        }
+      ],
+      "notes": [
+        "This case intentionally exercises fallback observability; high fallback is acceptable only for this category."
+      ]
+    },
+    {
+      "id": "windows-legacy-claw-accuracy-compat",
+      "title": "现有 Windows Claw accuracy 链路兼容性",
+      "platform": "windows",
+      "category": "compatibility-regression",
+      "status": "passed",
+      "target": {
+        "app": "windows-native-controls-demo.ps1",
+        "appType": "legacy-mcp-compat"
+      },
+      "provider": {
+        "name": "windows-claw-compat",
+        "mode": "legacy_mcp_tools_semantic_first",
+        "available": true,
+        "capabilities": {
+          "semanticTree": true,
+          "selectorQuery": true,
+          "backgroundRead": true,
+          "backgroundInvoke": true,
+          "backgroundInput": true,
+          "foregroundFallback": true,
+          "visionFallback": true,
+          "hidFallback": true,
+          "postActionVerification": true
+        }
+      },
+      "detection": {
+        "totalElementCount": 14,
+        "semanticElementCount": 12,
+        "actionableElementCount": 6,
+        "semanticTreeCoverage": 0.8571
+      },
+      "actions": [
+        {
+          "id": "compat-describe-screen",
+          "operation": "read",
+          "method": "describe_screen(auto)",
+          "selectorStrategy": "legacy-tool-target",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": true,
+          "background": true,
+          "foregroundRequired": false,
+          "visionFallbackUsed": false,
+          "hidFallbackUsed": false,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": false,
+          "latencyMs": 70,
+          "misClickIncident": false,
+          "misClickRisk": "low"
+        },
+        {
+          "id": "compat-click-element",
+          "operation": "invoke",
+          "method": "click_element -> InvokePattern",
+          "selectorStrategy": "legacy-number-resolved-to-uia",
+          "selectorAttempted": true,
+          "selectorResolved": true,
+          "semantic": true,
+          "background": true,
+          "foregroundRequired": false,
+          "visionFallbackUsed": false,
+          "hidFallbackUsed": false,
+          "actionSucceeded": true,
+          "postActionVerificationRequired": true,
+          "postActionVerified": true,
+          "latencyMs": 66,
+          "misClickIncident": false,
+          "misClickRisk": "low"
+        }
+      ],
+      "notes": [
+        "This case guards the existing Windows Claw accuracy path while requiring semantic-first routing."
+      ]
+    }
+  ],
+  "regressionGates": [
+    {
+      "metric": "semanticActionSuccessRate",
+      "operator": ">=",
+      "threshold": 0.9,
+      "scope": "eligible non-fallback cases",
+      "reason": "Semantic actions must remain the primary route."
+    },
+    {
+      "metric": "postActionVerificationSuccessRate",
+      "operator": ">=",
+      "threshold": 0.95,
+      "scope": "actions requiring verification",
+      "reason": "Action success must be validated by state changes."
+    },
+    {
+      "metric": "misClickIncidentRate",
+      "operator": "<=",
+      "threshold": 0,
+      "scope": "all eligible actions",
+      "reason": "Benchmark must surface any wrong-target incident immediately."
+    },
+    {
+      "metric": "hidFallbackRate",
+      "operator": "<=",
+      "threshold": 0.15,
+      "scope": "all eligible actions except explicit fallback category",
+      "reason": "HID should be a last resort, not the main path."
+    }
+  ],
+  "risks": [
+    "Real provider adapters are still owned by Core/Windows/macOS/Browser agents; this fixture only defines the report contract and deterministic smoke path.",
+    "Online Baidu validation may be blocked by network, bot protection or locale changes; local HTML fixture should be used for deterministic CI.",
+    "macOS AX validation depends on user-granted Accessibility and Screen Recording permissions; unsupported/skip must be reported rather than failed.",
+    "Canvas fallback is intentionally foreground/HID based and should not be used to justify regressions in semantic-capable cases."
+  ],
+  "nextRoundRecommendations": [
+    "Wire provider teams' real observation adapters into this schema and keep this sample fixture as a golden smoke test.",
+    "Add per-provider latency budgets once Windows UIA, macOS AX and Browser CDP implementations stabilize.",
+    "Split fallback gates by category so explicit fallback scenarios can pass while native/browser semantic scenarios keep low HID/Vision rates.",
+    "Publish report artifacts from CI for trend comparison across runtime builds."
+  ]
+}

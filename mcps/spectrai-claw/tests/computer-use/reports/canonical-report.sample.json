@@ -1,0 +1,325 @@
+{
+  "schemaVersion": "computer-use-benchmark.report.v0",
+  "run": {
+    "id": "fixture-run-2026-05-25-post-merge",
+    "mode": "fixture-only",
+    "runtimeVersion": "post-merge-benchmark-fixture",
+    "host": {
+      "platform": "windows",
+      "note": "Fixture report used when live provider composition is not available in this worktree; live provider runs must preserve this schema."
+    }
+  },
+  "metrics": {
+    "semanticActionSuccessRate": 0.8,
+    "backgroundActionSuccessRate": 0.75,
+    "backgroundReadCoverageRate": 0.8333,
+    "backgroundInvokeCoverageRate": 0.5,
+    "backgroundTypeCoverageRate": 0.3333,
+    "foregroundFallbackRate": 0.3333,
+    "visionFallbackRate": 0.3333,
+    "hidFallbackRate": 0.1667,
+    "postActionVerificationSuccessRate": 0.8333,
+    "averageVerificationConfidence": 0.725,
+    "wrongClickRiskWeightedScore": 0.3,
+    "fallbackTraceabilityRate": 1
+  },
+  "cases": [
+    {
+      "scenario": "win-notepad-uia-type",
+      "provider": "windows-uia",
+      "providerLine": "windows-provider",
+      "status": "passed-fixture",
+      "selector": {
+        "strategy": "uia",
+        "controlType": "Edit",
+        "automationId": "15",
+        "name": "Text Editor"
+      },
+      "action": {
+        "type": "type",
+        "semantic": true,
+        "background": true,
+        "method": "ValuePattern.SetValue"
+      },
+      "capability": {
+        "backgroundRead": true,
+        "backgroundInvoke": false,
+        "backgroundType": true,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "hidFallbackNeeded": false
+      },
+      "beforeVerification": {
+        "source": "uia",
+        "targetFound": true,
+        "confidence": 0.98,
+        "evidence": "Fixture models UIA Edit element resolved by automationId/controlType."
+      },
+      "afterVerification": {
+        "source": "uia",
+        "success": true,
+        "confidence": 0.97,
+        "evidence": "Value.Value equals requested text."
+      },
+      "fallbackUsed": [],
+      "riskFlags": [],
+      "evidence": {
+        "command": "node tests/computer-use/run-computer-use-benchmark.mjs",
+        "logPath": "stdout",
+        "source": "fixture canonical report"
+      },
+      "pass": true,
+      "reason": "Semantic UIA value action succeeded and post-action value matched in fixture evidence."
+    },
+    {
+      "scenario": "win-calculator-uia-invoke",
+      "provider": "windows-uia",
+      "providerLine": "windows-provider",
+      "status": "passed-fixture",
+      "selector": {
+        "strategy": "uia",
+        "controlType": "Button",
+        "automationId": "num7Button",
+        "name": "Seven"
+      },
+      "action": {
+        "type": "click",
+        "semantic": true,
+        "background": true,
+        "method": "InvokePattern.Invoke"
+      },
+      "capability": {
+        "backgroundRead": true,
+        "backgroundInvoke": true,
+        "backgroundType": false,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "hidFallbackNeeded": false
+      },
+      "beforeVerification": {
+        "source": "uia",
+        "targetFound": true,
+        "confidence": 0.95,
+        "evidence": "Fixture models num7Button resolved by automationId."
+      },
+      "afterVerification": {
+        "source": "uia",
+        "success": true,
+        "confidence": 0.92,
+        "evidence": "Calculator result name changed to 7."
+      },
+      "fallbackUsed": [],
+      "riskFlags": [],
+      "evidence": {
+        "command": "node tests/computer-use/run-computer-use-benchmark.mjs",
+        "logPath": "stdout",
+        "source": "fixture canonical report"
+      },
+      "pass": true,
+      "reason": "Semantic InvokePattern action changed calculator state in fixture evidence."
+    },
+    {
+      "scenario": "browser-baidu-dom-search",
+      "provider": "browser-dom-cdp",
+      "providerLine": "browser-provider",
+      "status": "passed-fixture",
+      "selector": {
+        "strategy": "css",
+        "value": "input[name=wd]",
+        "role": "searchbox"
+      },
+      "action": {
+        "type": "typeAndSubmit",
+        "semantic": true,
+        "background": true,
+        "method": "DOM.value + HTMLFormElement.requestSubmit"
+      },
+      "capability": {
+        "backgroundRead": true,
+        "backgroundInvoke": true,
+        "backgroundType": true,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "hidFallbackNeeded": false
+      },
+      "beforeVerification": {
+        "source": "dom",
+        "targetFound": true,
+        "confidence": 1,
+        "evidence": "DOM fixture contains input[name=wd]."
+      },
+      "afterVerification": {
+        "source": "dom",
+        "success": true,
+        "confidence": 0.99,
+        "evidence": "input value and #result text contain submitted query."
+      },
+      "fallbackUsed": [],
+      "riskFlags": [],
+      "evidence": {
+        "command": "node tests/computer-use/run-computer-use-benchmark.mjs",
+        "logPath": "stdout",
+        "source": "fixture canonical report"
+      },
+      "pass": true,
+      "reason": "DOM selector action completed without foreground or visual fallback in fixture evidence."
+    },
+    {
+      "scenario": "electron-spectrai-uia-command",
+      "provider": "windows-uia-electron-adapter",
+      "providerLine": "windows-provider",
+      "status": "passed-fixture-with-fallback",
+      "selector": {
+        "strategy": "uiaThenOcrNeighborhood",
+        "controlType": "Edit",
+        "nameContains": "message|prompt|输入|Ask"
+      },
+      "action": {
+        "type": "type",
+        "semantic": true,
+        "background": false,
+        "method": "Focus + text input after UIA/OCR target confirmation"
+      },
+      "capability": {
+        "backgroundRead": true,
+        "backgroundInvoke": false,
+        "backgroundType": false,
+        "requiresForeground": true,
+        "visionFallbackNeeded": true,
+        "hidFallbackNeeded": false
+      },
+      "beforeVerification": {
+        "source": "uia+ocr",
+        "targetFound": true,
+        "confidence": 0.78,
+        "evidence": "OCR text appears near UIA edit candidate."
+      },
+      "afterVerification": {
+        "source": "uia+ocr",
+        "success": true,
+        "confidence": 0.76,
+        "evidence": "OCR text appears near focused edit region after input."
+      },
+      "fallbackUsed": [
+        {
+          "type": "visionOcr",
+          "reason": "Electron content area exposed weak UIA labels; OCR provided neighborhood hint before foreground type.",
+          "traceId": "fixture-electron-ocr-neighborhood"
+        }
+      ],
+      "riskFlags": ["requiresForeground", "ocrNeighborhoodMatch"],
+      "evidence": {
+        "command": "node tests/computer-use/run-computer-use-benchmark.mjs",
+        "logPath": "stdout",
+        "source": "fixture canonical report"
+      },
+      "pass": true,
+      "reason": "Succeeded with tracked OCR-to-UIA neighborhood fallback; raw coordinate OCR center click is not allowed."
+    },
+    {
+      "scenario": "macos-ax-demo-button",
+      "provider": "macos-ax",
+      "providerLine": "macos-provider",
+      "status": "blocked-unsupported-in-env",
+      "selector": {
+        "strategy": "ax",
+        "role": "AXButton",
+        "title": "New Document"
+      },
+      "action": {
+        "type": "press",
+        "semantic": true,
+        "background": true,
+        "method": "AXPress"
+      },
+      "capability": {
+        "backgroundRead": true,
+        "backgroundInvoke": true,
+        "backgroundType": false,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "hidFallbackNeeded": false
+      },
+      "beforeVerification": {
+        "source": "ax",
+        "targetFound": false,
+        "confidence": 0,
+        "skipped": true,
+        "skipReason": "Fixture run on Windows; macOS Accessibility/TCC cannot be exercised here."
+      },
+      "afterVerification": {
+        "source": "ax",
+        "success": false,
+        "confidence": 0,
+        "skipped": true,
+        "skipReason": "Run ax-demo.applescript or macOS provider smoke on macOS with Accessibility permission."
+      },
+      "fallbackUsed": [],
+      "riskFlags": ["environmentUnsupported"],
+      "evidence": {
+        "command": "node tests/computer-use/run-computer-use-benchmark.mjs",
+        "logPath": "stdout",
+        "source": "unsupported safe path fixture"
+      },
+      "pass": false,
+      "reason": "Blocked in current Windows environment; explicit unsupported safe path prevents false pass."
+    },
+    {
+      "scenario": "fallback-canvas-vision-ocr-hid",
+      "provider": "vision-ocr-hid-fallback",
+      "providerLine": "fallback-layer",
+      "status": "passed-fixture-with-fallback",
+      "selector": {
+        "strategy": "visionOcr",
+        "text": "RUN",
+        "boundsAreEvidenceOnly": true
+      },
+      "action": {
+        "type": "click",
+        "semantic": false,
+        "background": false,
+        "method": "vision/OCR target discovery + HID final click"
+      },
+      "capability": {
+        "backgroundRead": false,
+        "backgroundInvoke": false,
+        "backgroundType": false,
+        "requiresForeground": true,
+        "visionFallbackNeeded": true,
+        "hidFallbackNeeded": true
+      },
+      "beforeVerification": {
+        "source": "visionOcr",
+        "targetFound": true,
+        "confidence": 0.74,
+        "evidence": "Canvas contains RUN visual target and no actionable DOM node."
+      },
+      "afterVerification": {
+        "source": "dom-sentinel-or-screenshot",
+        "success": true,
+        "confidence": 0.71,
+        "evidence": "Canvas sentinel state changed after traced HID click."
+      },
+      "fallbackUsed": [
+        {
+          "type": "visionOcr",
+          "reason": "DOM/AX/UIA providers cannot target canvas-only text; vision identifies RUN target.",
+          "traceId": "fixture-canvas-vision-run"
+        },
+        {
+          "type": "hid",
+          "reason": "Canvas has no semantic action endpoint; HID click is final fallback after visual target confirmation.",
+          "traceId": "fixture-canvas-hid-click"
+        }
+      ],
+      "riskFlags": ["requiresForeground", "highUntilVerified", "hidFinalFallback"],
+      "evidence": {
+        "command": "node tests/computer-use/run-computer-use-benchmark.mjs",
+        "logPath": "stdout",
+        "source": "fixture canonical report"
+      },
+      "pass": true,
+      "reason": "Fallback is explicit, traceable, and verified after action."
+    }
+  ]
+}

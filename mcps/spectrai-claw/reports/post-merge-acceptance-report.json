@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "computer-use-benchmark.final-acceptance.v0",
+  "generatedAt": "2026-05-25T08:31:00.000Z",
+  "canonicalDetailedReport": "../tests/computer-use/reports/post-merge-acceptance-report.json",
+  "benchmarkDoc": "../docs/computer-use-benchmark.md",
+  "status": "final-refresh-with-blocked-provider-evidence",
+  "providers": [
+    {
+      "providerLine": "core-runtime",
+      "status": "accepted-composition-smoke-semi-real",
+      "taskId": "4544db19-f27f-456d-a060-08aff8b6fabb",
+      "commands": [
+        "npx tsc --noEmit",
+        "npm run smoke:computer-use",
+        "npm run test:computer-use"
+      ],
+      "logPath": "%TEMP%\\spectrai-claw-computer-use-composition-smoke.jsonl; team task 4544db19 round-2 accepted review summary",
+      "evidence": "Accepted review score 8.33 after commit 14ea52d. The reproducible smoke registered Browser CDP live-or-blocked, Windows legacy bridge, macOS AX daemon contract, and vision fallback through ComputerUseRuntime; capability report, selector/action, verification, fallback, and blocked reasons were visible.",
+      "remainingRisk": "Accepted evidence is still semi-real: Browser CDP is blocked until 9222 is reachable, Core's own Windows leg is legacy read/dry-run while Agent B supplies separate WinForms mutate proof, and macOS live AX needs a macOS/TCC host."
+    },
+    {
+      "providerLine": "windows-provider",
+      "status": "passed-mutate-smoke-winforms-fixture",
+      "taskId": "cb39b95b-b0fc-4956-a577-af44ef6dc4cd",
+      "commands": [
+        "npm run build",
+        "node scripts/windows-provider-smoke.mjs",
+        "node --test tests/e2e/windows-provider-smoke.test.mjs"
+      ],
+      "logPath": "C:\\Users\\魏斌\\AppData\\Local\\Temp\\spectrai-claw-windows-provider-smoke-22a391ad.json; team task cb39b95b summary",
+      "evidence": "Commit 48ec8be passed WinForms fixture mutate smoke: window/tree read, selector, Value/Invoke/Selection actions, and post-action assertions. Provider package exposes getCapabilities/getAppState/getAppTree/findElement/invokeElement/setValue/selectElement/expandCollapseElement with UIA Invoke/Value/Toggle/SelectionItem/ExpandCollapse preferred and Win32 BM_CLICK/WM_SETTEXT fallback plus explicit not_found/unsupported/requires_foreground/verification_failed codes.",
+      "remainingRisk": "Smoke is real/semi-real against a WinForms fixture; broader Notepad/Calculator/Explorer live-app mutation, localized selectors, DPI/RDP/session boundaries, and strict verification_failed behavior still need release sampling."
+    },
+    {
+      "providerLine": "browser-provider",
+      "status": "blocked-live-cdp-fake-session-passed",
+      "taskId": "f6d8ea1e-174b-4962-92d3-cde1319b4cf0",
+      "commands": [
+        "npx tsc --noEmit",
+        "npm run build",
+        "node --test dist/computer-use/providers/browser/__tests__/browser-provider.test.js",
+        "Invoke-RestMethod http://127.0.0.1:9222/json/version",
+        "node dist/computer-use/providers/browser/browser-cdp-smoke.js",
+        "chrome.exe --remote-debugging-port=9222 --user-data-dir=%TEMP%\\spectrai-cdp-smoke"
+      ],
+      "logPath": "mcps/spectrai-claw/docs/computer-use-browser-smoke-evidence-2026-05-25.md; team tasks f1bb0522/f6d8ea1e summaries",
+      "evidence": "Fake-session substitute passed capability report, DOM state/tree, selector/action, and verification tests. Live CDP blocked: /json/version timed out with CDP_PROBE_FAILED; live smoke exited SMOKE_EXIT=2 with error fetch failed.",
+      "remainingRisk": "Needs live Chrome/Edge CDP target on port 9222 before DOM snapshot/click/type/post-action verification can be accepted as live evidence."
+    },
+    {
+      "providerLine": "macos-provider",
+      "status": "accepted-contract-static-live-unsupported",
+      "taskId": "b154cfaf-36cb-4008-b768-ba66c0d6d440",
+      "commands": [
+        "npm run build",
+        "npx tsc --noEmit",
+        "node --test dist/computer-use/providers/macos/__tests__/provider-contract.test.js",
+        "osascript tests/computer-use/fixtures/macos/ax-demo.applescript"
+      ],
+      "logPath": "team task b154cfaf accepted review summary",
+      "evidence": "After rework, 5 macOS provider-contract tests passed with fake bridge/ProviderRegistry-like composition; TCC runbook and prototype commands documented.",
+      "remainingRisk": "Real AX remains unsupported on Windows; requires macOS host with Accessibility/Automation/Screen Recording permissions and post-action AX state reread."
+    },
+    {
+      "providerLine": "fallback-layer",
+      "status": "passed-fixture-live-fallback-blocked-by-provider-results",
+      "taskId": "3ea06bd7-70c9-443c-951e-26248c0f34dd",
+      "commands": [
+        "node tests/computer-use/run-computer-use-benchmark.mjs",
+        "node --test tests/e2e/computer-use-benchmark.test.mjs"
+      ],
+      "logPath": "stdout; detailed canonical report in tests/computer-use/reports/post-merge-acceptance-report.json",
+      "evidence": "Fixture report includes Electron OCR-neighborhood and canvas vision/OCR/HID fallback entries with type/reason/traceId; fallbackTraceabilityRate=1.",
+      "remainingRisk": "Live fallback proof still needs Browser live CDP and real provider miss reasons beyond fixtures; Windows mutate now provides WinForms fixture fallback codes but not broad live-app fallback coverage."
+    },
+    {
+      "providerLine": "benchmark-package",
+      "status": "passed-local-fixture",
+      "taskId": "3ea06bd7-70c9-443c-951e-26248c0f34dd",
+      "commands": [
+        "node tests/computer-use/run-computer-use-benchmark.mjs",
+        "node --test tests/e2e/computer-use-benchmark.test.mjs",
+        "node --test \"tests/e2e/*.mjs\""
+      ],
+      "logPath": "stdout",
+      "evidence": "Runner ok=true with 6 cases, 5 provider acceptance lines, 6 post-merge lines, all thresholdResults=true; e2e smoke passed; explicit e2e glob passed with expected macOS skips.",
+      "remainingRisk": "Fixture-only evidence must be supplemented by live computer-use-benchmark.report.v0 after provider composition blockers are resolved."
+    }
+  ],
+  "localVerification": {
+    "runner": "passed: node tests/computer-use/run-computer-use-benchmark.mjs -> ok=true, scenarioCount=6, caseCount=6, providerAcceptanceCount=5, postMergeProviderLineCount=6, all thresholdResults=true",
+    "e2eSmoke": "passed: node --test tests/e2e/computer-use-benchmark.test.mjs -> tests=1, pass=1, fail=0",
+    "explicitE2eGlob": "passed-with-platform-skips: node --test \"tests/e2e/*.mjs\" -> tests=12, pass=1, skipped=11 macOS-only, fail=0",
+    "build": "blocked-environment: npm run build invokes npx tsc, but this Agent E worktree has no local TypeScript dependency; npm ls typescript --depth=0 returned empty"
+  }
+}

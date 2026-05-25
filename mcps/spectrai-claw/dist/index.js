@@ -6,6 +6,7 @@ import { registerTool, listTools, callTool } from './tools/registry.js';
 import { registerDesktopTools } from './tools/desktop-tools.js';
 import { registerShellTools } from './tools/shell-tools.js';
 import { registerFileTools } from './tools/file-tools.js';
+import { registerBrowserComputerUseTools } from './computer-use/providers/browser/index.js';
 import { shell } from './helpers/PersistentShell.js';
 const server = new Server({ name: 'spectrai-claw', version: '0.1.0' }, { capabilities: { tools: {} } });
 // Register built-in ping tool for connectivity verification
@@ -28,6 +29,7 @@ async function main() {
     await registerDesktopTools();
     registerShellTools();
     registerFileTools();
+    registerBrowserComputerUseTools();
     // Only bootstrap PersistentShell on Windows — macOS uses DarwinHelper instead
     if (process.platform === 'win32') {
         shell.start().catch(() => { });

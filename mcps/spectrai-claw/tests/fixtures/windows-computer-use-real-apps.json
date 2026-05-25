@@ -1,0 +1,219 @@
+{
+  "schemaVersion": 1,
+  "provider": "windows-uia-win32",
+  "description": "Windows real-app semantic action verification fixture for SpectrAI Claw Computer Use provider.",
+  "preflightChecklist": [
+    {
+      "id": "uia-availability",
+      "name": "UIA availability",
+      "expectation": "listWindows returns at least one visible window and readTree returns ElementNode roots for native system apps.",
+      "failureCodes": ["uia_tree_empty", "provider_unavailable"]
+    },
+    {
+      "id": "win32-fallback",
+      "name": "Win32 semantic fallback",
+      "expectation": "HWND-backed Button/Edit controls expose nativeWindowHandle so BM_CLICK or WM_SETTEXT can be attempted when UIA Pattern is absent.",
+      "failureCodes": ["native_hwnd_missing", "win32_message_rejected"]
+    },
+    {
+      "id": "iaccessible-wake",
+      "name": "IAccessible wake",
+      "expectation": "Chromium/Electron windows can be awakened through AccessibleObjectFromWindow before declaring vision fallback.",
+      "failureCodes": ["accessibility_wake_ignored", "uia_tree_empty"]
+    },
+    {
+      "id": "foreground-hid-fallback",
+      "name": "Foreground/HID fallback is explicit",
+      "expectation": "Foreground-only actions report requiresForeground=true or fallbackUsed=hid/foreground, never background success.",
+      "failureCodes": ["unexpected_background_success", "requires_foreground"]
+    },
+    {
+      "id": "session-permissions",
+      "name": "Permissions/session/RDP",
+      "expectation": "Run in an unlocked interactive desktop session with matching integrity level; record RDP/lock-screen state.",
+      "failureCodes": ["session_locked", "rdp_capture_limited", "integrity_boundary"]
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "win-list-windows",
+      "app": "Desktop session",
+      "titlePattern": ".*",
+      "operation": "listWindows",
+      "selector": {},
+      "capabilityExpected": {
+        "backgroundRead": true,
+        "backgroundInvoke": false,
+        "backgroundType": false,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "fallbackUsed": "none",
+        "verificationConfidence": "high"
+      },
+      "assertions": [
+        "windows.length > 0",
+        "each sampled window has handle/processId/title/bounds"
+      ],
+      "notes": "Read-only session inventory. This is the first canary for UIA/Win32 provider availability."
+    },
+    {
+      "id": "win-read-uia-tree",
+      "app": "Any visible native app",
+      "titlePattern": "Calculator|Notepad|File Explorer|Explorer|SpectrAI",
+      "operation": "readTree",
+      "selector": { "controlType": "Window" },
+      "capabilityExpected": {
+        "backgroundRead": true,
+        "backgroundInvoke": false,
+        "backgroundType": false,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "fallbackUsed": "none",
+        "verificationConfidence": "high"
+      },
+      "assertions": [
+        "tree.length > 0",
+        "root contains processId, bounds, controlType",
+        "at least one node exposes patterns or nativeWindowHandle for system apps"
+      ],
+      "notes": "Use depth 4 first; increase to 6 only for diagnosis to avoid oversized UIA trees."
+    },
+    {
+      "id": "win-selector-find",
+      "app": "Calculator or Notepad",
+      "titlePattern": "Calculator|Notepad",
+      "operation": "findElement",
+      "selector": {
+        "controlType": "Button|Edit",
+        "name": "One|1|Text editor|Save|Open"
+      },
+      "capabilityExpected": {
+        "backgroundRead": true,
+        "backgroundInvoke": true,
+        "backgroundType": true,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "fallbackUsed": "none",
+        "verificationConfidence": "medium"
+      },
+      "assertions": [
+        "selector returns exactly one best-scored ElementNode or records ambiguity",
+        "ElementNode has stable automationId/name/controlType/path/bounds where available"
+      ],
+      "notes": "AutomationId can differ by Windows version; selector should fall back to name/controlType/path rather than raw coordinates."
+    },
+    {
+      "id": "calculator-invoke-button",
+      "app": "Calculator",
+      "launchHints": ["calc.exe", "start ms-calculator:"],
+      "titlePattern": "Calculator",
+      "operation": "executeAction.invoke",
+      "selector": {
+        "automationId": "num1Button",
+        "name": "One",
+        "controlType": "Button"
+      },
+      "capabilityExpected": {
+        "backgroundRead": true,
+        "backgroundInvoke": true,
+        "backgroundType": false,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "fallbackUsed": "uia.InvokePattern|win32.BM_CLICK",
+        "verificationConfidence": "medium"
+      },
+      "assertions": [
+        "action.ok is true",
+        "method is uia.InvokePattern or win32.BM_CLICK",
+        "post-action tree/display read can observe calculator result text when available"
+      ],
+      "notes": "Calculator UIA automationIds are stable on many Windows versions but localized names vary; prefer automationId when present."
+    },
+    {
+      "id": "notepad-setvalue-type-verify",
+      "app": "Notepad",
+      "launchHints": ["notepad.exe"],
+      "titlePattern": "Notepad",
+      "operation": "executeAction.setValue",
+      "selector": {
+        "controlType": "Edit",
+        "className": "Edit|RichEditD2DPT"
+      },
+      "inputText": "SpectrAI Windows provider smoke",
+      "capabilityExpected": {
+        "backgroundRead": true,
+        "backgroundInvoke": false,
+        "backgroundType": true,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "fallbackUsed": "uia.ValuePattern.SetValue|win32.WM_SETTEXT",
+        "verificationConfidence": "high"
+      },
+      "assertions": [
+        "action.ok is true",
+        "verification.attempted is true",
+        "verification.passed is true or failure maps to requires_foreground/capability",
+        "post-action value/text contains inputText"
+      ],
+      "notes": "Modern Notepad may use a custom text surface; if ValuePattern is absent and WM_SETTEXT is rejected, report requires_foreground and use legacy keyboard_type fallback."
+    },
+    {
+      "id": "explorer-focus-select",
+      "app": "File Explorer",
+      "launchHints": ["explorer.exe"],
+      "titlePattern": "File Explorer|Explorer|This PC|Home|Desktop|Documents",
+      "operation": "executeAction.focusOrSelect",
+      "selector": {
+        "controlType": "ListItem|TreeItem|DataItem",
+        "name": "Home|Desktop|Documents|Downloads|This PC"
+      },
+      "capabilityExpected": {
+        "backgroundRead": true,
+        "backgroundInvoke": true,
+        "backgroundType": false,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "fallbackUsed": "uia.SelectionItemPattern|uia.SetFocus|foreground",
+        "verificationConfidence": "medium"
+      },
+      "assertions": [
+        "findElement returns a filesystem/navigation item or records localized-name mismatch",
+        "select/focus action verifies IsSelected or HasKeyboardFocus when UIA exposes state",
+        "if foreground is needed, failure code is requires_foreground instead of hid success"
+      ],
+      "notes": "Explorer labels are localized and can be virtualized; selector should allow equivalent system app items and avoid coordinate-only targeting."
+    }
+  ],
+  "troubleshooting": [
+    {
+      "symptom": "UIA tree is empty or only desktop root is returned",
+      "likelyCauses": ["target app runs elevated while provider is not", "session is locked", "app is Chromium/Electron and accessibility tree has not been awakened", "depth/maxNodes too low"],
+      "recommendedActions": ["retry readTree with target processId/windowId", "run from unlocked interactive desktop", "compare integrity level", "allow IAccessible wake before vision fallback", "capture screenshot/OCR as fallback evidence"]
+    },
+    {
+      "symptom": "AutomationId is missing or unstable",
+      "likelyCauses": ["localized Windows build", "WinUI version difference", "virtualized list item recycling"],
+      "recommendedActions": ["prefer combined selector name/controlType/className/path", "refresh tree immediately before action", "record ambiguity and avoid raw coordinate click"]
+    },
+    {
+      "symptom": "Win32 BM_CLICK or WM_SETTEXT does not change the app",
+      "likelyCauses": ["control is custom drawn", "wrong nativeWindowHandle", "target rejects cross-process window messages", "integrity boundary"],
+      "recommendedActions": ["return capability or requires_foreground", "try UIA pattern first", "use foreground keyboard_type only as explicit fallback", "do not mark backgroundType/backgroundInvoke true"]
+    },
+    {
+      "symptom": "Action needs foreground even though element was found",
+      "likelyCauses": ["global hotkey", "focus-only text surface", "protected window", "modal dialog changed focus"],
+      "recommendedActions": ["return requires_foreground", "focus window through old window_focus path", "re-read tree after foreground activation", "verify post-action value/selection"]
+    },
+    {
+      "symptom": "Vision/HID fallback appears offset",
+      "likelyCauses": ["DPI scaling", "multi-monitor negative origin", "window moved between screenshot and click", "RDP scaling"],
+      "recommendedActions": ["use UIA bounds first", "re-capture screenshot immediately before HID fallback", "record capture origin and DPI", "avoid stale snapshot clicks"]
+    },
+    {
+      "symptom": "RDP or locked-screen run fails",
+      "likelyCauses": ["desktop is not interactive", "screen capture unavailable", "input is suppressed", "session disconnected"],
+      "recommendedActions": ["mark environment as unsupported for HID/vision", "keep session unlocked", "prefer semantic read-only checks", "do not claim action success without verification"]
+    }
+  ]
+}

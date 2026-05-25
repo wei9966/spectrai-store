@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "provider": "macos-ax",
+  "purpose": "Manual QA fixture for validating the macOS Accessibility provider on real macOS hardware without depending on unfinished Core runtime code.",
+  "safeDefaults": {
+    "nonMacOS": {
+      "command": "node dist/scripts/macos-computer-use-verify.js",
+      "expected": {
+        "ok": true,
+        "mode": "unsupported-platform",
+        "platform": "not darwin",
+        "stagesContains": ["capability-report"],
+        "mustNotStartDaemon": true,
+        "mustNotInvokeOsascript": true
+      }
+    },
+    "macOSReadOnly": {
+      "command": "node dist/scripts/macos-computer-use-verify.js --processName Finder",
+      "expected": {
+        "ok": true,
+        "mode": "macos-readonly-verification",
+        "stagesContains": ["capability-report", "list-apps", "list-windows", "read-ax-tree"],
+        "actionStagesSkipped": true
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "id": "finder-readonly",
+      "description": "Validates list apps/windows and AX tree read against Finder. This is low-risk and should not mutate app state.",
+      "platform": "darwin",
+      "preconditions": [
+        "Finder is running",
+        "Accessibility permission granted to the launching terminal/helper",
+        "Swift daemon can be built or started by DarwinHelper"
+      ],
+      "command": "node dist/scripts/macos-computer-use-verify.js --processName Finder --max-depth 5 --max-count 120",
+      "expected": {
+        "ok": true,
+        "stages": {
+          "list-apps": "pass",
+          "list-windows": "pass",
+          "read-ax-tree": "pass",
+          "focus-press-setvalue-actions": "skip"
+        },
+        "treeSummary": {
+          "snapshotId": "non-empty string",
+          "elementCount": ">= 1"
+        }
+      },
+      "failureHints": [
+        "If read-ax-tree fails with permission errors, open System Settings > Privacy & Security > Accessibility and grant the launching app.",
+        "If elementCount is 0, make a Finder window visible and retry, or test a simpler app such as TextEdit."
+      ]
+    },
+    {
+      "id": "finder-selector",
+      "description": "Validates AX selector matching. Finder toolbar buttons vary by locale, so this is an example to adapt after inspecting firstActionable from the read-only report.",
+      "platform": "darwin",
+      "command": "node dist/scripts/macos-computer-use-verify.js --processName Finder --selector-json '{\"AXRole\":\"AXButton\"}'",
+      "expected": {
+        "ok": true,
+        "stages": {
+          "find-ax-selector": "pass"
+        },
+        "selectorResult": {
+          "found": "true when Finder exposes at least one AXButton"
+        }
+      }
+    },
+    {
+      "id": "textedit-setvalue",
+      "description": "Validates AXSetValue/background typing path and post-action AX value verification in a low-risk TextEdit scratch document.",
+      "platform": "darwin",
+      "preconditions": [
+        "Open TextEdit with a new plain/rich text scratch document",
+        "Do not use a document containing important unsaved data",
+        "Accessibility permission granted"
+      ],
+      "setupCommands": [
+        "open -a TextEdit"
+      ],
+      "command": "node dist/scripts/macos-computer-use-verify.js --processName TextEdit --run-actions --setvalue-selector-json '{\"AXRole\":\"AXTextArea\"}' --text 'SpectrAI macOS AX verification'",
+      "expected": {
+        "ok": true,
+        "stages": {
+          "focus-window-or-app": "pass or warn",
+          "set-value-or-type": "pass"
+        },
+        "actionMethods": ["daemon.axSetValue", "daemon.hidType"],
+        "preferredMethod": "daemon.axSetValue",
+        "verification": "ax-value success when AXValue is readable and settable"
+      },
+      "failureHints": [
+        "If method is daemon.hidType, the text field did not expose settable AXValue; ensure TextEdit document is frontmost and editable.",
+        "If verification fails but text appears visually, Screen Recording fallback may be needed for visual verification."
+      ]
+    },
+    {
+      "id": "jxa-menu-finder",
+      "description": "Validates System Events/JXA Automation path for menu selection. This intentionally changes foreground state and may open a Finder window.",
+      "platform": "darwin",
+      "preconditions": [
+        "Automation permission is allowed when prompted for osascript/System Events controlling Finder",
+        "Finder is safe to bring foreground"
+      ],
+      "command": "osascript -l JavaScript src/scripts/macos-ax-smoke.jxa --op selectMenu --processName Finder --menuPath '[\"File\",\"New Finder Window\"]'",
+      "expected": {
+        "ok": true,
+        "warningsContains": ["menu selection requires foreground menu bar + Automation permission"],
+        "data": {
+          "clicked": ["File", "New Finder Window"]
+        }
+      },
+      "failureHints": [
+        "If error mentions not authorized, grant Automation for the launching app and System Events/Finder target.",
+        "If menu item name differs by locale, use a localized menuPath."
+      ]
+    },
+    {
+      "id": "screen-recording-fallback-preflight",
+      "description": "Confirms capability report can expose missing Screen Recording before relying on visual/OCR fallback.",
+      "platform": "darwin",
+      "command": "node dist/scripts/macos-computer-use-verify.js --processName Finder",
+      "expected": {
+        "capability.permissionsRequired.Screen Recording.status": "granted | missing | unknown",
+        "ifMissing": "read AX may pass, but screenshot/vision fallback should be marked unavailable until permission is granted"
+      }
+    }
+  ],
+  "resultTriage": {
+    "pass": "All required stages pass; note whether actions used AX or fallback methods.",
+    "warn": "Semantic path worked but returned warnings such as HID fallback, sparse AX tree, or unknown permission state.",
+    "skip": "Expected for non-macOS and for action stages when --run-actions is omitted.",
+    "fail": "Use docs/computer-use-macos-tcc-runbook.md to map the failing stage to TCC, daemon, target app, or fallback issues."
+  }
+}

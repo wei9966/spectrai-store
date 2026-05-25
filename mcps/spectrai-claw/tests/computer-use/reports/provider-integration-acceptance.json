@@ -1,0 +1,251 @@
+{
+  "schemaVersion": "computer-use-benchmark.provider-acceptance.v0",
+  "description": "Provider integration acceptance matrix and post-merge retest checklist for Universal Computer Use Runtime.",
+  "riskThresholds": {
+    "semanticActionSuccessRate": {
+      "minFixture": 0.8,
+      "minLiveExecutedCases": 0.9,
+      "rule": "Semantic actions count as successful only when afterVerification.success=true or the provider reports an explicit unsupported safe path."
+    },
+    "backgroundActionSuccessRate": {
+      "minFixture": 0.75,
+      "minLiveExecutedCases": 0.85,
+      "rule": "Background invoke/type actions must not move the foreground cursor and must pass post-action verification."
+    },
+    "wrongClickRiskWeightedScore": {
+      "maxFixture": 0.35,
+      "maxLive": 0.25,
+      "rule": "Any high-until-verified case must include fallback traceability and post-action verification evidence."
+    },
+    "averageVerificationConfidence": {
+      "minFixture": 0.7,
+      "minLiveExecutedCases": 0.85,
+      "minPerExecutedCase": 0.7,
+      "rule": "Unsupported safe paths may report 0 confidence only when explicitly skipped with environmentUnsupported."
+    },
+    "postActionVerificationSuccessRate": {
+      "minFixture": 0.8,
+      "minLiveExecutedCases": 0.95,
+      "rule": "No provider action can be counted successful without afterVerification.success=true or an explicit unsupported skip."
+    },
+    "backgroundReadCoverageRate": {
+      "minFixture": 0.8,
+      "minLive": 0.8,
+      "rule": "Core, Windows, macOS, and Browser providers must all report whether backgroundRead is supported."
+    },
+    "backgroundInvokeCoverageRate": {
+      "minFixture": 0.5,
+      "minLive": 0.5,
+      "rule": "Windows native, macOS AX, and Browser DOM actions should expose at least one background invoke path."
+    },
+    "backgroundTypeCoverageRate": {
+      "minFixture": 0.3,
+      "minLive": 0.3,
+      "rule": "Windows UIA ValuePattern and Browser DOM type paths should expose background type when supported."
+    },
+    "foregroundFallbackRate": {
+      "maxFixture": 0.35,
+      "maxLive": 0.35,
+      "rule": "requiresForeground=true is acceptable only when the report includes a reason and post-action verification."
+    },
+    "visionFallbackRate": {
+      "maxFixture": 0.35,
+      "maxLive": 0.35,
+      "rule": "visionFallbackNeeded=true must include evidence that semantic provider lookup was attempted first."
+    },
+    "hidFallbackRate": {
+      "maxFixture": 0.2,
+      "maxLive": 0.2,
+      "rule": "HID fallback is acceptable only with traceId, click target evidence, and after-action verification."
+    },
+    "fallbackTraceabilityRate": {
+      "minFixture": 1,
+      "minLive": 1,
+      "rule": "Every fallbackUsed[] entry must include type, reason, and traceId."
+    }
+  },
+  "providerMatrix": [
+    {
+      "id": "core-runtime",
+      "status": "accepted-composition-smoke-semi-real",
+      "scope": "Provider registry, routing, selector/action/capability schema, canonical report emission.",
+      "capabilityFields": {
+        "mustEmit": ["backgroundRead", "backgroundInvoke", "backgroundType", "requiresForeground", "visionFallbackNeeded", "hidFallbackNeeded"],
+        "passCriteria": "Every report case has all capability fields as booleans; unsupported provider paths use explicit status/riskFlags instead of omitted fields."
+      },
+      "selectorFields": {
+        "mustAccept": ["provider", "strategy", "value or provider-specific selector object"],
+        "passCriteria": "Selector is serializable in canonical report and stable enough to replay or diagnose."
+      },
+      "actionVerification": {
+        "required": ["beforeVerification.targetFound", "beforeVerification.confidence", "afterVerification.success", "afterVerification.confidence", "reason"],
+        "passCriteria": "Action success is never inferred from dispatch alone; report records pre-state and post-state evidence."
+      },
+      "fallbackTraceability": {
+        "required": ["fallbackUsed[].type", "fallbackUsed[].reason", "fallbackUsed[].traceId"],
+        "passCriteria": "Core preserves provider fallback chain order and exposes fallback rates in metrics."
+      },
+      "canonicalScenarios": ["all"],
+      "blockingFailures": [
+        "Missing capability field in any case",
+        "Action marked pass=true while afterVerification.success=false and not explicitly skipped",
+        "Fallback used without traceId"
+      ]
+    },
+    {
+      "id": "windows-provider",
+      "status": "passed-mutate-smoke-winforms-fixture",
+      "scope": "Windows UIA/Win32/IAccessible provider and existing Claw compatibility path.",
+      "capabilityFields": {
+        "mustEmit": ["backgroundRead", "backgroundInvoke", "backgroundType", "requiresForeground", "visionFallbackNeeded", "hidFallbackNeeded"],
+        "expectedTrueWhenSupported": ["backgroundRead", "backgroundInvoke", "backgroundType"],
+        "passCriteria": "Native controls use UIA read and patterns before foreground/HID fallback."
+      },
+      "selectorFields": {
+        "mustAccept": ["automationId", "name", "controlType", "className", "processId", "bounds as diagnostic only"],
+        "passCriteria": "automationId outranks exact name+controlType; OCR text is not used as direct click center when a UIA neighbor exists."
+      },
+      "actionVerification": {
+        "required": ["ValuePattern value check", "Invoke/Toggle/Selection/ExpandCollapse state check", "focus/value verification for type"],
+        "passCriteria": "Notepad and Calculator scenarios pass with semantic method and confidence >= 0.9."
+      },
+      "fallbackTraceability": {
+        "required": ["uiaAttempt", "ocrNeighborhoodMatch when used", "hidClick only as final fallback"],
+        "passCriteria": "HID fallback includes UIA failure reason and verification screenshot or state evidence."
+      },
+      "canonicalScenarios": ["win-notepad-uia-type", "win-calculator-uia-invoke", "electron-spectrai-uia-command"],
+      "blockingFailures": [
+        "Native Windows scenario goes straight to HID without UIA attempt",
+        "OCR fallback clicks text center without UIA neighborhood matching",
+        "Type action lacks post-action value/focus verification"
+      ]
+    },
+    {
+      "id": "macos-provider",
+      "status": "accepted-contract-static-live-unsupported",
+      "scope": "macOS AX provider skeleton/live implementation and permission-aware safe path.",
+      "capabilityFields": {
+        "mustEmit": ["backgroundRead", "backgroundInvoke", "backgroundType", "requiresForeground", "visionFallbackNeeded", "hidFallbackNeeded"],
+        "expectedTrueWhenSupported": ["backgroundRead", "backgroundInvoke"],
+        "passCriteria": "AX provider reports capability even when Accessibility or Screen Recording permission is missing."
+      },
+      "selectorFields": {
+        "mustAccept": ["role", "title", "identifier", "pid", "windowId"],
+        "passCriteria": "AX selector is stable across focus changes; unsupported path records environmentUnsupported."
+      },
+      "actionVerification": {
+        "required": ["AX element appears/disappears", "AX value/title/state changes", "permission skip evidence"],
+        "passCriteria": "macos-ax-demo-button either passes live with confidence >= 0.8 or skips with explicit unsupported reason."
+      },
+      "fallbackTraceability": {
+        "required": ["axAttempt", "visionFallback only after AX miss", "hidFallback only after AX/vision miss"],
+        "passCriteria": "macOS fallback chain records permission boundary and does not masquerade HID as AX."
+      },
+      "canonicalScenarios": ["macos-ax-demo-button"],
+      "blockingFailures": [
+        "macOS unavailable case fails without skip reason",
+        "AX action counted successful without AX state verification",
+        "Screen capture or HID fallback used without permission/risk flag"
+      ]
+    },
+    {
+      "id": "browser-provider",
+      "status": "blocked-live-cdp-fake-session-passed",
+      "scope": "Browser DOM/CDP provider or Playwright-like adapter.",
+      "capabilityFields": {
+        "mustEmit": ["backgroundRead", "backgroundInvoke", "backgroundType", "requiresForeground", "visionFallbackNeeded", "hidFallbackNeeded"],
+        "expectedTrueWhenSupported": ["backgroundRead", "backgroundInvoke", "backgroundType"],
+        "passCriteria": "DOM/CDP read, type, and submit paths do not require foreground for DOM-backed controls."
+      },
+      "selectorFields": {
+        "mustAccept": ["css", "role", "text", "accessibleName", "frame", "urlPattern"],
+        "passCriteria": "CSS selector for local Baidu-like fixture is replayable and appears in report."
+      },
+      "actionVerification": {
+        "required": ["DOM property assertion", "DOM textContent assertion", "navigation or mutation evidence when applicable"],
+        "passCriteria": "browser-baidu-dom-search passes with confidence >= 0.98 and no foreground/vision/HID fallback."
+      },
+      "fallbackTraceability": {
+        "required": ["domAttempt", "visionFallback only for canvas/non-DOM content"],
+        "passCriteria": "Canvas fallback is separate from DOM success path and reports why DOM could not target it."
+      },
+      "canonicalScenarios": ["browser-baidu-dom-search", "fallback-canvas-vision-ocr-hid"],
+      "blockingFailures": [
+        "DOM fixture requires foreground click",
+        "DOM action lacks after-action DOM assertion",
+        "Canvas fallback is reported as DOM success"
+      ]
+    },
+    {
+      "id": "fallback-layer",
+      "status": "passed-fixture-live-fallback-blocked-by-provider-results",
+      "scope": "Vision/OCR/HID fallback orchestration shared by providers.",
+      "capabilityFields": {
+        "mustEmit": ["backgroundRead", "backgroundInvoke", "backgroundType", "requiresForeground", "visionFallbackNeeded", "hidFallbackNeeded"],
+        "passCriteria": "Fallback capability fields are explicit and visible in metrics, never hidden as provider success."
+      },
+      "selectorFields": {
+        "mustAccept": ["visionText", "ocrText", "bounds as evidence", "sourceProviderAttempt"],
+        "passCriteria": "Vision/OCR selector includes evidence bounds and source attempt, not only raw coordinates."
+      },
+      "actionVerification": {
+        "required": ["verification screenshot or semantic state", "confidence", "wrong-click risk flag when needed"],
+        "passCriteria": "fallback-canvas-vision-ocr-hid passes only with fallback trace and post-action verification."
+      },
+      "fallbackTraceability": {
+        "required": ["fallbackUsed[].type", "fallbackUsed[].reason", "fallbackUsed[].traceId", "provider attempt order"],
+        "passCriteria": "fallbackTraceabilityRate remains exactly 1."
+      },
+      "canonicalScenarios": ["electron-spectrai-uia-command", "fallback-canvas-vision-ocr-hid"],
+      "blockingFailures": [
+        "HID fallback without afterVerification",
+        "Vision/OCR fallback without source provider miss reason",
+        "fallbackTraceabilityRate below 1"
+      ]
+    }
+  ],
+  "postMergeRetestSequence": [
+    {
+      "order": 1,
+      "id": "schema-fixture-check",
+      "command": "node tests/computer-use/run-computer-use-benchmark.mjs",
+      "expectedOutput": "ok=true with scenarioCount=6, caseCount=6, providerAcceptanceCount=5",
+      "blocksOnFailure": true
+    },
+    {
+      "order": 2,
+      "id": "benchmark-smoke-test",
+      "command": "node --test tests/e2e/computer-use-benchmark.test.mjs",
+      "expectedOutput": "1 passing test; validates canonical scenarios, report metrics, post-merge report, and provider acceptance matrix shape",
+      "blocksOnFailure": true
+    },
+    {
+      "order": 3,
+      "id": "core-provider-composition-smoke",
+      "command": "Run the Core owner smoke command from post-merge-acceptance-report.json when src/computer-use is present in the integration worktree.",
+      "expectedOutput": "ProviderRegistry registers Windows/Browser/macOS providers or returns explicit blocked reason; capability report is visible.",
+      "blocksOnFailure": true
+    },
+    {
+      "order": 4,
+      "id": "browser-live-cdp-smoke",
+      "command": "Start Chrome/Edge with --remote-debugging-port=9222 and run the Browser provider live smoke documented in docs/computer-use-benchmark.md.",
+      "expectedOutput": "DOM snapshot, selector, click/type, and post-action verification evidence for browser-baidu-dom-search.",
+      "blocksOnFailure": false
+    },
+    {
+      "order": 5,
+      "id": "windows-mutate-smoke",
+      "command": "Run the Windows provider Notepad/Calculator mutate smoke documented in docs/computer-use-benchmark.md.",
+      "expectedOutput": "UIA read/selector/Invoke/Value/Selection evidence plus post-action verification; fallback reason if needed.",
+      "blocksOnFailure": false
+    },
+    {
+      "order": 6,
+      "id": "macos-ax-contract-smoke",
+      "command": "On macOS, grant Accessibility/Automation/Screen Recording and run the AX demo fixture or provider smoke.",
+      "expectedOutput": "AX capability report, TCC status, selector/action verification, or explicit unsupported reason.",
+      "blocksOnFailure": false
+    }
+  ]
+}

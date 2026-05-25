@@ -1,0 +1,297 @@
+{
+  "schemaVersion": "computer-use-canonical-scenarios/v1",
+  "name": "Universal Computer Use canonical scenarios",
+  "purpose": "最小覆盖跨平台语义控制、后台动作、前台/视觉/HID 兜底和动作后验证。",
+  "scenarios": [
+    {
+      "id": "win32-native-controls",
+      "title": "Windows 原生控件：WinForms demo 的 Button/CheckBox/TextBox/ComboBox",
+      "platform": "windows",
+      "category": "native-app",
+      "target": {
+        "app": "tests/computer-use/fixtures/windows-native-controls-demo.ps1",
+        "appType": "win32-winforms",
+        "role": "通用 Windows 原生控件样本"
+      },
+      "setup": [
+        "在 Windows 上运行：powershell -NoProfile -ExecutionPolicy Bypass -File tests/computer-use/fixtures/windows-native-controls-demo.ps1",
+        "等待窗口标题 Computer Use Native Controls Demo 出现。",
+        "Runtime/Provider 通过 window title 或 process id 绑定目标窗口。"
+      ],
+      "canonicalActions": [
+        {
+          "operation": "read",
+          "selector": { "title": "Computer Use Native Controls Demo" },
+          "expectProvider": "windows-uia",
+          "expectBackground": true,
+          "expectSemantic": true,
+          "verify": "semanticElementCount >= 5 且包含 Button/CheckBox/Edit/ComboBox"
+        },
+        {
+          "operation": "invoke",
+          "selector": { "automationId": "applyButton", "controlType": "Button" },
+          "expectProvider": "windows-uia",
+          "expectMethod": "InvokePattern",
+          "expectBackground": true,
+          "verify": "statusText 的 Value/Name 变为 Applied"
+        },
+        {
+          "operation": "input",
+          "selector": { "automationId": "nameInput", "controlType": "Edit" },
+          "expectProvider": "windows-uia",
+          "expectMethod": "ValuePattern.SetValue",
+          "expectBackground": true,
+          "verify": "Value 等于 benchmark text"
+        },
+        {
+          "operation": "toggle",
+          "selector": { "automationId": "enableCheckbox", "controlType": "CheckBox" },
+          "expectProvider": "windows-uia",
+          "expectMethod": "TogglePattern",
+          "expectBackground": true,
+          "verify": "ToggleState 改变"
+        }
+      ],
+      "skipWhen": [
+        "process.platform !== win32",
+        "PowerShell 或 .NET WinForms 不可用",
+        "Windows provider/runtime adapter 尚未接入"
+      ],
+      "unsupportedWhen": [
+        "非 Windows 平台"
+      ],
+      "evidence": [
+        "capability report case row",
+        "postActionVerificationSuccessRate",
+        "hidFallbackRate 应为 0"
+      ]
+    },
+    {
+      "id": "chrome-baidu-search",
+      "title": "Chrome/Baidu 搜索：DOM selector 后台输入与提交",
+      "platform": "browser",
+      "category": "browser-page",
+      "target": {
+        "app": "Google Chrome 或 Chromium",
+        "url": "https://www.baidu.com/",
+        "deterministicFixture": "tests/computer-use/fixtures/browser-search-fixture.html",
+        "appType": "chromium-browser"
+      },
+      "setup": [
+        "优先使用已开启 remote-debugging-port 的 Chrome/Edge/Chromium。",
+        "在线验证使用 https://www.baidu.com/；网络不可用时使用 browser-search-fixture.html。",
+        "Runtime/Provider 通过 CDP/Playwright/DOM selector 绑定 active tab。"
+      ],
+      "canonicalActions": [
+        {
+          "operation": "read",
+          "selector": { "css": "input[name=wd], input[type=search]" },
+          "expectProvider": "browser-cdp",
+          "expectBackground": true,
+          "expectSemantic": true,
+          "verify": "DOM tree 有 search input 和 submit button"
+        },
+        {
+          "operation": "input",
+          "selector": { "css": "input[name=wd], #kw, [data-testid=search-input]" },
+          "expectProvider": "browser-cdp",
+          "expectBackground": true,
+          "verify": "input.value 包含 SpectrAI computer use benchmark"
+        },
+        {
+          "operation": "invoke",
+          "selector": { "css": "input[type=submit], button[type=submit], #su" },
+          "expectProvider": "browser-cdp",
+          "expectBackground": true,
+          "verify": "URL 或 DOM 结果区发生变化"
+        }
+      ],
+      "skipWhen": [
+        "Chromium/Chrome 不存在且 local HTML fixture 也不可打开",
+        "CDP 端口未开启且 Browser provider adapter 未提供 Playwright fallback"
+      ],
+      "unsupportedWhen": [],
+      "evidence": [
+        "backgroundReadSuccessRate",
+        "backgroundInputSuccessRate",
+        "backgroundInvokeSuccessRate",
+        "foregroundFallbackRate 应接近 0"
+      ]
+    },
+    {
+      "id": "electron-spectrai-controls",
+      "title": "Electron/SpectrAI：应用级语义树和按钮/输入动作",
+      "platform": "cross-platform",
+      "category": "electron-app",
+      "target": {
+        "app": "SpectrAI 或任意 Electron/Tauri demo app",
+        "appType": "electron-or-tauri",
+        "sampleOnly": true
+      },
+      "setup": [
+        "SpectrAI 可作为样本，但本 scenario 允许替换为 VSCode/Slack/自建 Electron fixture。",
+        "通过 app name、bundle id 或 process id 绑定目标 app。",
+        "Windows 优先 UIA，macOS 优先 AX，Chromium content 区可选 CDP/DOM provider。"
+      ],
+      "canonicalActions": [
+        {
+          "operation": "read",
+          "selector": { "appNameContains": "SpectrAI" },
+          "expectProvider": "windows-uia|macos-ax|browser-cdp",
+          "expectBackground": true,
+          "expectSemantic": true,
+          "verify": "semantic tree 或 DOM tree 中有至少一个可操作按钮和输入控件"
+        },
+        {
+          "operation": "invoke",
+          "selector": { "role": "button", "nameContains": "settings|search|new" },
+          "expectProvider": "windows-uia|macos-ax|browser-cdp",
+          "expectBackground": true,
+          "verify": "目标状态、dialog、panel 或 route 变化"
+        }
+      ],
+      "skipWhen": [
+        "没有运行中的 SpectrAI/Electron/Tauri 样本",
+        "目标 app 明确拒绝 Accessibility/UIA/DOM 暴露"
+      ],
+      "unsupportedWhen": [],
+      "evidence": [
+        "selectorHitRate",
+        "semanticTreeCoverage",
+        "visionFallbackRate 仅在 WebView 内容不可达时上升"
+      ]
+    },
+    {
+      "id": "macos-ax-demo",
+      "title": "macOS AX demo：TextEdit/AppleScript 可访问性读取与输入",
+      "platform": "macos",
+      "category": "native-app",
+      "target": {
+        "app": "TextEdit",
+        "script": "tests/computer-use/fixtures/macos-ax-demo.applescript",
+        "appType": "appkit"
+      },
+      "setup": [
+        "在 macOS 上运行：osascript tests/computer-use/fixtures/macos-ax-demo.applescript",
+        "确保 SpectrAI Claw helper 拥有 Accessibility 和 Screen Recording 权限。",
+        "通过 bundle id com.apple.TextEdit 或前台 app pid 绑定。"
+      ],
+      "canonicalActions": [
+        {
+          "operation": "read",
+          "selector": { "bundleId": "com.apple.TextEdit" },
+          "expectProvider": "macos-ax",
+          "expectBackground": true,
+          "expectSemantic": true,
+          "verify": "AXTextArea/AXScrollArea 可见"
+        },
+        {
+          "operation": "input",
+          "selector": { "role": "AXTextArea" },
+          "expectProvider": "macos-ax",
+          "expectMethod": "AXSetValue or AX focused type",
+          "expectBackground": true,
+          "verify": "文本内容等于 benchmark text"
+        }
+      ],
+      "skipWhen": [
+        "process.platform !== darwin",
+        "TextEdit 不可用",
+        "Accessibility 权限未授予"
+      ],
+      "unsupportedWhen": [
+        "非 macOS 平台"
+      ],
+      "evidence": [
+        "permissionBlockers 明确列出 Accessibility/Screen Recording",
+        "unsupported 不应导致 benchmark 失败"
+      ]
+    },
+    {
+      "id": "vision-hid-fallback-canvas",
+      "title": "不可语义访问 fallback：Canvas/自绘 UI 触发 Vision + HID",
+      "platform": "browser",
+      "category": "fallback",
+      "target": {
+        "app": "Chrome/Chromium",
+        "url": "tests/computer-use/fixtures/vision-fallback-canvas.html",
+        "appType": "canvas-or-custom-drawn-ui"
+      },
+      "setup": [
+        "打开 local canvas fixture。",
+        "DOM/AX 只能看到 canvas 容器，不能看到画在 canvas 内的按钮文字。",
+        "Runtime 应先记录语义 miss，再启用 Vision/OCR 定位，最后通过 HID click 兜底。"
+      ],
+      "canonicalActions": [
+        {
+          "operation": "read",
+          "selector": { "text": "Painted Canvas Button" },
+          "expectProvider": "browser-cdp then vision",
+          "expectBackground": false,
+          "expectSemantic": false,
+          "verify": "selector miss 被记录，visionFallbackUsed=true"
+        },
+        {
+          "operation": "invoke",
+          "selector": { "ocrText": "Painted Canvas Button" },
+          "expectProvider": "vision+hid",
+          "expectBackground": false,
+          "expectForeground": true,
+          "verify": "canvas 状态文本变为 clicked，hidFallbackUsed=true"
+        }
+      ],
+      "skipWhen": [
+        "没有屏幕截图权限或当前环境不允许前台浏览器",
+        "Vision/OCR adapter 尚未接入"
+      ],
+      "unsupportedWhen": [],
+      "evidence": [
+        "visionFallbackRate",
+        "hidFallbackRate",
+        "misClickIncidentRate 必须为 0"
+      ]
+    },
+    {
+      "id": "windows-legacy-claw-accuracy-compat",
+      "title": "现有 Windows Claw accuracy 链路兼容性：describe/click/type 不回退为唯一截图编号路径",
+      "platform": "windows",
+      "category": "compatibility-regression",
+      "target": {
+        "app": "Windows native controls demo 或当前前台原生 App",
+        "appType": "legacy-mcp-compat"
+      },
+      "setup": [
+        "复用 win32-native-controls 目标窗口。",
+        "通过现有 MCP 工具入口或 thin adapter 调用 describe_screen/click/type_text/click_element 兼容层。",
+        "记录 method/provider：UIA pattern 优先，HID 只在语义路径失败后兜底。"
+      ],
+      "canonicalActions": [
+        {
+          "operation": "read",
+          "selector": { "tool": "describe_screen", "mode": "auto" },
+          "expectProvider": "windows-uia",
+          "expectBackground": true,
+          "verify": "ui_elements 包含 source/provider/method 或可推断语义来源"
+        },
+        {
+          "operation": "invoke",
+          "selector": { "legacy": "click_element(number) resolved to UIA element" },
+          "expectProvider": "windows-uia",
+          "expectBackground": true,
+          "verify": "post-action verification success; method 不应直接固定为 hidClick"
+        }
+      ],
+      "skipWhen": [
+        "Windows runtime/provider adapter 尚未接入",
+        "目标窗口不存在"
+      ],
+      "unsupportedWhen": [
+        "非 Windows 平台"
+      ],
+      "evidence": [
+        "legacy compatibility case must be present in canonical report",
+        "hidFallbackRate 不因兼容层显著升高"
+      ]
+    }
+  ]
+}

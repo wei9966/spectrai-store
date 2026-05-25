@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spectrai.local/schemas/computer-use-benchmark-report.v1.json",
+  "title": "Computer Use Benchmark Canonical Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "generatedAt",
+    "source",
+    "environment",
+    "metricDefinitions",
+    "summary",
+    "cases",
+    "rawCaseIds",
+    "regressionGates",
+    "risks",
+    "nextRoundRecommendations"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "computer-use-benchmark-report/v1"
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["fixtureSchemaVersion", "fixtureName"],
+      "properties": {
+        "fixtureSchemaVersion": { "type": "string" },
+        "fixtureName": { "type": ["string", "null"] },
+        "fixtureGeneratedAt": { "type": ["string", "null"] },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "platform": { "type": "string" },
+        "osRelease": { "type": "string" },
+        "nodeVersion": { "type": "string" },
+        "runtimeBuild": { "type": "string" },
+        "isSimulatedFixture": { "type": "boolean" }
+      }
+    },
+    "metricDefinitions": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["required", "optional"],
+      "properties": {
+        "required": { "type": "object" },
+        "optional": { "type": "object" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caseCounts",
+        "requiredMetrics",
+        "optionalMetrics",
+        "providerAvailability"
+      ],
+      "properties": {
+        "caseCounts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total", "eligible", "passed", "failed", "skipped", "unsupported"],
+          "properties": {
+            "total": { "type": "integer", "minimum": 0 },
+            "eligible": { "type": "integer", "minimum": 0 },
+            "passed": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "skipped": { "type": "integer", "minimum": 0 },
+            "unsupported": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "requiredMetrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "semanticActionSuccessRate",
+            "backgroundActionSuccessRate",
+            "foregroundFallbackRate",
+            "visionFallbackRate",
+            "hidFallbackRate",
+            "postActionVerificationSuccessRate"
+          ],
+          "properties": {
+            "semanticActionSuccessRate": { "$ref": "#/$defs/rateMetric" },
+            "backgroundActionSuccessRate": { "$ref": "#/$defs/rateMetric" },
+            "foregroundFallbackRate": { "$ref": "#/$defs/rateMetric" },
+            "visionFallbackRate": { "$ref": "#/$defs/rateMetric" },
+            "hidFallbackRate": { "$ref": "#/$defs/rateMetric" },
+            "postActionVerificationSuccessRate": { "$ref": "#/$defs/rateMetric" }
+          }
+        },
+        "optionalMetrics": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "providerAvailabilityRate",
+            "semanticTreeCoverage",
+            "selectorHitRate",
+            "elementActionSuccessRate",
+            "backgroundReadSuccessRate",
+            "backgroundInvokeSuccessRate",
+            "backgroundInputSuccessRate",
+            "fallbackRate",
+            "misClickIncidentRate",
+            "latency",
+            "permissionBlockers"
+          ],
+          "properties": {
+            "providerAvailabilityRate": { "$ref": "#/$defs/rateMetric" },
+            "semanticTreeCoverage": { "$ref": "#/$defs/rateMetric" },
+            "selectorHitRate": { "$ref": "#/$defs/rateMetric" },
+            "elementActionSuccessRate": { "$ref": "#/$defs/rateMetric" },
+            "backgroundReadSuccessRate": { "$ref": "#/$defs/rateMetric" },
+            "backgroundInvokeSuccessRate": { "$ref": "#/$defs/rateMetric" },
+            "backgroundInputSuccessRate": { "$ref": "#/$defs/rateMetric" },
+            "fallbackRate": { "$ref": "#/$defs/rateMetric" },
+            "misClickIncidentRate": { "$ref": "#/$defs/rateMetric" },
+            "latency": { "$ref": "#/$defs/latency" },
+            "permissionBlockers": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "providerAvailability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rows", "metric"],
+          "properties": {
+            "rows": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/providerAvailabilityRow" }
+            },
+            "metric": { "$ref": "#/$defs/rateMetric" }
+          }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/caseSummary" }
+    },
+    "rawCaseIds": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "regressionGates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/regressionGate" }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "nextRoundRecommendations": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "rateMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator", "rate"],
+      "properties": {
+        "numerator": { "type": "integer", "minimum": 0 },
+        "denominator": { "type": "integer", "minimum": 0 },
+        "rate": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "latency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "avgMs", "p50Ms", "p95Ms", "maxMs"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "avgMs": { "type": ["number", "null"], "minimum": 0 },
+        "p50Ms": { "type": ["number", "null"], "minimum": 0 },
+        "p95Ms": { "type": ["number", "null"], "minimum": 0 },
+        "maxMs": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "providerAvailabilityRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caseId", "platform", "provider", "mode", "available", "reason"],
+      "properties": {
+        "caseId": { "type": "string" },
+        "platform": { "type": "string" },
+        "provider": { "type": "string" },
+        "mode": { "type": "string" },
+        "available": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] }
+      }
+    },
+    "caseSummary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "title",
+        "platform",
+        "category",
+        "status",
+        "provider",
+        "semanticTreeCoverage",
+        "selectorHitRate",
+        "elementActionSuccessRate",
+        "actionCount",
+        "fallback",
+        "background",
+        "latency"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "platform": { "type": "string" },
+        "category": { "type": "string" },
+        "status": {
+          "enum": ["passed", "failed", "skipped", "unsupported"]
+        },
+        "provider": { "type": ["object", "null"] },
+        "semanticTreeCoverage": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "selectorHitRate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "elementActionSuccessRate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "actionCount": { "type": "integer", "minimum": 0 },
+        "fallback": {
+          "type": "object",
+          "required": ["foregroundRequired", "vision", "hid"],
+          "properties": {
+            "foregroundRequired": { "type": "boolean" },
+            "vision": { "type": "boolean" },
+            "hid": { "type": "boolean" }
+          }
+        },
+        "background": {
+          "type": "object",
+          "required": ["attempted", "read", "invoke", "input"],
+          "properties": {
+            "attempted": { "type": "boolean" },
+            "read": { "type": "boolean" },
+            "invoke": { "type": "boolean" },
+            "input": { "type": "boolean" }
+          }
+        },
+        "latency": { "$ref": "#/$defs/latency" }
+      }
+    },
+    "regressionGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "operator", "threshold", "scope"],
+      "properties": {
+        "metric": { "type": "string" },
+        "operator": { "enum": [">=", "<=", "=="] },
+        "threshold": { "type": "number" },
+        "scope": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

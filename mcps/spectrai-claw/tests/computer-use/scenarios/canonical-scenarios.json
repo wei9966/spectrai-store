@@ -1,0 +1,239 @@
+{
+  "schemaVersion": "computer-use-benchmark.scenarios.v0",
+  "description": "Minimum canonical Computer Use Runtime scenarios for semantic/background/fallback verification.",
+  "scenarios": [
+    {
+      "id": "win-notepad-uia-type",
+      "providerLine": "windows-provider",
+      "platform": "windows",
+      "title": "Windows Notepad UIA text entry",
+      "target": {
+        "app": "Notepad",
+        "launchHint": "notepad.exe",
+        "windowTitlePattern": "Untitled|未命名|Notepad|记事本"
+      },
+      "selector": {
+        "strategy": "uia",
+        "automationId": "15",
+        "controlType": "Edit",
+        "name": "Text Editor",
+        "localizedNameHints": ["Text Editor", "文本编辑器", "编辑"]
+      },
+      "action": {
+        "type": "type",
+        "input": "SpectrAI Computer Use smoke",
+        "expectedSemanticMethod": "ValuePattern.SetValue",
+        "mustBeSemantic": true,
+        "expectedBackground": true
+      },
+      "verification": {
+        "source": "uia",
+        "assertion": "Value.Value equals requested text or text pattern contains requested text",
+        "minimumConfidence": 0.9
+      },
+      "capabilityExpectation": {
+        "backgroundRead": true,
+        "backgroundInvoke": false,
+        "backgroundType": true,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "hidFallbackNeeded": false
+      },
+      "riskWeight": "low",
+      "evidenceRequired": ["provider id", "capability report", "selector match", "before/after value evidence"],
+      "blockedWhen": "Non-Windows host, Notepad unavailable, or UIAutomation permission/session unavailable."
+    },
+    {
+      "id": "win-calculator-uia-invoke",
+      "providerLine": "windows-provider",
+      "platform": "windows",
+      "title": "Windows Calculator UIA button invoke",
+      "target": {
+        "app": "Calculator",
+        "launchHint": "calc.exe",
+        "windowTitlePattern": "Calculator|计算器"
+      },
+      "selector": {
+        "strategy": "uia",
+        "automationId": "num7Button",
+        "controlType": "Button",
+        "name": "Seven",
+        "localizedNameHints": ["Seven", "七", "7"]
+      },
+      "action": {
+        "type": "click",
+        "expectedSemanticMethod": "InvokePattern.Invoke",
+        "mustBeSemantic": true,
+        "expectedBackground": true
+      },
+      "verification": {
+        "source": "uia",
+        "assertion": "Calculator display/name/value changes to include 7",
+        "minimumConfidence": 0.9
+      },
+      "capabilityExpectation": {
+        "backgroundRead": true,
+        "backgroundInvoke": true,
+        "backgroundType": false,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "hidFallbackNeeded": false
+      },
+      "riskWeight": "low",
+      "evidenceRequired": ["UIA InvokePattern attempt", "post-action display evidence"],
+      "blockedWhen": "Non-Windows host, Calculator unavailable, or localized selector not mapped."
+    },
+    {
+      "id": "browser-baidu-dom-search",
+      "providerLine": "browser-provider",
+      "platform": "cross-platform-browser",
+      "title": "Chrome/CDP Baidu-like DOM search fixture",
+      "target": {
+        "fixture": "tests/computer-use/fixtures/browser/baidu-search-fixture.html",
+        "liveHint": "Open fixture in Chrome launched with --remote-debugging-port=9222"
+      },
+      "selector": {
+        "strategy": "css",
+        "value": "input[name=wd]",
+        "role": "searchbox",
+        "accessibleName": "search query"
+      },
+      "action": {
+        "type": "typeAndSubmit",
+        "input": "SpectrAI Claw benchmark",
+        "expectedSemanticMethod": "DOM.value + HTMLFormElement.requestSubmit",
+        "mustBeSemantic": true,
+        "expectedBackground": true
+      },
+      "verification": {
+        "source": "dom",
+        "assertion": "input value and #result text contain submitted query",
+        "minimumConfidence": 0.98
+      },
+      "capabilityExpectation": {
+        "backgroundRead": true,
+        "backgroundInvoke": true,
+        "backgroundType": true,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "hidFallbackNeeded": false
+      },
+      "riskWeight": "low",
+      "evidenceRequired": ["CDP target", "DOM snapshot", "selector replay", "post-action DOM mutation"],
+      "blockedWhen": "No Chrome/Edge with CDP port or Browser provider not merged."
+    },
+    {
+      "id": "electron-spectrai-uia-command",
+      "providerLine": "windows-provider",
+      "platform": "windows-electron",
+      "title": "Electron/SpectR AI weak UIA content with OCR neighborhood fallback",
+      "target": {
+        "app": "SpectrAI or Electron shell",
+        "windowTitlePattern": "SpectrAI|Electron|Claw"
+      },
+      "selector": {
+        "strategy": "uiaThenOcrNeighborhood",
+        "controlType": "Edit",
+        "nameContains": "message|prompt|输入|Ask",
+        "ocrTextHint": "Ask|输入|message"
+      },
+      "action": {
+        "type": "type",
+        "input": "benchmark command",
+        "expectedSemanticMethod": "UIA focus/type, or foreground type after UIA+OCR target confirmation",
+        "mustBeSemantic": true,
+        "expectedBackground": false
+      },
+      "verification": {
+        "source": "uia+ocr",
+        "assertion": "text appears in or near the focused edit region; raw OCR center click is forbidden",
+        "minimumConfidence": 0.75
+      },
+      "capabilityExpectation": {
+        "backgroundRead": true,
+        "backgroundInvoke": false,
+        "backgroundType": false,
+        "requiresForeground": true,
+        "visionFallbackNeeded": true,
+        "hidFallbackNeeded": false
+      },
+      "riskWeight": "medium",
+      "evidenceRequired": ["UIA candidate list", "OCR neighborhood trace", "foreground reason", "post-action evidence"],
+      "blockedWhen": "SpectrAI/Electron target not running or UIA/OCR bridge unavailable."
+    },
+    {
+      "id": "macos-ax-demo-button",
+      "providerLine": "macos-provider",
+      "platform": "darwin",
+      "title": "macOS AX demo button press",
+      "target": {
+        "fixture": "tests/computer-use/fixtures/macos/ax-demo.applescript",
+        "app": "TextEdit or System Settings demo target"
+      },
+      "selector": {
+        "strategy": "ax",
+        "role": "AXButton",
+        "title": "New Document",
+        "identifier": "optional"
+      },
+      "action": {
+        "type": "press",
+        "expectedSemanticMethod": "AXPress",
+        "mustBeSemantic": true,
+        "expectedBackground": true
+      },
+      "verification": {
+        "source": "ax",
+        "assertion": "AX element/state/window tree changes or explicit unsupported skip with permission reason",
+        "minimumConfidence": 0.8
+      },
+      "capabilityExpectation": {
+        "backgroundRead": true,
+        "backgroundInvoke": true,
+        "backgroundType": false,
+        "requiresForeground": false,
+        "visionFallbackNeeded": false,
+        "hidFallbackNeeded": false
+      },
+      "riskWeight": "medium",
+      "evidenceRequired": ["TCC permission status", "AX selector", "AX verification or unsupported safe path"],
+      "blockedWhen": "Non-macOS host or missing Accessibility/Automation/Screen Recording permission."
+    },
+    {
+      "id": "fallback-canvas-vision-ocr-hid",
+      "providerLine": "fallback-layer",
+      "platform": "cross-platform-visual",
+      "title": "Canvas-only visual/OCR/HID fallback fixture",
+      "target": {
+        "fixture": "tests/computer-use/fixtures/browser/canvas-fallback-fixture.html"
+      },
+      "selector": {
+        "strategy": "visionOcr",
+        "text": "RUN",
+        "boundsAreEvidenceOnly": true
+      },
+      "action": {
+        "type": "click",
+        "expectedSemanticMethod": "vision/OCR target discovery + HID final click",
+        "mustBeSemantic": false,
+        "expectedBackground": false
+      },
+      "verification": {
+        "source": "screenshot-or-dom-sentinel",
+        "assertion": "canvas state/sentinel changes after HID click with traceable target evidence",
+        "minimumConfidence": 0.7
+      },
+      "capabilityExpectation": {
+        "backgroundRead": false,
+        "backgroundInvoke": false,
+        "backgroundType": false,
+        "requiresForeground": true,
+        "visionFallbackNeeded": true,
+        "hidFallbackNeeded": true
+      },
+      "riskWeight": "high-until-verified",
+      "evidenceRequired": ["semantic provider miss reason", "vision/OCR traceId", "HID traceId", "post-action verification"],
+      "blockedWhen": "Screen capture/OCR/HID unavailable; must not be reported as DOM/UIA success."
+    }
+  ]
+}

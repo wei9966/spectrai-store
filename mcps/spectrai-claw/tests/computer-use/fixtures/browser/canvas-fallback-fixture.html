@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Computer Use Canvas Fallback Fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    canvas { border: 1px solid #222; }
+    #state { margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Canvas-only fallback fixture</h1>
+  <p>The RUN target is painted into canvas, so DOM/AX/UIA should not report a semantic button.</p>
+  <canvas id="targetCanvas" width="320" height="160" aria-label="visual canvas target"></canvas>
+  <div id="state" data-clicked="false">idle</div>
+  <script>
+    const canvas = document.getElementById('targetCanvas');
+    const ctx = canvas.getContext('2d');
+    const state = document.getElementById('state');
+    const target = { x: 100, y: 45, w: 120, h: 70 };
+
+    function paint(active = false) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = active ? '#0a7' : '#1570ef';
+      ctx.fillRect(target.x, target.y, target.w, target.h);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 34px sans-serif';
+      ctx.fillText('RUN', target.x + 27, target.y + 45);
+    }
+
+    canvas.addEventListener('click', (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const hit = x >= target.x && x <= target.x + target.w && y >= target.y && y <= target.y + target.h;
+      if (hit) {
+        state.textContent = 'clicked:RUN';
+        state.dataset.clicked = 'true';
+        paint(true);
+      }
+    });
+
+    window.__computerUseCanvasFixture = {
+      target,
+      getState() { return { clicked: state.dataset.clicked === 'true', text: state.textContent }; }
+    };
+
+    paint(false);
+  </script>
+</body>
+</html>

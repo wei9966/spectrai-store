@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Computer Use Browser DOM Fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    label, input, button { font-size: 16px; }
+    #result { margin-top: 1rem; padding: 0.5rem; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <h1>Baidu-like local search fixture</h1>
+  <form id="searchForm" action="#result" method="get">
+    <label for="kw">search query</label>
+    <input id="kw" name="wd" role="searchbox" aria-label="search query" autocomplete="off">
+    <button id="submit" type="submit">百度一下</button>
+  </form>
+  <div id="result" data-testid="result" aria-live="polite">waiting</div>
+  <script>
+    const form = document.getElementById('searchForm');
+    const input = document.querySelector('input[name=wd]');
+    const result = document.getElementById('result');
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      result.textContent = `submitted:${input.value}`;
+      result.dataset.submitted = input.value;
+    });
+    window.__computerUseFixture = {
+      setQuery(value) {
+        input.value = value;
+        form.requestSubmit();
+        return { value: input.value, result: result.textContent };
+      },
+      getState() {
+        return { value: input.value, result: result.textContent, submitted: result.dataset.submitted || '' };
+      }
+    };
+  </script>
+</body>
+</html>

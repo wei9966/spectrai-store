@@ -1,0 +1,180 @@
+#!/usr/bin/osascript -l JavaScript
+ObjC.import('AppKit')
+
+function json(value) {
+  return JSON.stringify(value)
+}
+
+function ok(data, warnings) {
+  return json({ ok: true, data: data || {}, warnings: warnings || [] })
+}
+
+function fail(error, extra) {
+  return json(Object.assign({ ok: false, error: String(error) }, extra || {}))
+}
+
+function unwrap(value, fallback) {
+  try {
+    if (value === undefined || value === null) return fallback || null
+    var unwrapped = ObjC.unwrap(value)
+    return unwrapped === undefined || unwrapped === null ? fallback || null : unwrapped
+  } catch (_) {
+    return fallback || null
+  }
+}
+
+function parseArgs(argv) {
+  var out = {}
+  for (var i = 0; i < argv.length; i += 1) {
+    var token = String(argv[i])
+    if (token.indexOf('--') !== 0) continue
+    var key = token.slice(2)
+    var next = argv[i + 1]
+    if (next !== undefined && String(next).indexOf('--') !== 0) {
+      out[key] = String(next)
+      i += 1
+    } else {
+      out[key] = true
+    }
+  }
+  return out
+}
+
+function runningApps() {
+  var apps = $.NSWorkspace.sharedWorkspace.runningApplications
+  var front = $.NSWorkspace.sharedWorkspace.frontmostApplication
+  var frontPid = front ? Number(front.processIdentifier) : -1
+  var results = []
+  for (var i = 0; i < apps.count; i += 1) {
+    var app = apps.objectAtIndex(i)
+    if (Number(app.activationPolicy) !== 0) continue
+    results.push({
+      pid: Number(app.processIdentifier),
+      bundleId: unwrap(app.bundleIdentifier, ''),
+      processName: unwrap(app.localizedName, ''),
+      isActive: Number(app.processIdentifier) === frontPid,
+    })
+  }
+  return results
+}
+
+function findProcess(systemEvents, args) {
+  if (args.processName) {
+    var byName = systemEvents.applicationProcesses.whose({ name: args.processName })()
+    if (byName.length) return byName[0]
+  }
+
+  if (args.bundleId) {
+    var apps = runningApps()
+    for (var i = 0; i < apps.length; i += 1) {
+      if (apps[i].bundleId === args.bundleId) {
+        var byBundleName = systemEvents.applicationProcesses.whose({ name: apps[i].processName })()
+        if (byBundleName.length) return byBundleName[0]
+      }
+    }
+  }
+
+  throw new Error('process not found; pass --processName or --bundleId')
+}
+
+function windowState(args) {
+  var se = Application('System Events')
+  var proc = findProcess(se, args)
+  var windows = []
+  var rawWindows = proc.windows()
+  for (var i = 0; i < rawWindows.length; i += 1) {
+    var w = rawWindows[i]
+    var pos = w.position()
+    var size = w.size()
+    windows.push({
+      title: w.name(),
+      bounds: { x: pos[0], y: pos[1], width: size[0], height: size[1] },
+      focused: i === 0,
+    })
+  }
+  return { processName: proc.name(), frontmost: proc.frontmost(), windows: windows }
+}
+
+function firstUIElement(collection, title) {
+  if (title) {
+    var named = collection.whose({ name: title })()
+    if (named.length) return named[0]
+  }
+  var all = collection()
+  if (!all.length) throw new Error('no matching UI element')
+  return all[0]
+}
+
+function press(args) {
+  var se = Application('System Events')
+  var proc = findProcess(se, args)
+  proc.frontmost = true
+  delay(0.15)
+  var role = args.role || 'button'
+  var element
+  if (role === 'menuItem') element = firstUIElement(proc.menuBars[0].menuBarItems, args.title)
+  else if (role === 'checkbox') element = firstUIElement(proc.checkboxes, args.title)
+  else element = firstUIElement(proc.buttons, args.title)
+  element.click()
+  return { processName: proc.name(), role: role, title: args.title || null, clicked: true }
+}
+
+function setValue(args) {
+  var se = Application('System Events')
+  var proc = findProcess(se, args)
+  proc.frontmost = true
+  delay(0.15)
+  var field = firstUIElement(proc.textFields, args.title)
+  field.value = args.value || ''
+  return { processName: proc.name(), title: args.title || null, value: field.value() }
+}
+
+function selectMenu(args) {
+  var se = Application('System Events')
+  var proc = findProcess(se, args)
+  var menuPath = JSON.parse(args.menuPath || '[]')
+  if (menuPath.length < 2) throw new Error('menuPath must include at least top-level menu and item')
+  proc.frontmost = true
+  delay(0.15)
+
+  var current = proc.menuBars[0].menuBarItems.byName(menuPath[0]).menus[0]
+  for (var i = 1; i < menuPath.length; i += 1) {
+    var item = current.menuItems.byName(menuPath[i])
+    if (i === menuPath.length - 1) {
+      item.click()
+      return { processName: proc.name(), clicked: menuPath }
+    }
+    current = item.menus[0]
+  }
+  return { processName: proc.name(), clicked: menuPath }
+}
+
+function run(argv) {
+  var args = parseArgs(argv)
+  try {
+    switch (args.op) {
+      case 'listApps':
+        return ok({ applications: runningApps() })
+      case 'windowState':
+      case 'listWindows':
+        return ok(windowState(args))
+      case 'press':
+      case 'invoke':
+        return ok(press(args), ['JXA press uses System Events and normally requires foreground + Automation permission.'])
+      case 'setValue':
+      case 'type':
+        return ok(setValue(args), ['JXA setValue is a foreground UI-scripting prototype; prefer AXSetValue in the Swift helper for background typing.'])
+      case 'selectMenu':
+      case 'menu':
+        return ok(selectMenu(args), ['menu selection requires foreground menu bar + Automation permission.'])
+      default:
+        return fail('unsupported op: ' + args.op, { usage: '--op listApps|windowState|press|setValue|selectMenu --processName Finder' })
+    }
+  } catch (error) {
+    return fail(error.message || error)
+  }
+}
+
+var rawArgv = ObjC.unwrap($.NSProcessInfo.processInfo.arguments)
+var opIndex = rawArgv.indexOf('--op')
+run(opIndex >= 0 ? rawArgv.slice(opIndex) : rawArgv.slice(4))
