@@ -113,6 +113,11 @@ export interface ReadTreeOptions {
   maxNodes?: number
 }
 
+export type ElementTreeResult = ElementNode[] & {
+  nodes: ElementNode[]
+  warnings?: string[]
+}
+
 export interface FindElementOptions extends ReadTreeOptions {
   selector: ElementSelector
 }
@@ -180,6 +185,8 @@ export interface VerificationResult {
   method: string
   reason?: string
   selected?: boolean
+  expectedValue?: string
+  actualValue?: string
   before?: ElementNode
   after?: ElementNode
 }
@@ -188,7 +195,9 @@ export interface ActionResult {
   ok: boolean
   action: WindowsActionKind
   method?: string
+  message?: string
   element?: ElementNode
+  target?: ElementNode
   verification?: VerificationResult
   capabilityReport?: CapabilityReport
   failure?: CanonicalFailure

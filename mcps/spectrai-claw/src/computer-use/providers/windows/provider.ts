@@ -12,9 +12,11 @@ import {
   type CanonicalFailure,
   type ElementNode,
   type ElementSelector,
+  type ElementTreeResult,
   type ExecuteActionOptions,
   type FindElementOptions,
   type ReadTreeOptions,
+  type VerificationResult,
   type WindowRef,
   type WindowsActionKind,
 } from './types.js'
@@ -119,6 +121,52 @@ function normalizeDepth(depth: unknown, fallback = 4): number {
 
 function normalizeMaxNodes(maxNodes: unknown, fallback = 500): number {
   return Math.min(Math.max(Math.trunc(sn(maxNodes, fallback)), 1), 5000)
+}
+
+function withTreeResultCompat(nodes: ElementNode[], warnings: string[] = []): ElementTreeResult {
+  Object.defineProperty(nodes, 'nodes', { value: nodes, enumerable: false, configurable: true })
+  Object.defineProperty(nodes, 'warnings', { value: warnings, enumerable: false, configurable: true })
+  return nodes as ElementTreeResult
+}
+
+function hasSelectorWrapper(value: FindElementOptions | ElementSelector): value is FindElementOptions {
+  return value != null && typeof value === 'object' && 'selector' in value && (value as FindElementOptions).selector != null
+}
+
+function normalizeFindElementOptions(input: FindElementOptions | ElementSelector): FindElementOptions {
+  if (hasSelectorWrapper(input)) {
+    const selector = input.selector
+    return {
+      ...input,
+      processId: input.processId ?? selector.processId,
+      windowId: input.windowId ?? selector.windowId,
+      maxDepth: input.maxDepth ?? selector.maxDepth,
+    }
+  }
+
+  return {
+    processId: input.processId,
+    windowId: input.windowId,
+    maxDepth: input.maxDepth,
+    selector: input,
+  }
+}
+
+function toLegacyActionMethod(method: string | undefined, action: WindowsActionKind): string | undefined {
+  if (!method) return method
+  const normalized = method.toLowerCase()
+  if (normalized.includes('valuepattern')) return 'uiaValue'
+  if (normalized.includes('wm_settext')) return 'win32SetText'
+  if (normalized.includes('invokepattern')) return 'uiaInvoke'
+  if (normalized.includes('bm_click')) return 'win32BmClick'
+  if (normalized.includes('selectionitempattern')) return 'uiaSelect'
+  if (normalized.includes('togglepattern')) return 'uiaToggle'
+  if (normalized.includes('expandcollapsepattern')) return 'uiaExpandCollapse'
+  if (action === 'select' && normalized.includes('setfocus')) return 'uiaSelect'
+  if (normalized.includes('setfocus')) return 'uiaFocus'
+  if (normalized.includes('mouse_event')) return 'hidMouseEvent'
+  if (action === 'select' && normalized.includes('invoke')) return 'uiaSelect'
+  return method
 }
 
 function actionMatrix(): CapabilityActionEntry[] {
@@ -243,7 +291,8 @@ Write-Output ('${JSON_MARKER}' + $json)
   }
 
   async getAppState(options: AppStateOptions = {}): Promise<AppState> {
-    const [apps, windows] = await Promise.all([this.listApps(), this.listWindows()])
+    const apps = await this.listApps()
+    const windows = await this.listWindows()
     const tree = options.includeTree ? await this.readTree(options) : undefined
     return {
       provider: WINDOWS_PROVIDER_ID,
@@ -255,9 +304,9 @@ Write-Output ('${JSON_MARKER}' + $json)
     }
   }
 
-  async readTree(options: ReadTreeOptions = {}): Promise<ElementNode[]> {
-    if (process.platform !== 'win32') return []
-    const depth = normalizeDepth(options.depth, 4)
+  async readTree(options: ReadTreeOptions = {}): Promise<ElementTreeResult> {
+    if (process.platform !== 'win32') return withTreeResultCompat([], ['windows_provider_unavailable'])
+    const depth = normalizeDepth(options.depth ?? options.maxDepth, 4)
     const maxNodes = normalizeMaxNodes(options.maxNodes, 500)
     const processId = options.processId != null ? Math.trunc(sn(options.processId)) : 0
     const hwnd = options.windowId != null ? Math.trunc(sn(options.windowId)) : 0
@@ -266,14 +315,15 @@ Write-Output ('${JSON_MARKER}' + $json)
     const result = await shell.exec(script, 30000)
     if (result.exitCode !== 0) throw new Error(`windows_read_tree_failed:${result.stderr}`)
     const rawTree = parseMarkedJson<unknown>(result.stdout)
-    return mapUiaTree(rawTree, hwnd ? String(hwnd) : undefined)
+    return withTreeResultCompat(mapUiaTree(rawTree, hwnd ? String(hwnd) : undefined))
   }
 
-  async getAppTree(options: ReadTreeOptions = {}): Promise<ElementNode[]> {
+  async getAppTree(options: ReadTreeOptions = {}): Promise<ElementTreeResult> {
     return this.readTree(options)
   }
 
-  async findElement(options: FindElementOptions): Promise<ElementNode | null> {
+  async findElement(input: FindElementOptions | ElementSelector): Promise<ElementNode | null> {
+    const options = normalizeFindElementOptions(input)
     const tree = await this.readTree(options)
     const matches = findElementsInTree(tree, options.selector)
     return matches[0] ?? null
@@ -293,6 +343,17 @@ Write-Output ('${JSON_MARKER}' + $json)
     return this.executeAction({ ...options, action: 'setValue', selector: selectorOrElement, value })
   }
 
+  async selectElement(selectorOrElement: ElementSelector | ElementNode, options: Omit<ExecuteActionOptions, 'selector' | 'element' | 'action'> = {}): Promise<ActionResult> {
+    if ('provider' in selectorOrElement) {
+      return this.executeAction({ ...options, action: 'select', element: selectorOrElement })
+    }
+    return this.executeAction({ ...options, action: 'select', selector: selectorOrElement })
+  }
+
+  dispose(): void {
+    shell.kill()
+  }
+
   getCapabilities(element?: ElementNode): CapabilityReport {
     return this.getCapabilityReport(element)
   }
@@ -302,6 +363,7 @@ Write-Output ('${JSON_MARKER}' + $json)
     return {
       provider: WINDOWS_PROVIDER_ID,
       platform: 'windows',
+      available: supportsWindows,
       backgroundRead: supportsWindows && (element ? element.capabilities.backgroundRead : true),
       backgroundInvoke: supportsWindows && (element ? element.capabilities.backgroundInvoke : true),
       backgroundType: supportsWindows && (element ? element.capabilities.backgroundType : true),
@@ -369,13 +431,16 @@ Write-Output ('${JSON_MARKER}' + $json)
 
     const before = options.verify === false ? undefined : element
     const raw = await this.executeElementAction(element, options)
+    const method = toLegacyActionMethod(raw.method, options.action)
     if (!raw.ok) {
       const code = raw.requiresForeground ? 'requires_foreground' : raw.visionFallbackNeeded ? 'vision_fallback_needed' : raw.unsupportedReason ? 'unsupported' : 'execution_failed'
       return {
         ok: false,
         action: options.action,
-        method: raw.method,
+        method,
+        message: raw.reason || raw.unsupportedReason || 'Windows provider action failed.',
         element,
+        target: element,
         capabilityReport: this.getCapabilityReport(element),
         failure: failure(code, raw.reason || raw.unsupportedReason || 'Windows provider action failed.', raw.visionFallbackNeeded ? 'vision' : raw.requiresForeground ? 'foreground' : undefined, element.capabilities),
         raw,
@@ -390,8 +455,10 @@ Write-Output ('${JSON_MARKER}' + $json)
       return {
         ok: false,
         action: options.action,
-        method: raw.method,
+        method,
+        message: verification.reason || 'Post-action UIA verification failed.',
         element,
+        target: element,
         verification,
         capabilityReport: this.getCapabilityReport(element),
         failure: failure('verification_failed', verification.reason || 'Post-action UIA verification failed.', 'foreground', element.capabilities),
@@ -402,8 +469,10 @@ Write-Output ('${JSON_MARKER}' + $json)
     return {
       ok: true,
       action: options.action,
-      method: raw.method,
+      method,
+      message: options.action + ' completed via ' + (method ?? 'unknown'),
       element,
+      target: element,
       verification,
       capabilityReport: this.getCapabilityReport(element),
       raw,
@@ -432,7 +501,7 @@ Write-Output ('${JSON_MARKER}' + $json)
     return action === 'setValue' || action === 'type' || action === 'select' || action === 'focus' || action === 'toggle' || action === 'expandCollapse'
   }
 
-  private async verifyAction(options: ExecuteActionOptions, element: ElementNode, before?: ElementNode): Promise<{ attempted: boolean; passed: boolean; method: string; reason?: string; before?: ElementNode; after?: ElementNode }> {
+  private async verifyAction(options: ExecuteActionOptions, element: ElementNode, before?: ElementNode): Promise<VerificationResult> {
     if (options.action === 'invoke' || options.action === 'click' || options.action === 'clickFallback') {
       return { attempted: true, passed: true, method: 'dispatch_only', reason: 'Invoke/click may intentionally change or close UI; caller should read state again for scenario-specific assertion.', before }
     }
@@ -452,10 +521,10 @@ Write-Output ('${JSON_MARKER}' + $json)
       if (options.action === 'setValue' || options.action === 'type') {
         const expected = options.value ?? options.text ?? ''
         const actual = after.value ?? after.text ?? after.name ?? ''
-        return { attempted: true, passed: expected === '' || actual === expected || actual.includes(expected), method: 'uia_value_reread', reason: actual ? undefined : 'value_not_observable', before, after }
+        return { attempted: true, passed: expected === '' || actual === expected || actual.includes(expected), method: 'uia_value_reread', reason: actual ? undefined : 'value_not_observable', expectedValue: expected, actualValue: actual, before, after }
       }
       if (options.action === 'select') {
-        return { attempted: true, passed: after.isSelected === true || after.hasKeyboardFocus === true, method: 'uia_selection_reread', reason: after.isSelected ? undefined : 'selection_state_not_confirmed', before, after }
+        return { attempted: true, passed: after.isSelected === true || after.hasKeyboardFocus === true, method: 'uia_selection_reread', reason: after.isSelected || after.hasKeyboardFocus ? undefined : 'selection_state_not_confirmed', selected: after.isSelected === true || after.hasKeyboardFocus === true, before, after }
       }
       if (options.action === 'focus') {
         return { attempted: true, passed: after.hasKeyboardFocus === true, method: 'uia_focus_reread', reason: after.hasKeyboardFocus ? undefined : 'focus_state_not_confirmed', before, after }
@@ -689,7 +758,7 @@ try {
     try { $best.SetFocus(); $result.ok = $true; $result.method = 'uia.SetFocus' } catch { $result.requiresForeground = $true; $result.reason = 'uia_focus_failed:' + $_.Exception.Message }
   } else {
     $tryOrder = @()
-    if ($actionKind -eq 'select') { $tryOrder = @('SelectionItem','Invoke') }
+    if ($actionKind -eq 'select') { $tryOrder = @('SelectionItem','Invoke','Focus') }
     elseif ($actionKind -eq 'toggle') { $tryOrder = @('Toggle','Invoke') }
     elseif ($actionKind -eq 'expandCollapse') { $tryOrder = @('ExpandCollapse','Invoke') }
     else { $tryOrder = @('Invoke','Toggle','SelectionItem','ExpandCollapse') }
@@ -706,6 +775,8 @@ try {
         } elseif ($kind -eq 'SelectionItem') {
           $p = Try-Pattern $best ([Windows.Automation.SelectionItemPattern]::Pattern)
           if ($p) { ([Windows.Automation.SelectionItemPattern]$p).Select(); $result.ok = $true; $result.method = 'uia.SelectionItemPattern' }
+        } elseif ($kind -eq 'Focus') {
+          try { $best.SetFocus(); $result.ok = $true; $result.method = 'uia.SetFocus' } catch { if (-not $result.reason) { $result.reason = 'uia_focus_failed:' + $_.Exception.Message } }
         } elseif ($kind -eq 'ExpandCollapse') {
           $p = Try-Pattern $best ([Windows.Automation.ExpandCollapsePattern]::Pattern)
           if ($p) {

@@ -128,12 +128,13 @@ export function inferElementCapability(input: {
   const canType = isEnabled && hasPattern(patterns, 'Value')
   const canWin32Invoke = isEnabled && hasHwnd && isLikelyWin32Invokable(controlType, input.className)
   const canWin32Type = isEnabled && hasHwnd && isLikelyWin32Editable(controlType, input.className)
+  const isLikelySelectable = /^(listitem|treeitem|tabitem|menuitem)$/i.test(controlType) || controlType.toLowerCase().includes('item')
   const supportedActions: WindowsActionKind[] = []
 
   if (canInvoke || canWin32Invoke) supportedActions.push('invoke')
   if (hasPattern(patterns, 'Invoke') || canWin32Invoke) supportedActions.push('click')
   if (hasPattern(patterns, 'Toggle')) supportedActions.push('toggle')
-  if (hasPattern(patterns, 'SelectionItem')) supportedActions.push('select')
+  if (hasPattern(patterns, 'SelectionItem') || isLikelySelectable) supportedActions.push('select')
   if (hasPattern(patterns, 'ExpandCollapse')) supportedActions.push('expandCollapse')
   if (canType || canWin32Type) {
     supportedActions.push('setValue')
