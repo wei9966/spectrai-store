@@ -29,6 +29,7 @@
  *   - uia_find_element / uia_get_tree → Direct UIA queries for native apps
  */
 import { existsSync, mkdirSync } from 'fs'
+import { writeFile, mkdir } from 'fs/promises'
 import { dirname, resolve, join } from 'path'
 import { fileURLToPath } from 'url'
 import { registerTool } from './registry.js'
@@ -904,6 +905,40 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
           const errMsg = annotateErr instanceof Error ? annotateErr.message : String(annotateErr)
           elementListText = `\n\nAnnotation exception: ${errMsg}`
         }
+      }
+
+      // Persist ScreenshotMeta to disk for trace analysis (P1/P2).
+      // Wrapped in try/catch — persistence failure must not affect screenshot return.
+      try {
+        const metaOut = filePath.replace(/\.[^.]+$/, '.meta.json')
+        const metaDir = dirname(metaOut)
+        await mkdir(metaDir, { recursive: true })
+        const metaPayload = JSON.stringify({
+          capturedAt: Date.now(),
+          screenshotPath: filePath,
+          captureX: meta.captureX,
+          captureY: meta.captureY,
+          captureW: meta.captureW,
+          captureH: meta.captureH,
+          imageW: meta.imageW,
+          imageH: meta.imageH,
+          elementCount: meta.elements?.length ?? 0,
+          elements: (meta.elements ?? []).map(e => ({
+            number: e.number,
+            name: e.name,
+            controlType: e.controlType,
+            screenX: e.screenX,
+            screenY: e.screenY,
+            rectX: e.rectX,
+            rectY: e.rectY,
+            rectW: e.rectW,
+            rectH: e.rectH,
+            source: e.source,
+          })),
+        }, null, 2)
+        await writeFile(metaOut, metaPayload, 'utf8')
+      } catch {
+        // meta persistence failure does not affect screenshot result
       }
 
       return {

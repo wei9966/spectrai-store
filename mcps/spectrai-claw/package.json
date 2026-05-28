@@ -16,7 +16,9 @@
     "test:daemon-client": "node --test src/helpers/__tests__/DaemonClient.test.ts",
     "test:computer-use": "npm run build && node --test dist/computer-use/**/*.test.js && node --test tests/computer-use/run-computer-use-benchmark.mjs tests/windows-computer-use-fixture.test.mjs tests/e2e/computer-use-report.test.mjs",
     "smoke:computer-use": "npm run test:computer-use",
-    "test:e2e": "node --test \"tests/e2e/*.test.mjs\""
+    "test:e2e": "node --test \"tests/e2e/*.test.mjs\"",
+    "benchmark:local": "node tests/computer-use/run-local-benchmark.mjs",
+    "benchmark:regression": "node tests/computer-use/detect-benchmark-regression.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

@@ -13,10 +13,17 @@ import {
 import { actionFailureResult, canonicalFailure, canonicalSuccess, fallbackProviderIds, routeToReportSteps } from './report.js'
 import type { ComputerUseProvider } from './provider.js'
 import { appTargetFromAction, selectorFromAction, verifyAction } from './verification.js'
+import { TraceRecorder, type ExecutionTrace } from './trace.js'
+import { writeTrace } from './trace-storage.js'
+import crypto from 'node:crypto'
 
 export interface ExecuteActionOptions extends ProviderRouteOptions {
   verify?: VerificationRequest
   continueOnProviderFailure?: boolean
+  /** When set to true, execution trace recording is enabled. Default: false (opt-in). */
+  enableTrace?: boolean
+  /** Optional recorder instance to use (testing / external consumers). */
+  recorder?: TraceRecorder
 }
 
 export interface ReadStateRuntimeOptions extends ProviderRouteOptions {
@@ -279,177 +286,305 @@ export class ComputerUseRuntime {
 
   async executeAction(actionInput: ComputerUseActionInput, options: ExecuteActionOptions = {}): Promise<CanonicalReport> {
     const action = ComputerUseActionSchema.parse(actionInput)
-    const candidates = await this.registry.route(action, options)
-    const route = routeToReportSteps(candidates)
-    const fallbackIds = fallbackProviderIds(candidates)
-    const capabilities = candidates.map((candidate) => candidate.capability)
-    const warnings: string[] = []
 
-    if (candidates.length === 0) {
-      return canonicalFailure({
-        phase: 'route',
+    // --- Trace setup (pre-route) ---
+    const tracingEnabled = options.enableTrace === true || options.recorder != null
+    const recorder: TraceRecorder | null = tracingEnabled
+      ? (options.recorder ?? new TraceRecorder(crypto.randomUUID()))
+      : null
+
+    let capturedTrace: ExecutionTrace | null = null
+
+    try {
+      // pre-route hook
+      try { recorder?.recordPreRoute() } catch { /* trace errors never block */ }
+
+      const candidates = await this.registry.route(action, options)
+      const route = routeToReportSteps(candidates)
+      const fallbackIds = fallbackProviderIds(candidates)
+      const capabilities = candidates.map((candidate) => candidate.capability)
+      const warnings: string[] = []
+
+      if (candidates.length === 0) {
+        const report = canonicalFailure({
+          phase: 'route',
+          action,
+          target: actionTarget(action, options.target),
+          code: 'no_provider_available',
+          message: `No provider can handle action ${action.type}.`,
+          route,
+          fallbackSuggested: true,
+          fallbackProviders: fallbackIds,
+        })
+        try {
+          if (recorder) {
+            capturedTrace = recorder.finalize({ ok: false, phase: 'route', error: 'no_provider_available' })
+            await writeTrace(capturedTrace)
+          }
+        } catch { /* trace errors never block */ }
+        return report
+      }
+
+      for (const candidate of candidates) {
+        const provider = candidate.provider
+        const selector = selectorFromAction(action)
+        let element: ElementNode | undefined
+
+        const providerInfo = {
+          id: provider.id,
+          kind: provider.kind,
+          priority: candidate.capability.priority,
+          fallback: candidate.fallback,
+        }
+
+        try {
+          if (selector) {
+            // pre-find hook
+            try { recorder?.recordPreFind(providerInfo, true) } catch { /* trace errors never block */ }
+
+            element = await provider.findElement(selector, { background: !candidate.capability.requiresForeground }) ?? undefined
+
+            // post-find hook
+            try {
+              recorder?.recordPostFind(providerInfo, element != null, element ? {
+                id: element.id,
+                role: element.role,
+                name: element.name,
+                bounds: element.bounds,
+                source: element.source,
+                confidence: element.confidence,
+              } : undefined)
+            } catch { /* trace errors never block */ }
+
+            if (!element) {
+              warnings.push(`${provider.id}: selector was not found before ${action.type}.`)
+              if (options.continueOnProviderFailure ?? true) continue
+            }
+          }
+
+          // pre-dispatch hook
+          try {
+            recorder?.recordPreDispatch(providerInfo, element ? {
+              id: element.id,
+              role: element.role,
+              name: element.name,
+              bounds: element.bounds,
+              source: element.source,
+            } : undefined)
+          } catch { /* trace errors never block */ }
+
+          const outcome = await dispatchAction(provider, action, element)
+          const result = {
+            ...outcome.result,
+            providerId: outcome.result.providerId ?? provider.id,
+            providerKind: outcome.result.providerKind ?? provider.kind,
+            usedFallback: candidate.fallback || outcome.result.usedFallback,
+            fallbackSuggested: outcome.result.fallbackSuggested ?? false,
+            warnings: [...(outcome.result.warnings ?? []), ...warnings],
+          }
+
+          // post-dispatch hook
+          try {
+            recorder?.recordPostDispatch(providerInfo, {
+              ok: result.ok,
+              method: result.method,
+              changed: result.changed,
+              error: result.error?.message,
+              usedFallback: result.usedFallback ?? false,
+              foregroundRequired: candidate.capability.requiresForeground,
+            })
+          } catch { /* trace errors never block */ }
+
+          if (!result.ok) {
+            warnings.push(`${provider.id}: ${result.error?.message ?? 'action failed'}`)
+            if (options.continueOnProviderFailure ?? true) continue
+
+            const report = canonicalFailure({
+              phase: 'execute',
+              providerId: provider.id,
+              providerKind: provider.kind,
+              action,
+              target: actionTarget(action, options.target),
+              result,
+              capabilities,
+              route,
+              fallbackSuggested: true,
+              fallbackProviders: fallbackIds,
+              code: result.error?.code ?? 'action_failed',
+              message: result.error?.message ?? `Provider ${provider.id} failed action ${action.type}.`,
+              warnings,
+            })
+            try {
+              if (recorder) {
+                capturedTrace = recorder.finalize({ ok: false, phase: 'execute', providerId: provider.id, error: result.error?.code })
+                await writeTrace(capturedTrace)
+              }
+            } catch { /* trace errors never block */ }
+            return report
+          }
+
+          const verificationRequest = options.verify ?? defaultVerificationFor(action)
+          if (!isVerificationSupported(candidate, verificationRequest)) {
+            const failedResult = {
+              ...result,
+              ok: false,
+              fallbackSuggested: true,
+              fallbackReason: `Provider ${provider.id} does not support ${verificationRequest.mode} verification.`,
+            }
+
+            const report = canonicalFailure({
+              phase: 'verify',
+              providerId: provider.id,
+              providerKind: provider.kind,
+              action,
+              target: actionTarget(action, options.target),
+              result: failedResult,
+              capabilities,
+              route,
+              fallbackSuggested: true,
+              fallbackProviders: fallbackIds,
+              code: 'verification_not_supported',
+              message: failedResult.fallbackReason,
+              warnings,
+            })
+            try {
+              if (recorder) {
+                capturedTrace = recorder.finalize({ ok: false, phase: 'verify', providerId: provider.id, error: 'verification_not_supported' })
+                await writeTrace(capturedTrace)
+              }
+            } catch { /* trace errors never block */ }
+            return report
+          }
+
+          const verification = await verifyAction({
+            provider,
+            action,
+            request: verificationRequest,
+            targetElement: result.targetElement ?? element,
+          })
+
+          // post-verify hook
+          try {
+            recorder?.recordPostVerify(providerInfo, {
+              ok: verification.ok,
+              mode: verification.mode,
+              message: verification.message,
+            })
+          } catch { /* trace errors never block */ }
+
+          if (!verification.ok) {
+            const failedResult = {
+              ...result,
+              ok: false,
+              verification,
+              fallbackSuggested: true,
+              fallbackReason: verification.message ?? 'Post-action verification failed.',
+            }
+
+            const report = canonicalFailure({
+              phase: 'verify',
+              providerId: provider.id,
+              providerKind: provider.kind,
+              action,
+              target: actionTarget(action, options.target),
+              result: failedResult,
+              state: outcome.state,
+              capabilities,
+              verification,
+              route,
+              fallbackSuggested: true,
+              fallbackProviders: fallbackIds,
+              code: 'verification_failed',
+              message: verification.message ?? 'Post-action verification failed.',
+              warnings,
+            })
+            try {
+              if (recorder) {
+                capturedTrace = recorder.finalize({ ok: false, phase: 'verify', providerId: provider.id, error: 'verification_failed' })
+                await writeTrace(capturedTrace)
+              }
+            } catch { /* trace errors never block */ }
+            return report
+          }
+
+          const report = canonicalSuccess({
+            phase: 'execute',
+            providerId: provider.id,
+            providerKind: provider.kind,
+            action,
+            target: actionTarget(action, options.target),
+            result: { ...result, verification },
+            state: outcome.state,
+            verification,
+            capabilities,
+            route,
+            warnings,
+          })
+          try {
+            if (recorder) {
+              capturedTrace = recorder.finalize({ ok: true, phase: 'execute', providerId: provider.id })
+              await writeTrace(capturedTrace)
+            }
+          } catch { /* trace errors never block */ }
+          return report
+        } catch (error) {
+          warnings.push(`${provider.id}: ${error instanceof Error ? error.message : String(error)}`)
+          if (!(options.continueOnProviderFailure ?? true)) {
+            const report = canonicalFailure({
+              phase: 'execute',
+              providerId: provider.id,
+              providerKind: provider.kind,
+              action,
+              target: actionTarget(action, options.target),
+              capabilities,
+              route,
+              fallbackSuggested: true,
+              fallbackProviders: fallbackIds,
+              code: 'provider_exception',
+              message: error instanceof Error ? error.message : String(error),
+              warnings,
+            })
+            try {
+              if (recorder) {
+                capturedTrace = recorder.finalize({ ok: false, phase: 'execute', providerId: provider.id, error: 'provider_exception' })
+                await writeTrace(capturedTrace)
+              }
+            } catch { /* trace errors never block */ }
+            return report
+          }
+        }
+      }
+
+      const report = canonicalFailure({
+        phase: 'execute',
         action,
         target: actionTarget(action, options.target),
-        code: 'no_provider_available',
-        message: `No provider can handle action ${action.type}.`,
+        capabilities,
         route,
         fallbackSuggested: true,
         fallbackProviders: fallbackIds,
+        code: 'all_providers_failed',
+        message: `All routed providers failed action ${action.type}.`,
+        warnings,
       })
-    }
-
-    for (const candidate of candidates) {
-      const provider = candidate.provider
-      const selector = selectorFromAction(action)
-      let element: ElementNode | undefined
-
       try {
-        if (selector) {
-          element = await provider.findElement(selector, { background: !candidate.capability.requiresForeground }) ?? undefined
-          if (!element) {
-            warnings.push(`${provider.id}: selector was not found before ${action.type}.`)
-            if (options.continueOnProviderFailure ?? true) continue
-          }
+        if (recorder) {
+          capturedTrace = recorder.finalize({ ok: false, phase: 'execute', error: 'all_providers_failed' })
+          await writeTrace(capturedTrace)
         }
+      } catch { /* trace errors never block */ }
+      return report
 
-        const outcome = await dispatchAction(provider, action, element)
-        const result = {
-          ...outcome.result,
-          providerId: outcome.result.providerId ?? provider.id,
-          providerKind: outcome.result.providerKind ?? provider.kind,
-          usedFallback: candidate.fallback || outcome.result.usedFallback,
-          fallbackSuggested: outcome.result.fallbackSuggested ?? false,
-          warnings: [...(outcome.result.warnings ?? []), ...warnings],
+    } catch (outerError) {
+      // If something above threw unexpectedly (outside provider loop), finalize trace and rethrow.
+      try {
+        if (recorder && !capturedTrace) {
+          const trace = recorder.finalize({ ok: false, phase: 'execute', error: outerError instanceof Error ? outerError.message : String(outerError) })
+          await writeTrace(trace)
         }
-
-        if (!result.ok) {
-          warnings.push(`${provider.id}: ${result.error?.message ?? 'action failed'}`)
-          if (options.continueOnProviderFailure ?? true) continue
-
-          return canonicalFailure({
-            phase: 'execute',
-            providerId: provider.id,
-            providerKind: provider.kind,
-            action,
-            target: actionTarget(action, options.target),
-            result,
-            capabilities,
-            route,
-            fallbackSuggested: true,
-            fallbackProviders: fallbackIds,
-            code: result.error?.code ?? 'action_failed',
-            message: result.error?.message ?? `Provider ${provider.id} failed action ${action.type}.`,
-            warnings,
-          })
-        }
-
-        const verificationRequest = options.verify ?? defaultVerificationFor(action)
-        if (!isVerificationSupported(candidate, verificationRequest)) {
-          const failedResult = {
-            ...result,
-            ok: false,
-            fallbackSuggested: true,
-            fallbackReason: `Provider ${provider.id} does not support ${verificationRequest.mode} verification.`,
-          }
-
-          return canonicalFailure({
-            phase: 'verify',
-            providerId: provider.id,
-            providerKind: provider.kind,
-            action,
-            target: actionTarget(action, options.target),
-            result: failedResult,
-            capabilities,
-            route,
-            fallbackSuggested: true,
-            fallbackProviders: fallbackIds,
-            code: 'verification_not_supported',
-            message: failedResult.fallbackReason,
-            warnings,
-          })
-        }
-
-        const verification = await verifyAction({
-          provider,
-          action,
-          request: verificationRequest,
-          targetElement: result.targetElement ?? element,
-        })
-
-        if (!verification.ok) {
-          const failedResult = {
-            ...result,
-            ok: false,
-            verification,
-            fallbackSuggested: true,
-            fallbackReason: verification.message ?? 'Post-action verification failed.',
-          }
-
-          return canonicalFailure({
-            phase: 'verify',
-            providerId: provider.id,
-            providerKind: provider.kind,
-            action,
-            target: actionTarget(action, options.target),
-            result: failedResult,
-            state: outcome.state,
-            capabilities,
-            verification,
-            route,
-            fallbackSuggested: true,
-            fallbackProviders: fallbackIds,
-            code: 'verification_failed',
-            message: verification.message ?? 'Post-action verification failed.',
-            warnings,
-          })
-        }
-
-        return canonicalSuccess({
-          phase: 'execute',
-          providerId: provider.id,
-          providerKind: provider.kind,
-          action,
-          target: actionTarget(action, options.target),
-          result: { ...result, verification },
-          state: outcome.state,
-          verification,
-          capabilities,
-          route,
-          warnings,
-        })
-      } catch (error) {
-        warnings.push(`${provider.id}: ${error instanceof Error ? error.message : String(error)}`)
-        if (!(options.continueOnProviderFailure ?? true)) {
-          return canonicalFailure({
-            phase: 'execute',
-            providerId: provider.id,
-            providerKind: provider.kind,
-            action,
-            target: actionTarget(action, options.target),
-            capabilities,
-            route,
-            fallbackSuggested: true,
-            fallbackProviders: fallbackIds,
-            code: 'provider_exception',
-            message: error instanceof Error ? error.message : String(error),
-            warnings,
-          })
-        }
-      }
+      } catch { /* trace errors never block */ }
+      throw outerError
     }
-
-    return canonicalFailure({
-      phase: 'execute',
-      action,
-      target: actionTarget(action, options.target),
-      capabilities,
-      route,
-      fallbackSuggested: true,
-      fallbackProviders: fallbackIds,
-      code: 'all_providers_failed',
-      message: `All routed providers failed action ${action.type}.`,
-      warnings,
-    })
   }
 }
 

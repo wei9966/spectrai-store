@@ -412,8 +412,13 @@ export const CanonicalReportSchema = z.object({
   }).optional(),
   warnings: z.array(z.string()).default([]),
   timestamp: z.number().default(() => Date.now()),
+  // Optional execution trace attached when tracing is enabled (P1/P2)
+  trace: z.unknown().optional(),
 })
 export type CanonicalReport = z.infer<typeof CanonicalReportSchema>
+
+// Re-export ExecutionTrace type for consumers who import from types.ts
+export type { ExecutionTrace } from './core/trace.js'
 
 export const DEFAULT_PROVIDER_KIND_PRIORITY: readonly ComputerUseProviderKind[] = [
   'browser',
