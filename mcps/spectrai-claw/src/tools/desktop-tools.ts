@@ -33,6 +33,7 @@ import { writeFile, mkdir } from 'fs/promises'
 import { dirname, resolve, join } from 'path'
 import { fileURLToPath } from 'url'
 import { registerTool } from './registry.js'
+import { visionLocate } from './vision-grounding.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -1067,6 +1068,62 @@ Write-Output "clicked|$vPath"
     { title: 'Screenshot Click', destructiveHint: true },
   )
 
+  // ---- Vision-grounding HID click helper (shared by click_element fallback & vision_click) ----
+  /**
+   * Perform a HID mouse click at (cx, cy) and capture a verification screenshot.
+   * Returns { verifyImgPath } on success, throws on shell failure.
+   * label is shown in the verification image overlay.
+   */
+  async function hidClickAndVerify(
+    cx: number,
+    cy: number,
+    button: string,
+    clickType: string,
+    label: string,
+  ): Promise<string> {
+    const clickFlags = getMouseClickFlags(button, clickType)
+    const events = getMouseClickEvents(clickFlags)
+    const script = `
+[Win32]::SetCursorPos(${cx}, ${cy})
+Start-Sleep -Milliseconds 30
+${events}
+Start-Sleep -Milliseconds 200
+$vSize = 150
+$vx = [Math]::Max(0, ${cx} - $vSize)
+$vy = [Math]::Max(0, ${cy} - $vSize)
+$vw = $vSize * 2
+$vh = $vSize * 2
+$vBmp = New-Object System.Drawing.Bitmap($vw, $vh)
+$vg = [System.Drawing.Graphics]::FromImage($vBmp)
+$vg.CopyFromScreen($vx, $vy, 0, 0, (New-Object System.Drawing.Size($vw, $vh)))
+$px = ${cx} - $vx
+$py = ${cy} - $vy
+$crossPen = New-Object System.Drawing.Pen([System.Drawing.Color]::Red, 3)
+$vg.DrawLine($crossPen, ($px - 15), $py, ($px + 15), $py)
+$vg.DrawLine($crossPen, $px, ($py - 15), $px, ($py + 15))
+$vg.DrawEllipse($crossPen, ($px - 10), ($py - 10), 20, 20)
+$crossPen.Dispose()
+$lFont = New-Object System.Drawing.Font('Arial', 9, [System.Drawing.FontStyle]::Bold)
+$lBg = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(200,0,0,0))
+$lFg = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Yellow)
+$label = '${label.replace(/'/g, "''")}'
+$lsz = $vg.MeasureString($label, $lFont)
+$vg.FillRectangle($lBg, 4, 4, $lsz.Width + 4, $lsz.Height + 2)
+$vg.DrawString($label, $lFont, $lFg, 6, 4)
+$lFont.Dispose(); $lBg.Dispose(); $lFg.Dispose(); $vg.Dispose()
+$vPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "spectrai_click_verify_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').png")
+$vBmp.Save($vPath, [System.Drawing.Imaging.ImageFormat]::Png)
+$vBmp.Dispose()
+Write-Output "clicked|$vPath"
+`
+    const result = await shell.exec(script, 8000)
+    if (result.exitCode !== 0) {
+      throw new Error(`HID click failed: ${result.stderr}`)
+    }
+    const parts = result.stdout.trim().split('|')
+    return parts[1] || ''
+  }
+
   // 1c. click_element — click annotated element by number (100% precise)
   registerTool(
     'click_element',
@@ -1090,11 +1147,41 @@ Write-Output "clicked|$vPath"
       }
       const meta = screenshotMetaMap.get(ssPath)
       if (!meta || !meta.elements || meta.elements.length === 0) {
+        // Vision-grounding fallback: UIA element tree is empty for this screenshot
+        try {
+          const button = (args.button === 'right' || args.button === 'middle') ? args.button as string : 'left'
+          const clickType = args.clickType === 'double' ? 'double' : 'single'
+          const loc = await visionLocate({ text: String(elemNum) }, ssPath)
+          if (loc && loc.confidence >= 0.4) {
+            const verifyImg = await hidClickAndVerify(loc.x, loc.y, button, clickType, `vision#${elemNum}@(${loc.x},${loc.y})`)
+            return {
+              content: [{
+                type: 'text',
+                text: `Clicked element #${elemNum} via vision-fallback (no UIA tree). Matched "${loc.matchedText}" at screen(${loc.x},${loc.y}) confidence=${loc.confidence.toFixed(2)} method=vision-fallback\n\nVerification image: ${verifyImg}`,
+              }],
+            }
+          }
+        } catch { /* vision fallback failed — return original error */ }
         return { isError: true, content: [{ type: 'text', text: `No annotated elements found for: ${ssPath}. Take a new screenshot with annotate=true.` }] }
       }
       const element = meta.elements.find(e => e.number === elemNum)
       if (!element) {
         const available = meta.elements.map(e => `[${e.number}] "${e.name}"`).join(', ')
+        // Vision-grounding fallback: element number not found in current element list — try by element name hint via vision
+        const button = (args.button === 'right' || args.button === 'middle') ? args.button as string : 'left'
+        const clickType = args.clickType === 'double' ? 'double' : 'single'
+        try {
+          const loc = await visionLocate({ text: String(elemNum) }, ssPath)
+          if (loc && loc.confidence >= 0.4) {
+            const verifyImg = await hidClickAndVerify(loc.x, loc.y, button, clickType, `vision#${elemNum}@(${loc.x},${loc.y})`)
+            return {
+              content: [{
+                type: 'text',
+                text: `Clicked element #${elemNum} via vision-fallback (element not in UIA list). Matched "${loc.matchedText}" at screen(${loc.x},${loc.y}) confidence=${loc.confidence.toFixed(2)} method=vision-fallback\n\nVerification image: ${verifyImg}`,
+              }],
+            }
+          }
+        } catch { /* vision fallback failed — return original error */ }
         return { isError: true, content: [{ type: 'text', text: `Element #${elemNum} not found. Available: ${available}` }] }
       }
 
@@ -1133,49 +1220,13 @@ Write-Output "clicked|$vPath"
         uiaFallbackReason = 'uia_metadata_not_available'
       }
 
-      const clickFlags = getMouseClickFlags(button, clickType)
-      const events = getMouseClickEvents(clickFlags)
-
-      const script = `
-[Win32]::SetCursorPos(${clickX}, ${clickY})
-Start-Sleep -Milliseconds 30
-${events}
-Start-Sleep -Milliseconds 200
-# Capture verification screenshot around click point
-$vSize = 150
-$vx = [Math]::Max(0, ${clickX} - $vSize)
-$vy = [Math]::Max(0, ${clickY} - $vSize)
-$vw = $vSize * 2
-$vh = $vSize * 2
-$vBmp = New-Object System.Drawing.Bitmap($vw, $vh)
-$vg = [System.Drawing.Graphics]::FromImage($vBmp)
-$vg.CopyFromScreen($vx, $vy, 0, 0, (New-Object System.Drawing.Size($vw, $vh)))
-$cx = ${clickX} - $vx
-$cy = ${clickY} - $vy
-$crossPen = New-Object System.Drawing.Pen([System.Drawing.Color]::Red, 3)
-$vg.DrawLine($crossPen, ($cx - 15), $cy, ($cx + 15), $cy)
-$vg.DrawLine($crossPen, $cx, ($cy - 15), $cx, ($cy + 15))
-$vg.DrawEllipse($crossPen, ($cx - 10), ($cy - 10), 20, 20)
-$crossPen.Dispose()
-$lFont = New-Object System.Drawing.Font('Arial', 9, [System.Drawing.FontStyle]::Bold)
-$lBg = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(200,0,0,0))
-$lFg = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Yellow)
-$label = "[${elemNum}] @(${clickX},${clickY})"
-$lsz = $vg.MeasureString($label, $lFont)
-$vg.FillRectangle($lBg, 4, 4, $lsz.Width + 4, $lsz.Height + 2)
-$vg.DrawString($label, $lFont, $lFg, 6, 4)
-$lFont.Dispose(); $lBg.Dispose(); $lFg.Dispose(); $vg.Dispose()
-$vPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "spectrai_click_verify_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').png")
-$vBmp.Save($vPath, [System.Drawing.Imaging.ImageFormat]::Png)
-$vBmp.Dispose()
-Write-Output "clicked|$vPath"
-`
-      const result = await shell.exec(script, 8000)
-      if (result.exitCode !== 0) {
-        return { isError: true, content: [{ type: 'text', text: `Click failed: ${result.stderr}` }] }
+      let verifyImgPath: string
+      try {
+        verifyImgPath = await hidClickAndVerify(clickX, clickY, button, clickType, `[${elemNum}] @(${clickX},${clickY})`)
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { isError: true, content: [{ type: 'text', text: `Click failed: ${msg}` }] }
       }
-      const vParts = result.stdout.trim().split('|')
-      const verifyImgPath = vParts[1] || ''
       const fallbackReasonText = uiaFallbackReason ? `, uiaFallback=${uiaFallbackReason}` : ''
       return {
         content: [{
@@ -1185,6 +1236,107 @@ Write-Output "clicked|$vPath"
       }
     },
     { title: 'Click Element', destructiveHint: true },
+  )
+
+  // 1d. vision_click — explicit vision-grounding click (for when UIA is fully unavailable)
+  registerTool(
+    'vision_click',
+    'Click a UI element located by visible text using OCR/vision grounding. Use this when UIA element tree is unavailable (Canvas, Electron, games, RDP). Takes a screenshot, runs OCR, matches text, then clicks the center of the matched word/phrase.\n\nRequires visible text on screen. Confidence < 0.4 will not click. Returns method=vision-fallback and confidence in result.',
+    {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Visible text to find and click (case-insensitive, partial match supported)' },
+        near: {
+          type: 'object',
+          description: 'Approximate screen coordinates to disambiguate multiple text matches',
+          properties: {
+            x: { type: 'number' },
+            y: { type: 'number' },
+          },
+          required: ['x', 'y'],
+          additionalProperties: false,
+        },
+        screenshotPath: { type: 'string', description: 'Path to an existing screenshot to use. Default: last annotated screenshot or takes a fresh one.' },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button. Default: left' },
+        clickType: { type: 'string', enum: ['single', 'double'], description: 'Click type. Default: single' },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const targetText = (args.text as string) || ''
+      if (!targetText.trim()) {
+        return { isError: true, content: [{ type: 'text', text: 'text parameter is required and must be non-empty.' }] }
+      }
+      const button = (args.button === 'right' || args.button === 'middle') ? args.button as string : 'left'
+      const clickType = args.clickType === 'double' ? 'double' : 'single'
+
+      // Determine screenshot to use
+      let ssPath: string = (args.screenshotPath as string) || lastAnnotatedPath || lastScreenshotPath
+      if (!ssPath) {
+        // Take a fresh screenshot
+        try {
+          const freshScript = `
+$outPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "spectrai_vclick_ss_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').png")
+$screen = [System.Windows.Forms.Screen]::PrimaryScreen
+$bmp = New-Object System.Drawing.Bitmap($screen.Bounds.Width, $screen.Bounds.Height)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen(0, 0, 0, 0, (New-Object System.Drawing.Size($screen.Bounds.Width, $screen.Bounds.Height)))
+$g.Dispose()
+$bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
+$bmp.Dispose()
+Write-Output $outPath
+`
+          const ssResult = await shell.exec(freshScript, 10000)
+          if (ssResult.exitCode !== 0 || !ssResult.stdout.trim()) {
+            return { isError: true, content: [{ type: 'text', text: 'vision_click: could not take a screenshot. Use screenshot() first.' }] }
+          }
+          ssPath = ssResult.stdout.trim()
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return { isError: true, content: [{ type: 'text', text: `vision_click: screenshot failed: ${msg}` }] }
+        }
+      }
+
+      // Get capture region from meta if available, otherwise full screen
+      const meta = screenshotMetaMap.get(ssPath)
+      const captureRegion = meta
+        ? { x: meta.captureX, y: meta.captureY, w: meta.captureW, h: meta.captureH }
+        : undefined
+
+      const near = args.near as { x: number; y: number } | undefined
+
+      let loc: Awaited<ReturnType<typeof visionLocate>>
+      try {
+        loc = await visionLocate({ text: targetText, near }, ssPath, captureRegion)
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { isError: true, content: [{ type: 'text', text: `vision_click: OCR error: ${msg}` }] }
+      }
+
+      if (!loc) {
+        return { isError: true, content: [{ type: 'text', text: `vision_click: no OCR match found for text "${targetText}" in ${ssPath}` }] }
+      }
+      if (loc.confidence < 0.4) {
+        return { isError: true, content: [{ type: 'text', text: `vision_click: match confidence ${loc.confidence.toFixed(2)} is below threshold 0.4 (matched "${loc.matchedText}" at ${loc.x},${loc.y}). Specify more specific text or use near to disambiguate.` }] }
+      }
+
+      let verifyImg: string
+      try {
+        verifyImg = await hidClickAndVerify(loc.x, loc.y, button, clickType, `vision:"${targetText}"@(${loc.x},${loc.y})`)
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { isError: true, content: [{ type: 'text', text: `vision_click: HID click failed: ${msg}` }] }
+      }
+
+      return {
+        content: [{
+          type: 'text',
+          text: `vision_click: clicked "${targetText}" → matched "${loc.matchedText}" at screen(${loc.x},${loc.y}) confidence=${loc.confidence.toFixed(2)} method=vision-fallback button=${button} ${clickType}\n\nVerification image: ${verifyImg}\nShows 300x300 region centered on click with RED crosshair. Use Read tool to confirm it hit the right target.`,
+        }],
+      }
+    },
+    { title: 'Vision Click', destructiveHint: true },
   )
 
   // 2. get_screen_info
