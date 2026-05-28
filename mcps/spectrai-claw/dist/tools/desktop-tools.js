@@ -32,6 +32,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { dirname, resolve, join } from 'path';
 import { fileURLToPath } from 'url';
 import { registerTool } from './registry.js';
+import { renderHud } from './hud-renderer.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 // OCR worker script path (runs in separate STA process for WinRT async compatibility)
@@ -1917,4 +1918,75 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                 }],
         };
     }, { title: 'Zoom Screenshot', readOnlyHint: true });
+    // 15. render_hud — sci-fi HUD overlay visualization (P4)
+    registerTool('render_hud', 'Render a sci-fi HUD (heads-up display) overlay onto a screenshot.\n\n' +
+        'Draws GDI+ glow borders, scanlines, number badges, info panels and optional pulse/flash ' +
+        'highlight onto the screenshot image without modifying the real desktop.\n' +
+        'Returns the path of the new HUD image (PNG). Use the Read tool to view it.\n\n' +
+        'Typical use: after screenshot(annotate=true), call render_hud(screenshotPath) to get a ' +
+        'sci-fi-styled version. Use highlightNumber to emphasize the element you just clicked.', {
+        type: 'object',
+        properties: {
+            screenshotPath: {
+                type: 'string',
+                description: 'Absolute path to the source screenshot PNG (from a previous screenshot call).',
+            },
+            highlightNumber: {
+                type: 'number',
+                description: 'Element number to highlight with glow/pulse effect. 0 = no specific highlight.',
+            },
+            glowColor: {
+                type: 'string',
+                description: 'Glow color as "R,G,B" integers. Default: "0,200,255" (cyan).',
+            },
+            highlightMode: {
+                type: 'string',
+                enum: ['glow', 'pulse', 'flash'],
+                description: 'Highlight rendering style. Default: "glow".',
+            },
+        },
+        required: ['screenshotPath'],
+        additionalProperties: false,
+    }, async (args) => {
+        const screenshotPath = typeof args.screenshotPath === 'string' ? args.screenshotPath.trim() : '';
+        if (!screenshotPath) {
+            return { isError: true, content: [{ type: 'text', text: 'screenshotPath is required' }] };
+        }
+        if (!existsSync(screenshotPath)) {
+            return { isError: true, content: [{ type: 'text', text: `File not found: ${screenshotPath}` }] };
+        }
+        const meta = screenshotMetaMap.get(screenshotPath);
+        const elements = meta?.elements ?? [];
+        const highlightNumber = args.highlightNumber != null ? sn(args.highlightNumber) : 0;
+        const glowColor = typeof args.glowColor === 'string' && args.glowColor.trim()
+            ? args.glowColor.trim()
+            : '0,200,255';
+        const highlightMode = (args.highlightMode === 'pulse' || args.highlightMode === 'flash')
+            ? args.highlightMode
+            : 'glow';
+        try {
+            const hudPath = await renderHud({
+                imagePath: screenshotPath,
+                elements,
+                highlightNumber,
+                glowColor,
+                highlightMode,
+            });
+            return {
+                content: [{
+                        type: 'text',
+                        text: [
+                            `HUD image saved: ${hudPath}`,
+                            `Elements overlaid: ${elements.length}`,
+                            highlightNumber > 0 ? `Highlighted element: #${highlightNumber} (mode: ${highlightMode})` : '',
+                            `Use the Read tool to view this image.`,
+                        ].filter(Boolean).join('\n'),
+                    }],
+            };
+        }
+        catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return { isError: true, content: [{ type: 'text', text: `render_hud failed: ${msg}` }] };
+        }
+    }, { title: 'HUD Renderer', readOnlyHint: true });
 }
