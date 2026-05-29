@@ -54,6 +54,30 @@ curl http://localhost:9222/json | head -20
 
 ## 安装
 
+### 从 npm 安装（推荐）
+
+本包是标准 stdio MCP server，入口即 server，无需子命令，`npx` 直接拉起：
+
+```bash
+npx spectrai-claw
+```
+
+在 MCP 客户端（Claude Desktop / Claude Code 等）中配置：
+
+```json
+{
+  "mcpServers": {
+    "spectrai-claw": {
+      "command": "npx",
+      "args": ["-y", "spectrai-claw"]
+    }
+  }
+}
+```
+
+> Windows 端为纯 Node 实现，`npx spectrai-claw` 即可运行，无需原生编译；
+> macOS 端首次运行会自动构建/拉起 Swift daemon（需 Xcode Command Line Tools）。
+
 ### 从源码构建
 
 ```bash
@@ -128,3 +152,13 @@ npm run test:e2e
 - CDP 需手动启用 debug port，不能动态唤醒已启动的 Chrome
 - 仅 macOS 14+（依赖 ScreenCaptureKit）
 - Windows 端仍为旧路径（未迁移到 Swift daemon 架构），但 `click_element` / `keyboard_type` 已升级为 UIA 原生动作优先：优先尝试 Invoke/Toggle/Selection/ExpandCollapse/Focus 与 ValuePattern.SetValue，失败自动回退 HID 鼠标事件 / SendKeys。
+
+### Windows 操作准确性改造（screenshot 标注链路）
+
+`screenshot(annotate=true)` / `zoom_screenshot` 的元素识别已做语义增强：
+
+- **UIA 候选过滤打分**：枚举时多采 `IsEnabled` / `IsOffscreen` 与控件 pattern（Invoke/Toggle/SelectionItem/ExpandCollapse/Value），过滤离屏元素与无 pattern 的纯 Image 噪声，并按「可操作性」把可原生操作的元素排在标注列表前列（徽章编号保持稳定，`click_element(number)` 不受影响）。
+- **OCR 锚定 UIA**：OCR 兜底文本若落在某带 pattern 的 UIA 元素 bounds 内，则用该原生元素替代裸 OCR 坐标（`Src=OCR_UIA`），从而走 UIA pattern 动作而非盲点坐标；命不中才保留 OCR 坐标兜底。兜底链为 UIA pattern → UIA 坐标 → OCR 坐标 → vision。
+- **动作后验证**：UIA 原生动作执行后回读目标元素状态（ToggleState / ExpandCollapseState / IsSelected / Value / 焦点），在返回里附 `verify=verified | state_not_changed | needs_resnapshot | uncertain`，便于上层判断动作是否真正生效。
+
+> 上述链路依赖本机 Windows 桌面会话的 PowerShell + UIA，需在本地直连 MCP 验证真机行为。
