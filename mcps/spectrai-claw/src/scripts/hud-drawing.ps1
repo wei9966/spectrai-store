@@ -174,7 +174,7 @@ function Draw-InfoPanel {
     $subSz   = if ($SubText) { $G.MeasureString($SubText, $subFont) } else { [System.Drawing.SizeF]::new(0,0) }
 
     $panelW = [Math]::Min($MaxWidth, [Math]::Max([int]$labelSz.Width, [int]$subSz.Width) + 14)
-    $panelH = [int]$labelSz.Height + (if ($SubText) { [int]$subSz.Height } else { 0 }) + 6
+    $panelH = [int]$labelSz.Height + $(if ($SubText) { [int]$subSz.Height } else { 0 }) + 6
 
     # Background panel
     $bgBrush = New-Object System.Drawing.SolidBrush(
