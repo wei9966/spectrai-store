@@ -16,7 +16,9 @@ jobs:
     # macOS runner 自带 Xcode/Swift 与 Vision/AppKit 等 Apple 框架，
     # 是编译 Swift daemon 的唯一可行环境。Windows 客户端走纯 Node 路径，
     # 不需要原生二进制，所以单个 macOS runner 即可产出双平台可用的包。
-    runs-on: macos-14
+    # 必须用 macos-26：依赖 AXorcist 各 tag 的 manifest 声明 swift-tools-version 6.2，
+    # 需要 Xcode 26 / Swift 6.2 工具链；macos-14(Swift 5.10)、macos-15(Swift 6.1) 都解析失败。
+    runs-on: macos-26
     defaults:
       run:
         working-directory: mcps/spectrai-claw
