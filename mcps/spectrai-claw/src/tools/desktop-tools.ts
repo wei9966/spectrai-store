@@ -780,6 +780,9 @@ try {
 
 # ====== Phase 1: UIA element detection ======
 $filtered = @()
+# Actionable UIA elements (have a control pattern) kept for OCR neighbourhood anchoring,
+# including unlabeled ones that never make it into $filtered.
+$uiaActionable = @()
 $idx = 1
 try {
     if (-not $window) {
@@ -831,6 +834,9 @@ try {
         try { if ($el.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$patDummy)) { $pats += 'ExpandCollapse' } } catch {}
         try { if ($el.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$patDummy)) { $pats += 'Value' } } catch {}
         $patStr = ($pats -join ';')
+        if ($pats.Count -gt 0) {
+            $uiaActionable += @{X=[int]$rect.X; Y=[int]$rect.Y; W=[int]$rect.Width; H=[int]$rect.Height; CX=$elCx; CY=$elCy; CT=$ct; PAT=$patStr; EN=$isEnabled}
+        }
         # Accept elements with name, automationId, or actionable control types even without name
         $label = if ($name) { $name } elseif ($aid) { $aid } else { '' }
         $isClickable = ($ct -match 'Button|Hyperlink|MenuItem|TabItem|ListItem|CheckBox|RadioButton|ComboBox|Slider|Image')
@@ -877,9 +883,21 @@ if ($filtered.Count -lt 10) {
                 if ($parts.Count -ge 5) {
                     $ocrW = [int]$parts[3]
                     $ocrH = [int]$parts[4]
-                    $ocrX = [int]$parts[1] - [int]($ocrW / 2)
-                    $ocrY = [int]$parts[2] - [int]($ocrH / 2)
-                    $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=[int]$parts[1]; CY=[int]$parts[2]; W=$ocrW; H=$ocrH; X=$ocrX; Y=$ocrY; AID=''; CLS=''; PID=0; Src='OCR'}
+                    $ocrCx = [int]$parts[1]
+                    $ocrCy = [int]$parts[2]
+                    $ocrX = $ocrCx - [int]($ocrW / 2)
+                    $ocrY = $ocrCy - [int]($ocrH / 2)
+                    # Anchor OCR text to an actionable UIA element whose bounds contain its centre,
+                    # so we click a native element (with pattern) instead of a raw OCR coordinate.
+                    $anchor = $null
+                    foreach ($cand in $uiaActionable) {
+                        if ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H)) { $anchor = $cand; break }
+                    }
+                    if ($anchor) {
+                        $filtered += @{N=$idx; Name=$parts[0]; CT=$anchor.CT; CX=$anchor.CX; CY=$anchor.CY; W=$anchor.W; H=$anchor.H; X=$anchor.X; Y=$anchor.Y; AID=''; CLS=''; PID=0; Src='OCR_UIA'; EN=$anchor.EN; OFF=$false; PAT=$anchor.PAT}
+                    } else {
+                        $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=$ocrCx; CY=$ocrCy; W=$ocrW; H=$ocrH; X=$ocrX; Y=$ocrY; AID=''; CLS=''; PID=0; Src='OCR'; EN=$true; OFF=$false; PAT=''}
+                    }
                     $idx++
                     $ocrCount++
                     if ($idx -gt 80) { break }
@@ -2216,6 +2234,7 @@ try {
 
 # UIA detection
 $filtered = @()
+$uiaActionable = @()
 $idx = 1
 try {
     if (-not $window) { $window = [Windows.Automation.AutomationElement]::RootElement }
@@ -2244,6 +2263,9 @@ try {
         try { if ($el.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$patDummy)) { $pats += 'ExpandCollapse' } } catch {}
         try { if ($el.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$patDummy)) { $pats += 'Value' } } catch {}
         $patStr = ($pats -join ';')
+        if ($pats.Count -gt 0) {
+            $uiaActionable += @{X=[int]$rect.X; Y=[int]$rect.Y; W=[int]$rect.Width; H=[int]$rect.Height; CX=$elCx; CY=$elCy; CT=$ct; PAT=$patStr; EN=$isEnabled}
+        }
         $label = if ($name) { $name } elseif ($aid) { $aid } else { '' }
         $isClickable = ($ct -match 'Button|Hyperlink|MenuItem|TabItem|ListItem|CheckBox|RadioButton|ComboBox|Image')
         if (-not $label -and -not $isClickable) { continue }
@@ -2276,9 +2298,19 @@ if ($filtered.Count -lt 10) {
                 if ($parts.Count -ge 5) {
                     $ocrW = [int]$parts[3]
                     $ocrH = [int]$parts[4]
-                    $ocrX = [int]$parts[1] - [int]($ocrW / 2)
-                    $ocrY = [int]$parts[2] - [int]($ocrH / 2)
-                    $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=[int]$parts[1]; CY=[int]$parts[2]; W=$ocrW; H=$ocrH; X=$ocrX; Y=$ocrY; AID=''; CLS=''; PID=0; Src='OCR'; EN=$true; OFF=$false; PAT=''}
+                    $ocrCx = [int]$parts[1]
+                    $ocrCy = [int]$parts[2]
+                    $ocrX = $ocrCx - [int]($ocrW / 2)
+                    $ocrY = $ocrCy - [int]($ocrH / 2)
+                    $anchor = $null
+                    foreach ($cand in $uiaActionable) {
+                        if ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H)) { $anchor = $cand; break }
+                    }
+                    if ($anchor) {
+                        $filtered += @{N=$idx; Name=$parts[0]; CT=$anchor.CT; CX=$anchor.CX; CY=$anchor.CY; W=$anchor.W; H=$anchor.H; X=$anchor.X; Y=$anchor.Y; AID=''; CLS=''; PID=0; Src='OCR_UIA'; EN=$anchor.EN; OFF=$false; PAT=$anchor.PAT}
+                    } else {
+                        $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=$ocrCx; CY=$ocrCy; W=$ocrW; H=$ocrH; X=$ocrX; Y=$ocrY; AID=''; CLS=''; PID=0; Src='OCR'; EN=$true; OFF=$false; PAT=''}
+                    }
                     $idx++
                     if ($idx -gt 80) { break }
                 }
