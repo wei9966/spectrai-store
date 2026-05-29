@@ -1,0 +1,80 @@
+name: Publish spectrai-claw
+
+# 在 push 形如 v0.4.0 的 tag 时自动编译并发布到 npm。
+# 也支持手动触发（workflow_dispatch），手动触发只构建+校验，不发布。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # macOS runner 自带 Xcode/Swift 与 Vision/AppKit 等 Apple 框架，
+    # 是编译 Swift daemon 的唯一可行环境。Windows 客户端走纯 Node 路径，
+    # 不需要原生二进制，所以单个 macOS runner 即可产出双平台可用的包。
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: mcps/spectrai-claw
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+          cache-dependency-path: mcps/spectrai-claw/package-lock.json
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Build Swift daemon (universal arm64 + x86_64)
+        working-directory: mcps/spectrai-claw/src/swift-helper
+        run: |
+          set -euo pipefail
+          swift build -c release --arch arm64 --arch x86_64
+          BIN_PATH="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
+          echo "Swift bin path: $BIN_PATH"
+          DEST="$GITHUB_WORKSPACE/mcps/spectrai-claw/dist/bin/darwin"
+          mkdir -p "$DEST"
+          cp "$BIN_PATH/spectrai-claw-helper" "$DEST/spectrai-claw-helper"
+          chmod +x "$DEST/spectrai-claw-helper"
+
+      - name: Verify daemon binary is a universal binary
+        run: |
+          set -euo pipefail
+          BIN="dist/bin/darwin/spectrai-claw-helper"
+          test -f "$BIN"
+          lipo -info "$BIN"
+
+      - name: Verify tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "package.json=$PKG_VERSION  tag=$TAG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME (version $TAG_VERSION) does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Publish to npm
+        if: startsWith(github.ref, 'refs/tags/')
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
