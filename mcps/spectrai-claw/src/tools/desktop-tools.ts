@@ -90,6 +90,9 @@ interface UiaActionResult {
   screenY: number
   rectW: number
   rectH: number
+  // Post-action verification: '' (not run) | 'verified' | 'state_not_changed' | 'needs_resnapshot' | 'uncertain'
+  verify?: string
+  detail?: string
 }
 
 function getMouseClickFlags(button: string, clickType: string): string {
@@ -207,6 +210,8 @@ function parseUiaActionResult(stdout: string): UiaActionResult {
       screenY: typeof parsed.screenY === 'number' && Number.isFinite(parsed.screenY) ? parsed.screenY : 0,
       rectW: typeof parsed.rectW === 'number' && Number.isFinite(parsed.rectW) ? parsed.rectW : 0,
       rectH: typeof parsed.rectH === 'number' && Number.isFinite(parsed.rectH) ? parsed.rectH : 0,
+      verify: typeof parsed.verify === 'string' ? parsed.verify : '',
+      detail: typeof parsed.detail === 'string' ? parsed.detail : '',
     }
   } catch {
     return { ok: false, method: '', reason: 'uia_result_parse_failed', screenX: 0, screenY: 0, rectW: 0, rectH: 0 }
@@ -244,7 +249,25 @@ $meta = @{
 }
 $actionKind = '${action}'
 $targetText = '${sp(text || '')}'
-$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH }
+$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH; verify = ''; detail = '' }
+
+# Read element-local UIA state for before/after comparison (post-action verification).
+function Read-ElementState {
+  param([Windows.Automation.AutomationElement]$el)
+  $s = @{ Alive = $true; Toggle = ''; Expand = ''; Selected = ''; Value = ''; Focus = '' }
+  try {
+    $o = $null
+    if ($el.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$o)) { $s.Toggle = "$(([Windows.Automation.TogglePattern]$o).Current.ToggleState)" }
+    $o = $null
+    if ($el.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$o)) { $s.Expand = "$(([Windows.Automation.ExpandCollapsePattern]$o).Current.ExpandCollapseState)" }
+    $o = $null
+    if ($el.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$o)) { $s.Selected = "$(([Windows.Automation.SelectionItemPattern]$o).Current.IsSelected)" }
+    $o = $null
+    if ($el.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$o)) { $s.Value = "$(([Windows.Automation.ValuePattern]$o).Current.Value)" }
+    $s.Focus = "$($el.Current.HasKeyboardFocus)"
+  } catch { $s.Alive = $false }
+  return $s
+}
 
 function Add-Candidate {
   param([Windows.Automation.AutomationElement]$el)
@@ -404,6 +427,8 @@ try {
         $result.rectH = [int]$bestRect.Height
       } catch {}
 
+      $beforeState = Read-ElementState $best
+
       if ($actionKind -eq 'setValue') {
         try { $best.SetFocus() } catch {}
         $valuePatternObj = $null
@@ -497,6 +522,26 @@ try {
           if (-not $result.reason) {
             $result.reason = 'uia_pattern_failed:' + $_.Exception.Message
           }
+        }
+      }
+
+      if ($result.ok) {
+        $afterState = Read-ElementState $best
+        if (-not $afterState.Alive) {
+          $result.verify = 'needs_resnapshot'
+        } elseif ($actionKind -eq 'setValue') {
+          if ($afterState.Value -eq $targetText) { $result.verify = 'verified' } else { $result.verify = 'state_not_changed' }
+          $result.detail = "value=$($afterState.Value)"
+        } else {
+          $changed = ($beforeState.Toggle -ne $afterState.Toggle) -or ($beforeState.Expand -ne $afterState.Expand) -or ($beforeState.Selected -ne $afterState.Selected) -or ($beforeState.Value -ne $afterState.Value)
+          if ($result.method -eq 'uiaToggle' -or $result.method -eq 'uiaExpandCollapse' -or $result.method -eq 'uiaSelect') {
+            if ($changed -or $afterState.Selected -eq 'True') { $result.verify = 'verified' } else { $result.verify = 'state_not_changed' }
+          } elseif ($result.method -eq 'uiaFocus') {
+            if ($afterState.Focus -eq 'True') { $result.verify = 'verified' } else { $result.verify = 'uncertain' }
+          } else {
+            if ($changed) { $result.verify = 'verified' } else { $result.verify = 'uncertain' }
+          }
+          $result.detail = "toggle=$($afterState.Toggle);expand=$($afterState.Expand);selected=$($afterState.Selected);focus=$($afterState.Focus)"
         }
       }
     }
@@ -1320,10 +1365,13 @@ Write-Output "clicked|$vPath"
               rectW: uiaResult.rectW || element.rectW,
               rectH: uiaResult.rectH || element.rectH,
             }
+            const verifyText = uiaResult.verify
+              ? ` verify=${uiaResult.verify}${uiaResult.detail ? ` (${uiaResult.detail})` : ''}`
+              : ''
             return {
               content: [{
                 type: 'text',
-                text: `Clicked [${elemNum}] "${element.name}" via method=${uiaResult.method} (native UIA, cursor unchanged).`,
+                text: `Clicked [${elemNum}] "${element.name}" via method=${uiaResult.method} (native UIA, cursor unchanged).${verifyText}`,
               }],
             }
           }
@@ -1679,10 +1727,13 @@ Write-Output "scrolled"
               rectW: uiaResult.rectW || targetElement.rectW,
               rectH: uiaResult.rectH || targetElement.rectH,
             }
+            const verifyText = uiaResult.verify
+              ? ` verify=${uiaResult.verify}${uiaResult.detail ? ` (${uiaResult.detail})` : ''}`
+              : ''
             return {
               content: [{
                 type: 'text',
-                text: `typed ${text.length} chars via method=uiaValue${targetElement ? ` on [${targetElement.number}] "${targetElement.name}"` : ''}`,
+                text: `typed ${text.length} chars via method=uiaValue${targetElement ? ` on [${targetElement.number}] "${targetElement.name}"` : ''}${verifyText}`,
               }],
             }
           }
