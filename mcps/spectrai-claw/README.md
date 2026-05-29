@@ -75,6 +75,19 @@ npx spectrai-claw
 }
 ```
 
+Windows 上部分 MCP 客户端无法直接 spawn `npx`（PATH/PATHEXT 解析问题），需经 `cmd /c` 拉起：
+
+```json
+{
+  "mcpServers": {
+    "spectrai-claw": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "spectrai-claw"]
+    }
+  }
+}
+```
+
 > Windows 端为纯 Node 实现，`npx spectrai-claw` 即可运行，无需原生编译；
 > macOS 端首次运行会自动构建/拉起 Swift daemon（需 Xcode Command Line Tools）。
 
@@ -88,12 +101,21 @@ npm run build:all
 
 ### 运行要求
 
+**macOS**
+
 - macOS 14+
 - Node.js 18+
 - Xcode Command Line Tools（或完整 Xcode）
 - 首次运行会触发系统权限请求：
   - Screen Recording
   - Accessibility
+
+**Windows**
+
+- Windows 10 / 11
+- Node.js 18+
+- 纯 Node 实现，无需原生编译、无需 Xcode/Swift
+- 依赖系统自带 PowerShell + UI Automation（UIA），无额外安装
 
 ## MCP 工具（macOS daemon 路径）
 
@@ -116,6 +138,28 @@ npm run build:all
 - AX 元素不可重找、已 stale、action/value 不可用或失败时，自动回退到原有 CGEvent 坐标点击 / 键盘输入。
 
 这也是接近 Codex App Computer Use “后台式 / 无光标移动”体验的关键：识别仍依赖 AX 树/截图，执行优先走程序化 UI action。
+
+## MCP 工具（Windows 路径）
+
+Windows 端为纯 Node 实现，工具直接经 PowerShell + UIA 操作，无 daemon。推荐工作流：`screenshot` → `click_element(number)` / `keyboard_type`，复杂区域用 `zoom_screenshot` + `mouse_click` 精定位。
+
+| 工具 | 用途 | 关键参数 |
+|---|---|---|
+| `screenshot` | ★ STEP 1：全屏截图 + UIA/OCR 元素识别 + 编号标注 | `annotate?` |
+| `click_element` | ★ STEP 2（最佳）：按编号点击；UIA 原生动作（Invoke/Toggle/Selection/ExpandCollapse/Focus）优先，失败回退 HID 点击 + 验证截图 | `number` |
+| `zoom_screenshot` | ★ STEP 2：区域放大 + 坐标网格，便于读取精确坐标 | `x`, `y`, `width`, `height` |
+| `mouse_click` | ★ STEP 3：按精确坐标点击（配合 `zoom_screenshot`） | `x`, `y`, `button?` |
+| `vision_click` | OCR/vision 兜底：按可见文本点击，用于 UIA 不可用场景（Canvas / Electron / 游戏 / RDP） | `text` |
+| `keyboard_type` | 输入文本（支持 Unicode）；UIA `ValuePattern.SetValue` 优先，回退 SendKeys | `text`, `element_id?` |
+| `keyboard_press` | 按单个键（Enter / Tab / Escape / F1-F12 等） | `key` |
+| `keyboard_hotkey` | 组合键（Ctrl+C / Alt+F4 / Ctrl+Shift+S 等） | `keys` |
+| `mouse_move` / `mouse_scroll` | 移动光标 / 滚轮滚动 | `x`, `y` / `direction`, `amount` |
+| `uia_find_element` / `uia_get_tree` | 进阶：按 name/automationId/className 查 UIA 元素 / 取窗口 UI 树 | `name?`, `automationId?` |
+| `window_list` / `window_focus` / `window_close` | 列出 / 聚焦 / 关闭窗口 | `title?`, `handle?` |
+| `get_screen_info` | 屏幕分辨率、DPI、缩放因子 | - |
+| `screenshot_click` | ⚠️ 低优先：按上次截图的百分比位置点击，不精确，仅作兜底 | `x_pct`, `y_pct` |
+
+> Windows 操作准确性（UIA 语义过滤 / OCR 锚定 UIA / 动作后验证）见下方「已知局限 → Windows 操作准确性改造」。
 
 ## daemon 管理
 

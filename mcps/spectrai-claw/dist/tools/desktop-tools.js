@@ -35,6 +35,7 @@ import { fileURLToPath } from 'url';
 import { registerTool } from './registry.js';
 import { visionLocate } from './vision-grounding.js';
 import { renderHud } from './hud-renderer.js';
+import { inferElementCapability } from '../computer-use/providers/windows/uia-mapper.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 // OCR worker script path (runs in separate STA process for WinRT async compatibility)
@@ -62,6 +63,86 @@ function isUiaElementCandidate(element) {
         return false;
     return Boolean(element.name || element.automationId || element.className);
 }
+// Rank an annotated element by how confidently it can be acted on natively.
+// Reuses the computer-use capability inference so the screenshot workflow and the
+// (currently unwired) UIA runtime agree on what "actionable" means.
+function elementActionabilityScore(el) {
+    const cap = inferElementCapability({
+        source: el.source === 'OCR' ? 'ocr' : 'uia',
+        controlType: el.controlType,
+        className: el.className,
+        patterns: el.patterns,
+        isEnabled: el.isEnabled,
+    });
+    let score = 0;
+    if (cap.supportedActions.some(a => a !== 'focus' && a !== 'clickFallback'))
+        score += 100;
+    if (cap.backgroundInvoke)
+        score += 20;
+    if (cap.backgroundType)
+        score += 10;
+    if (el.isEnabled === false)
+        score -= 40;
+    if (el.name && el.name.trim())
+        score += 5;
+    return score;
+}
+// Stable sort that surfaces natively-actionable elements first while preserving the
+// original badge numbers (image annotations and click_element() lookups stay valid).
+function sortElementsForDisplay(elements) {
+    return elements
+        .map((el, i) => ({ el, i, s: elementActionabilityScore(el) }))
+        .sort((a, b) => b.s - a.s || a.i - b.i)
+        .map(x => x.el);
+}
+function formatElementLine(e) {
+    const ct = e.controlType.replace('ControlType.', '');
+    const disabledTag = e.isEnabled === false ? ' [disabled]' : '';
+    const patTag = e.patterns && e.patterns.length > 0 ? ` {${e.patterns.join(',')}}` : '';
+    return `  [${e.number}] "${e.name}" (${ct})${disabledTag}${patTag}`;
+}
+// Parse uia_find_element's ConvertTo-Json output, annotate each hit with its inferred
+// capability, and rank actionable/on-screen/enabled hits first so ambiguous queries
+// surface the element a caller most likely wants instead of a raw unordered dump.
+function rankUiaFindResults(stdout) {
+    const raw = stdout.trim();
+    if (!raw)
+        return '[]';
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        return raw; // not JSON (e.g. PS error text) — pass through unchanged
+    }
+    const items = (Array.isArray(parsed) ? parsed : [parsed]).filter(Boolean);
+    const annotated = items.map((it) => {
+        const patterns = Array.isArray(it.Patterns)
+            ? it.Patterns.map(String)
+            : it.Patterns
+                ? [String(it.Patterns)]
+                : [];
+        const cap = inferElementCapability({
+            source: 'uia',
+            controlType: typeof it.ControlType === 'string' ? it.ControlType : undefined,
+            className: typeof it.ClassName === 'string' ? it.ClassName : undefined,
+            patterns,
+            isEnabled: it.IsEnabled !== false,
+        });
+        const actionable = cap.supportedActions.some(a => a !== 'focus' && a !== 'clickFallback');
+        let score = 0;
+        if (actionable)
+            score += 100;
+        if (it.IsOffscreen === true)
+            score -= 50;
+        if (it.IsEnabled === false)
+            score -= 40;
+        return { ...it, Patterns: patterns, supportedActions: cap.supportedActions, actionable, _score: score };
+    });
+    annotated.sort((a, b) => b._score - a._score);
+    const cleaned = annotated.map(({ _score, ...rest }) => rest);
+    return JSON.stringify(cleaned, null, 2);
+}
 function parseUiaActionResult(stdout) {
     const marker = '__SPECTRAI_UIA_JSON__';
     const line = stdout
@@ -84,6 +165,8 @@ function parseUiaActionResult(stdout) {
             screenY: typeof parsed.screenY === 'number' && Number.isFinite(parsed.screenY) ? parsed.screenY : 0,
             rectW: typeof parsed.rectW === 'number' && Number.isFinite(parsed.rectW) ? parsed.rectW : 0,
             rectH: typeof parsed.rectH === 'number' && Number.isFinite(parsed.rectH) ? parsed.rectH : 0,
+            verify: typeof parsed.verify === 'string' ? parsed.verify : '',
+            detail: typeof parsed.detail === 'string' ? parsed.detail : '',
         };
     }
     catch {
@@ -115,7 +198,25 @@ $meta = @{
 }
 $actionKind = '${action}'
 $targetText = '${sp(text || '')}'
-$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH }
+$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH; verify = ''; detail = '' }
+
+# Read element-local UIA state for before/after comparison (post-action verification).
+function Read-ElementState {
+  param([Windows.Automation.AutomationElement]$el)
+  $s = @{ Alive = $true; Toggle = ''; Expand = ''; Selected = ''; Value = ''; Focus = '' }
+  try {
+    $o = $null
+    if ($el.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$o)) { $s.Toggle = "$(([Windows.Automation.TogglePattern]$o).Current.ToggleState)" }
+    $o = $null
+    if ($el.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$o)) { $s.Expand = "$(([Windows.Automation.ExpandCollapsePattern]$o).Current.ExpandCollapseState)" }
+    $o = $null
+    if ($el.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$o)) { $s.Selected = "$(([Windows.Automation.SelectionItemPattern]$o).Current.IsSelected)" }
+    $o = $null
+    if ($el.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$o)) { $s.Value = "$(([Windows.Automation.ValuePattern]$o).Current.Value)" }
+    $s.Focus = "$($el.Current.HasKeyboardFocus)"
+  } catch { $s.Alive = $false }
+  return $s
+}
 
 function Add-Candidate {
   param([Windows.Automation.AutomationElement]$el)
@@ -275,6 +376,8 @@ try {
         $result.rectH = [int]$bestRect.Height
       } catch {}
 
+      $beforeState = Read-ElementState $best
+
       if ($actionKind -eq 'setValue') {
         try { $best.SetFocus() } catch {}
         $valuePatternObj = $null
@@ -368,6 +471,26 @@ try {
           if (-not $result.reason) {
             $result.reason = 'uia_pattern_failed:' + $_.Exception.Message
           }
+        }
+      }
+
+      if ($result.ok) {
+        $afterState = Read-ElementState $best
+        if (-not $afterState.Alive) {
+          $result.verify = 'needs_resnapshot'
+        } elseif ($actionKind -eq 'setValue') {
+          if ($afterState.Value -eq $targetText) { $result.verify = 'verified' } else { $result.verify = 'state_not_changed' }
+          $result.detail = "value=$($afterState.Value)"
+        } else {
+          $changed = ($beforeState.Toggle -ne $afterState.Toggle) -or ($beforeState.Expand -ne $afterState.Expand) -or ($beforeState.Selected -ne $afterState.Selected) -or ($beforeState.Value -ne $afterState.Value)
+          if ($result.method -eq 'uiaToggle' -or $result.method -eq 'uiaExpandCollapse' -or $result.method -eq 'uiaSelect') {
+            if ($changed -or $afterState.Selected -eq 'True') { $result.verify = 'verified' } else { $result.verify = 'state_not_changed' }
+          } elseif ($result.method -eq 'uiaFocus') {
+            if ($afterState.Focus -eq 'True') { $result.verify = 'verified' } else { $result.verify = 'uncertain' }
+          } else {
+            if ($changed) { $result.verify = 'verified' } else { $result.verify = 'uncertain' }
+          }
+          $result.detail = "toggle=$($afterState.Toggle);expand=$($afterState.Expand);selected=$($afterState.Selected);focus=$($afterState.Focus)"
         }
       }
     }
@@ -644,6 +767,9 @@ try {
 
 # ====== Phase 1: UIA element detection ======
 $filtered = @()
+# Actionable UIA elements (have a control pattern) kept for OCR neighbourhood anchoring,
+# including unlabeled ones that never make it into $filtered.
+$uiaActionable = @()
 $idx = 1
 try {
     if (-not $window) {
@@ -677,15 +803,35 @@ try {
         $elCy = [int]($rect.Y + $rect.Height / 2)
         if ($elCx -lt $captureX -or $elCx -ge ($captureX + $captureW)) { continue }
         if ($elCy -lt $captureY -or $elCy -ge ($captureY + $captureH)) { continue }
+        # Skip elements that are reported off-screen (occluded / scrolled out)
+        $isOffscreen = $false
+        try { $isOffscreen = [bool]$el.Current.IsOffscreen } catch {}
+        if ($isOffscreen) { continue }
+        $isEnabled = $true
+        try { $isEnabled = [bool]$el.Current.IsEnabled } catch {}
         $name = $el.Current.Name
         $aid = $el.Current.AutomationId
         $ct = $el.Current.ControlType.ProgrammaticName
+        # Probe key control patterns (semantic actionability signal reused by TS scoring)
+        $pats = @()
+        $patDummy = $null
+        try { if ($el.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$patDummy)) { $pats += 'Invoke' } } catch {}
+        try { if ($el.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$patDummy)) { $pats += 'Toggle' } } catch {}
+        try { if ($el.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$patDummy)) { $pats += 'SelectionItem' } } catch {}
+        try { if ($el.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$patDummy)) { $pats += 'ExpandCollapse' } } catch {}
+        try { if ($el.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$patDummy)) { $pats += 'Value' } } catch {}
+        $patStr = ($pats -join ';')
+        if ($pats.Count -gt 0) {
+            $uiaActionable += @{X=[int]$rect.X; Y=[int]$rect.Y; W=[int]$rect.Width; H=[int]$rect.Height; CX=$elCx; CY=$elCy; CT=$ct; PAT=$patStr; EN=$isEnabled}
+        }
         # Accept elements with name, automationId, or actionable control types even without name
         $label = if ($name) { $name } elseif ($aid) { $aid } else { '' }
         $isClickable = ($ct -match 'Button|Hyperlink|MenuItem|TabItem|ListItem|CheckBox|RadioButton|ComboBox|Slider|Image')
         if (-not $label -and -not $isClickable) { continue }
+        # Pure Image with no actionable pattern is decorative — skip to cut noise
+        if (-not $name -and -not $aid -and $ct -match 'Image' -and $pats.Count -eq 0) { continue }
         if (-not $label) { $label = $ct -replace 'ControlType\\.', '' }
-        $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'}
+        $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'; EN=$isEnabled; OFF=$isOffscreen; PAT=$patStr}
         $idx++
         if ($idx -gt 80) { break }
     }
@@ -724,9 +870,21 @@ if ($filtered.Count -lt 10) {
                 if ($parts.Count -ge 5) {
                     $ocrW = [int]$parts[3]
                     $ocrH = [int]$parts[4]
-                    $ocrX = [int]$parts[1] - [int]($ocrW / 2)
-                    $ocrY = [int]$parts[2] - [int]($ocrH / 2)
-                    $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=[int]$parts[1]; CY=[int]$parts[2]; W=$ocrW; H=$ocrH; X=$ocrX; Y=$ocrY; AID=''; CLS=''; PID=0; Src='OCR'}
+                    $ocrCx = [int]$parts[1]
+                    $ocrCy = [int]$parts[2]
+                    $ocrX = $ocrCx - [int]($ocrW / 2)
+                    $ocrY = $ocrCy - [int]($ocrH / 2)
+                    # Anchor OCR text to an actionable UIA element whose bounds contain its centre,
+                    # so we click a native element (with pattern) instead of a raw OCR coordinate.
+                    $anchor = $null
+                    foreach ($cand in $uiaActionable) {
+                        if ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H)) { $anchor = $cand; break }
+                    }
+                    if ($anchor) {
+                        $filtered += @{N=$idx; Name=$parts[0]; CT=$anchor.CT; CX=$anchor.CX; CY=$anchor.CY; W=$anchor.W; H=$anchor.H; X=$anchor.X; Y=$anchor.Y; AID=''; CLS=''; PID=0; Src='OCR_UIA'; EN=$anchor.EN; OFF=$false; PAT=$anchor.PAT}
+                    } else {
+                        $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=$ocrCx; CY=$ocrCy; W=$ocrW; H=$ocrH; X=$ocrX; Y=$ocrY; AID=''; CLS=''; PID=0; Src='OCR'; EN=$true; OFF=$false; PAT=''}
+                    }
                     $idx++
                     $ocrCount++
                     if ($idx -gt 80) { break }
@@ -792,7 +950,7 @@ if ($filtered.Count -gt 0) {
 }
 
 # Output element list
-foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.CX)|$($el.CY)|$($el.AID)|$($el.CLS)|$($el.PID)|$($el.X)|$($el.Y)|$($el.W)|$($el.H)|$($el.Src)" }
+foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.CX)|$($el.CY)|$($el.AID)|$($el.CLS)|$($el.PID)|$($el.X)|$($el.Y)|$($el.W)|$($el.H)|$($el.Src)|$($el.EN)|$($el.OFF)|$($el.PAT)" }
 `;
                 const annotateResult = await shell.exec(annotateScript, 45000);
                 const elements = [];
@@ -829,6 +987,9 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                             rectW,
                             rectH,
                             source: p[12] === 'OCR' ? 'OCR' : 'UIA',
+                            isEnabled: p[13] === undefined || p[13] === '' ? undefined : p[13] === 'True',
+                            isOffscreen: p[14] === 'True',
+                            patterns: p[15] ? p[15].split(';').filter(Boolean) : [],
                         });
                     }
                 }
@@ -841,8 +1002,8 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                 const ocrCount = elements.filter(e => e.controlType.startsWith('OCR')).length;
                 const debugSuffix = debugLines.length > 0 ? `\n[debug: ${debugLines.join('; ')}]` : '';
                 elementListText = elements.length > 0
-                    ? `\n\nDetected ${uiaCount} UI elements + ${ocrCount} OCR texts (use click_element to click by number):\n` +
-                        elements.map(e => `  [${e.number}] "${e.name}" (${e.controlType.replace('ControlType.', '')})`).join('\n') + debugSuffix
+                    ? `\n\nDetected ${uiaCount} UI elements + ${ocrCount} OCR texts (use click_element to click by number, most actionable first):\n` +
+                        sortElementsForDisplay(elements).map(formatElementLine).join('\n') + debugSuffix
                     : `\n\nAnnotation: exitCode=${annotateResult.exitCode}, stdoutLen=${annotateResult.stdout.length}, rawLines=${rawLines.length}` +
                         (debugLines.length > 0 ? `\nInfo: ${debugLines.join('; ')}` : '') +
                         (annotateResult.stderr ? `\nStderr: ${annotateResult.stderr.substring(0, 300)}` : '');
@@ -1129,10 +1290,13 @@ Write-Output "clicked|$vPath"
                         rectW: uiaResult.rectW || element.rectW,
                         rectH: uiaResult.rectH || element.rectH,
                     };
+                    const verifyText = uiaResult.verify
+                        ? ` verify=${uiaResult.verify}${uiaResult.detail ? ` (${uiaResult.detail})` : ''}`
+                        : '';
                     return {
                         content: [{
                                 type: 'text',
-                                text: `Clicked [${elemNum}] "${element.name}" via method=${uiaResult.method} (native UIA, cursor unchanged).`,
+                                text: `Clicked [${elemNum}] "${element.name}" via method=${uiaResult.method} (native UIA, cursor unchanged).${verifyText}`,
                             }],
                     };
                 }
@@ -1447,10 +1611,13 @@ Write-Output "scrolled"
                         rectW: uiaResult.rectW || targetElement.rectW,
                         rectH: uiaResult.rectH || targetElement.rectH,
                     };
+                    const verifyText = uiaResult.verify
+                        ? ` verify=${uiaResult.verify}${uiaResult.detail ? ` (${uiaResult.detail})` : ''}`
+                        : '';
                     return {
                         content: [{
                                 type: 'text',
-                                text: `typed ${text.length} chars via method=uiaValue${targetElement ? ` on [${targetElement.number}] "${targetElement.name}"` : ''}`,
+                                text: `typed ${text.length} chars via method=uiaValue${targetElement ? ` on [${targetElement.number}] "${targetElement.name}"` : ''}${verifyText}`,
                             }],
                     };
                 }
@@ -1607,6 +1774,13 @@ $elements = $root.FindAll([Windows.Automation.TreeScope]::Descendants, $conditio
 $results = @()
 foreach ($el in $elements) {
   $rect = $el.Current.BoundingRectangle
+  $pats = @()
+  $patDummy = $null
+  try { if ($el.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$patDummy)) { $pats += 'Invoke' } } catch {}
+  try { if ($el.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$patDummy)) { $pats += 'Toggle' } } catch {}
+  try { if ($el.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$patDummy)) { $pats += 'SelectionItem' } } catch {}
+  try { if ($el.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$patDummy)) { $pats += 'ExpandCollapse' } } catch {}
+  try { if ($el.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$patDummy)) { $pats += 'Value' } } catch {}
   $item = @{
     Name = $el.Current.Name
     AutomationId = $el.Current.AutomationId
@@ -1615,6 +1789,8 @@ foreach ($el in $elements) {
     ProcessId = $el.Current.ProcessId
     BoundingRectangle = @{ X = $rect.X; Y = $rect.Y; Width = $rect.Width; Height = $rect.Height }
     IsEnabled = $el.Current.IsEnabled
+    IsOffscreen = $el.Current.IsOffscreen
+    Patterns = @($pats)
   }
   ${pidFilter}
 }
@@ -1624,7 +1800,8 @@ $results | ConvertTo-Json -Depth 3
         if (result.exitCode !== 0) {
             return { isError: true, content: [{ type: 'text', text: `UIA find failed: ${result.stderr}` }] };
         }
-        return { content: [{ type: 'text', text: result.stdout.trim() || '[]' }] };
+        const ranked = rankUiaFindResults(result.stdout);
+        return { content: [{ type: 'text', text: ranked }] };
     }, { title: 'UIA Find Element', readOnlyHint: true });
     // 10. uia_get_tree
     registerTool('uia_get_tree', 'Advanced: Get the full UI element tree for a window via UIA. Useful for understanding native app layout. For web apps, screenshot annotation is more reliable.', {
@@ -1929,6 +2106,7 @@ try {
 
 # UIA detection
 $filtered = @()
+$uiaActionable = @()
 $idx = 1
 try {
     if (-not $window) { $window = [Windows.Automation.AutomationElement]::RootElement }
@@ -1941,14 +2119,31 @@ try {
         $elCy = [int]($rect.Y + $rect.Height / 2)
         if ($elCx -lt $captureX -or $elCx -ge ($captureX + $captureW)) { continue }
         if ($elCy -lt $captureY -or $elCy -ge ($captureY + $captureH)) { continue }
+        $isOffscreen = $false
+        try { $isOffscreen = [bool]$el.Current.IsOffscreen } catch {}
+        if ($isOffscreen) { continue }
+        $isEnabled = $true
+        try { $isEnabled = [bool]$el.Current.IsEnabled } catch {}
         $name = $el.Current.Name
         $aid = $el.Current.AutomationId
         $ct = $el.Current.ControlType.ProgrammaticName
+        $pats = @()
+        $patDummy = $null
+        try { if ($el.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$patDummy)) { $pats += 'Invoke' } } catch {}
+        try { if ($el.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$patDummy)) { $pats += 'Toggle' } } catch {}
+        try { if ($el.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$patDummy)) { $pats += 'SelectionItem' } } catch {}
+        try { if ($el.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$patDummy)) { $pats += 'ExpandCollapse' } } catch {}
+        try { if ($el.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$patDummy)) { $pats += 'Value' } } catch {}
+        $patStr = ($pats -join ';')
+        if ($pats.Count -gt 0) {
+            $uiaActionable += @{X=[int]$rect.X; Y=[int]$rect.Y; W=[int]$rect.Width; H=[int]$rect.Height; CX=$elCx; CY=$elCy; CT=$ct; PAT=$patStr; EN=$isEnabled}
+        }
         $label = if ($name) { $name } elseif ($aid) { $aid } else { '' }
         $isClickable = ($ct -match 'Button|Hyperlink|MenuItem|TabItem|ListItem|CheckBox|RadioButton|ComboBox|Image')
         if (-not $label -and -not $isClickable) { continue }
+        if (-not $name -and -not $aid -and $ct -match 'Image' -and $pats.Count -eq 0) { continue }
         if (-not $label) { $label = $ct -replace 'ControlType\\.', '' }
-        $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'}
+        $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'; EN=$isEnabled; OFF=$isOffscreen; PAT=$patStr}
         $idx++
         if ($idx -gt 60) { break }
     }
@@ -1975,9 +2170,19 @@ if ($filtered.Count -lt 10) {
                 if ($parts.Count -ge 5) {
                     $ocrW = [int]$parts[3]
                     $ocrH = [int]$parts[4]
-                    $ocrX = [int]$parts[1] - [int]($ocrW / 2)
-                    $ocrY = [int]$parts[2] - [int]($ocrH / 2)
-                    $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=[int]$parts[1]; CY=[int]$parts[2]; W=$ocrW; H=$ocrH; X=$ocrX; Y=$ocrY; AID=''; CLS=''; PID=0; Src='OCR'}
+                    $ocrCx = [int]$parts[1]
+                    $ocrCy = [int]$parts[2]
+                    $ocrX = $ocrCx - [int]($ocrW / 2)
+                    $ocrY = $ocrCy - [int]($ocrH / 2)
+                    $anchor = $null
+                    foreach ($cand in $uiaActionable) {
+                        if ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H)) { $anchor = $cand; break }
+                    }
+                    if ($anchor) {
+                        $filtered += @{N=$idx; Name=$parts[0]; CT=$anchor.CT; CX=$anchor.CX; CY=$anchor.CY; W=$anchor.W; H=$anchor.H; X=$anchor.X; Y=$anchor.Y; AID=''; CLS=''; PID=0; Src='OCR_UIA'; EN=$anchor.EN; OFF=$false; PAT=$anchor.PAT}
+                    } else {
+                        $filtered += @{N=$idx; Name=$parts[0]; CT='OCR.Text'; CX=$ocrCx; CY=$ocrCy; W=$ocrW; H=$ocrH; X=$ocrX; Y=$ocrY; AID=''; CLS=''; PID=0; Src='OCR'; EN=$true; OFF=$false; PAT=''}
+                    }
                     $idx++
                     if ($idx -gt 80) { break }
                 }
@@ -2028,7 +2233,7 @@ if ($filtered.Count -gt 0) {
     $bmp.Save($imgPath, [System.Drawing.Imaging.ImageFormat]::Png)
     $bmp.Dispose(); $ms.Dispose()
 }
-foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.CX)|$($el.CY)|$($el.AID)|$($el.CLS)|$($el.PID)|$($el.X)|$($el.Y)|$($el.W)|$($el.H)|$($el.Src)" }
+foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.CX)|$($el.CY)|$($el.AID)|$($el.CLS)|$($el.PID)|$($el.X)|$($el.Y)|$($el.W)|$($el.H)|$($el.Src)|$($el.EN)|$($el.OFF)|$($el.PAT)" }
 `;
                 const annotateResult = await shell.exec(annotateScript, 45000);
                 const elements = [];
@@ -2058,6 +2263,9 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                             rectW,
                             rectH,
                             source: p[12] === 'OCR' ? 'OCR' : 'UIA',
+                            isEnabled: p[13] === undefined || p[13] === '' ? undefined : p[13] === 'True',
+                            isOffscreen: p[14] === 'True',
+                            patterns: p[15] ? p[15].split(';').filter(Boolean) : [],
                         });
                     }
                 }
@@ -2069,8 +2277,8 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                 const uiaCount = elements.filter(e => !e.controlType.startsWith('OCR')).length;
                 const ocrCount = elements.filter(e => e.controlType.startsWith('OCR')).length;
                 elementListText = elements.length > 0
-                    ? `\n\nDetected ${uiaCount} UI elements + ${ocrCount} OCR texts:\n` +
-                        elements.map(e => `  [${e.number}] "${e.name}" (${e.controlType.replace('ControlType.', '')})`).join('\n')
+                    ? `\n\nDetected ${uiaCount} UI elements + ${ocrCount} OCR texts (most actionable first):\n` +
+                        sortElementsForDisplay(elements).map(formatElementLine).join('\n')
                     : '';
             }
             catch (err) {
