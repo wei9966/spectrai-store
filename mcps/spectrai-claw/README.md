@@ -41,16 +41,18 @@ AI → MCP Server (Node.js) → [zod] → DaemonClient (Unix socket)
 
 ## CDP 浏览器启用说明
 
-```bash
-# 1. 退出 Chrome
-# 2. 启动时加参数
-open -a "Google Chrome" --args --remote-debugging-port=9222
+未开 9222 时会自动拉起独立 profile 的 Chrome/Edge（不复用、不 kill 用户日常浏览器）。也可手动启用：
 
-# 3. 验证
-curl http://localhost:9222/json | head -20
+```bash
+# 可选：手动启动调试口（自动拉起失败或需要复用已有调试会话时）
+# macOS
+open -na "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$HOME/.spectrai/auto-chrome"
+
+# 验证
+curl http://localhost:9222/json/version
 ```
 
-启用后 `ax_plus_cdp` 模式会自动检测。
+环境变量：`SPECTRAI_BROWSER_CDP_HOST` / `SPECTRAI_BROWSER_CDP_PORT`（默认 `127.0.0.1:9222`）。启用后 `ax_plus_cdp` / `browser_*` 会自动检测。
 
 ## 安装
 
@@ -193,7 +195,7 @@ npm run test:e2e
 
 - AXManualAccessibility 在 Chrome 主线被限制（issue 37465），Tauri/Electron 仍然有效
 - Vision OCR 冷启约 500ms，后续走 cache；且需要 Screen Recording 权限
-- CDP 需手动启用 debug port，不能动态唤醒已启动的 Chrome
+- CDP：不会 kill/重启用户已有 Chrome；若 9222 未开，会用独立 `--user-data-dir` 自动拉起 Chrome/Edge
 - 仅 macOS 14+（依赖 ScreenCaptureKit）
 - Windows 端仍为旧路径（未迁移到 Swift daemon 架构），但 `click_element` / `keyboard_type` 已升级为 UIA 原生动作优先：优先尝试 Invoke/Toggle/Selection/ExpandCollapse/Focus 与 ValuePattern.SetValue，失败自动回退 HID 鼠标事件 / SendKeys。
 

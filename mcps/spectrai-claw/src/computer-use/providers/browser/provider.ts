@@ -1,5 +1,6 @@
 import { CdpError, CdpHttpClient, CdpSession } from './cdp-client.js'
 import { buildActionExpression, buildDomSnapshotExpression, buildElementStateExpression, buildFindElementExpression } from './dom-scripts.js'
+import { ensureDebugBrowser } from './ensure-debug-browser.js'
 import type {
   BrowserAction,
   BrowserActionFailure,
@@ -58,6 +59,7 @@ interface RawActionPayload {
 export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
   private readonly http: CdpHttpClient
   private readonly defaultTimeoutMs: number
+  private ensurePromise: Promise<void> | null = null
 
   constructor(options: BrowserConnectionOptions = {}) {
     this.http = new CdpHttpClient(options)
@@ -65,6 +67,7 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
   }
 
   async listTargets(): Promise<BrowserTarget[]> {
+    await this.ensureReady()
     return await this.http.listTargets()
   }
 
@@ -142,7 +145,8 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     const notes: string[] = []
 
     try {
-      targets = await this.listTargets()
+      await this.ensureReady()
+      targets = await this.http.listTargets()
       if (targets.length === 0) {
         status = 'no_page_targets'
       }
@@ -231,6 +235,22 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
 
   async getCapabilities(): Promise<BrowserCapabilityReport> {
     return await this.getCapabilityReport()
+  }
+
+  private async ensureReady(): Promise<void> {
+    if (!this.ensurePromise) {
+      this.ensurePromise = ensureDebugBrowser({
+        host: this.http.host,
+        port: this.http.port,
+        browserURL: this.http.browserURL,
+      })
+        .then(() => undefined)
+        .catch((error) => {
+          this.ensurePromise = null
+          throw error
+        })
+    }
+    await this.ensurePromise
   }
 
   private async normalizeAction(action: BrowserAction, target: BrowserTarget): Promise<BrowserAction> {

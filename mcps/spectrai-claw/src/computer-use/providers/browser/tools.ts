@@ -1,4 +1,5 @@
 import { registerTool } from '../../../tools/registry.js'
+import { ensureDebugBrowser } from './ensure-debug-browser.js'
 import { BrowserDomCdpProvider } from './provider.js'
 import type { BrowserAction, BrowserConnectionOptions, BrowserSelector, BrowserTargetQuery } from './types.js'
 
@@ -117,7 +118,7 @@ export function registerBrowserComputerUseTools(): void {
       additionalProperties: false,
     },
     async (args) => {
-      const provider = createProvider(args)
+      const provider = await createProvider(args)
       const targets = await provider.listTargets()
       return json({ targets })
     },
@@ -135,7 +136,7 @@ export function registerBrowserComputerUseTools(): void {
       additionalProperties: false,
     },
     async (args) => {
-      const provider = createProvider(args)
+      const provider = await createProvider(args)
       const windows = await provider.listWindows()
       return json({ windows })
     },
@@ -156,7 +157,7 @@ export function registerBrowserComputerUseTools(): void {
       additionalProperties: false,
     },
     async (args) => {
-      const provider = createProvider(args)
+      const provider = await createProvider(args)
       const snapshot = await provider.readDomSnapshot(readObject<BrowserSelector>(args.selector), Number(args.maxElements ?? 200), readObject<BrowserTargetQuery>(args.target))
       return json(snapshot)
     },
@@ -177,7 +178,7 @@ export function registerBrowserComputerUseTools(): void {
       additionalProperties: false,
     },
     async (args) => {
-      const provider = createProvider(args)
+      const provider = await createProvider(args)
       const element = await provider.findElement(readObject<BrowserSelector>(args.selector) ?? {}, readObject<BrowserTargetQuery>(args.target))
       return json({ element })
     },
@@ -198,7 +199,7 @@ export function registerBrowserComputerUseTools(): void {
       additionalProperties: false,
     },
     async (args) => {
-      const provider = createProvider(args)
+      const provider = await createProvider(args)
       const result = await provider.executeAction(readObject<BrowserAction>(args.action) ?? { type: 'click' }, readObject<BrowserTargetQuery>(args.target))
       return json(result)
     },
@@ -216,7 +217,7 @@ export function registerBrowserComputerUseTools(): void {
       additionalProperties: false,
     },
     async (args) => {
-      const provider = createProvider(args)
+      const provider = await createProvider(args)
       const report = await provider.getCapabilityReport()
       return json(report)
     },
@@ -224,8 +225,10 @@ export function registerBrowserComputerUseTools(): void {
   )
 }
 
-function createProvider(args: Record<string, unknown>): BrowserDomCdpProvider {
-  return new BrowserDomCdpProvider(readObject<BrowserConnectionOptions>(args.connection) ?? {})
+async function createProvider(args: Record<string, unknown>): Promise<BrowserDomCdpProvider> {
+  const options = readObject<BrowserConnectionOptions>(args.connection) ?? {}
+  await ensureDebugBrowser(options)
+  return new BrowserDomCdpProvider(options)
 }
 
 function readObject<T>(value: unknown): T | undefined {
