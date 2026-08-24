@@ -36,7 +36,7 @@ import { registerTool } from './registry.js';
 import { visionLocate } from './vision-grounding.js';
 import { renderHud } from './hud-renderer.js';
 import { inferElementCapability } from '../computer-use/providers/windows/uia-mapper.js';
-import { activationEvidenceMatches, classifyForegroundResult, interpretActivatableHidVerify, interpretActivatableSelectVerify, isActivatableSelectionItem, resolveHidClickTypeForActivatable, resolveScreenshotCaptureMode, shouldFallbackClickAfterUia, } from './desktop-action-guards.js';
+import { activationEvidenceMatches, classifyForegroundResult, interpretActivatableHidVerify, interpretActivatableSelectVerify, isActivatableSelectionItem, NEAR_MONO_MAX_LUMINANCE_VARIANCE, NEAR_MONO_MAX_UNIQUE, resolveCaptureBlankDecision, resolveHidClickTypeForActivatable, resolveScreenshotCaptureMode, shouldFallbackClickAfterUia, } from './desktop-action-guards.js';
 import { isUiaElementCandidate, parseAnnotatedSource, } from './click-accuracy.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -718,6 +718,52 @@ export async function registerDesktopTools() {
             followWindowTitle,
             followProcessId,
         });
+        // Shared HWND resolve for follow* / PrintWindow blank fallback (any capture mode).
+        const titleEsc = followWindowTitle ? sp(followWindowTitle) : '';
+        const handleLit = followHandle != null ? String(followHandle) : '0';
+        const pidLit = followProcessId != null ? String(followProcessId) : '0';
+        const useFg = followForeground ? '$true' : '$false';
+        const allowPwFallback = captureMode === 'followWindow' ||
+            followForeground ||
+            (followHandle != null && followHandle !== 0) ||
+            (followProcessId != null && followProcessId !== 0) ||
+            Boolean(followWindowTitle && followWindowTitle.trim());
+        const allowPwLit = allowPwFallback ? '$true' : '$false';
+        const hwndResolve = `
+$hwndCapture = [IntPtr]::Zero
+$allowPwFallback = ${allowPwLit}
+if (-not ("CaptureHwnd38" -as [type])) {
+  Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class CaptureHwnd38 {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+  public static int[] TryRect(IntPtr h) {
+    RECT r;
+    if (h == IntPtr.Zero || !IsWindow(h) || !GetWindowRect(h, out r)) return null;
+    return new int[] { r.Left, r.Top, r.Right, r.Bottom };
+  }
+}
+"@
+}
+if (${handleLit} -ne 0) { $hwndCapture = [IntPtr]::new(${handleLit}) }
+if ($hwndCapture -eq [IntPtr]::Zero -and ${pidLit} -ne 0) {
+  $pCap = Get-Process -Id ${pidLit} -ErrorAction SilentlyContinue
+  if ($pCap -and $pCap.MainWindowHandle -ne [IntPtr]::Zero) { $hwndCapture = $pCap.MainWindowHandle }
+}
+if ($hwndCapture -eq [IntPtr]::Zero -and '${titleEsc}' -ne '') {
+  $pCap = Get-Process | Where-Object { $_.MainWindowTitle -like '*${titleEsc}*' -and $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
+  if ($pCap) { $hwndCapture = $pCap.MainWindowHandle }
+}
+if ($hwndCapture -eq [IntPtr]::Zero -and ${useFg}) {
+  $hwndCapture = [CaptureHwnd38]::GetForegroundWindow()
+}
+`;
         // Build capture region script
         let captureRegion;
         if (captureMode === 'explicit') {
@@ -741,37 +787,11 @@ $captureH = [System.Windows.Forms.SystemInformation]::VirtualScreen.Height
 `;
         }
         else if (captureMode === 'followWindow') {
-            const titleEsc = followWindowTitle ? sp(followWindowTitle) : '';
-            const handleLit = followHandle != null ? String(followHandle) : '0';
-            const pidLit = followProcessId != null ? String(followProcessId) : '0';
-            const useFg = followForeground ? '$true' : '$false';
             captureRegion = `
-$hwndFollow = [IntPtr]::Zero
-if (${handleLit} -ne 0) { $hwndFollow = [IntPtr]::new(${handleLit}) }
-if ($hwndFollow -eq [IntPtr]::Zero -and ${pidLit} -ne 0) {
-  $pFollow = Get-Process -Id ${pidLit} -ErrorAction SilentlyContinue
-  if ($pFollow -and $pFollow.MainWindowHandle -ne [IntPtr]::Zero) { $hwndFollow = $pFollow.MainWindowHandle }
-}
-if ($hwndFollow -eq [IntPtr]::Zero -and '${titleEsc}' -ne '') {
-  $pFollow = Get-Process | Where-Object { $_.MainWindowTitle -like '*${titleEsc}*' -and $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
-  if ($pFollow) { $hwndFollow = $pFollow.MainWindowHandle }
-}
-if ($hwndFollow -eq [IntPtr]::Zero -and ${useFg}) {
-  if (-not ("FollowFg" -as [type])) {
-    Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class FollowFg {
-  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-}
-"@
-  }
-  $hwndFollow = [FollowFg]::GetForegroundWindow()
-}
 $primary = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $captureX = $primary.X; $captureY = $primary.Y; $captureW = $primary.Width; $captureH = $primary.Height
-if ($hwndFollow -ne [IntPtr]::Zero) {
-  $mon = [System.Windows.Forms.Screen]::FromHandle($hwndFollow)
+if ($hwndCapture -ne [IntPtr]::Zero) {
+  $mon = [System.Windows.Forms.Screen]::FromHandle($hwndCapture)
   if ($mon -and $mon.Bounds.Width -gt 0 -and $mon.Bounds.Height -gt 0) {
     $captureX = $mon.Bounds.X; $captureY = $mon.Bounds.Y; $captureW = $mon.Bounds.Width; $captureH = $mon.Bounds.Height
   }
@@ -791,13 +811,68 @@ $captureW = $mon.Bounds.Width
 $captureH = $mon.Bounds.Height
 `;
         }
+        // Near-mono → PrintWindow; thresholds mirror desktop-action-guards constants.
+        const blankProbe = `
+function Get-CaptureColorStats([System.Drawing.Bitmap]$b) {
+  $sampleN = 32
+  $uniq = @{}
+  $sum = 0.0; $sumSq = 0.0; $n = 0
+  if ($b.Width -le 0 -or $b.Height -le 0) { return @{ uniqueColors = 0; variance = 0.0 } }
+  for ($sy = 0; $sy -lt $sampleN; $sy++) {
+    $py = [Math]::Min($b.Height - 1, [int](($sy + 0.5) * $b.Height / $sampleN))
+    for ($sx = 0; $sx -lt $sampleN; $sx++) {
+      $px = [Math]::Min($b.Width - 1, [int](($sx + 0.5) * $b.Width / $sampleN))
+      $c = $b.GetPixel($px, $py)
+      $key = ($c.R -shl 16) -bor ($c.G -shl 8) -bor $c.B
+      $uniq[$key] = $true
+      $lum = 0.299 * $c.R + 0.587 * $c.G + 0.114 * $c.B
+      $sum += $lum; $sumSq += ($lum * $lum); $n++
+    }
+  }
+  $mean = if ($n -gt 0) { $sum / $n } else { 0.0 }
+  $var = if ($n -gt 0) { ($sumSq / $n) - ($mean * $mean) } else { 0.0 }
+  return @{ uniqueColors = [int]$uniq.Count; variance = [double]$var }
+}
+$captureSignal = 'ok'
+$pwTried = 0
+$stats = Get-CaptureColorStats $bmp
+$nearBlank = ($stats.uniqueColors -le ${NEAR_MONO_MAX_UNIQUE}) -or ($stats.variance -le ${NEAR_MONO_MAX_LUMINANCE_VARIANCE})
+# Only blank-detect / PrintWindow when caller asked to follow a window (avoid false fail on solid wallpapers).
+if ($allowPwFallback -and $nearBlank -and $hwndCapture -ne [IntPtr]::Zero) {
+  $rw = [CaptureHwnd38]::TryRect($hwndCapture)
+  if ($rw -ne $null -and $rw.Length -ge 4) {
+    $pwW = [Math]::Max(1, $rw[2] - $rw[0])
+    $pwH = [Math]::Max(1, $rw[3] - $rw[1])
+    $pwBmp = New-Object System.Drawing.Bitmap($pwW, $pwH)
+    $pwG = [System.Drawing.Graphics]::FromImage($pwBmp)
+    $hdc = $pwG.GetHdc()
+    $pwOk = [CaptureHwnd38]::PrintWindow($hwndCapture, $hdc, 2) # PW_RENDERFULLCONTENT
+    $pwG.ReleaseHdc($hdc)
+    $pwG.Dispose()
+    $pwTried = 1
+    if ($pwOk) {
+      $bmp.Dispose()
+      $bmp = $pwBmp
+      $captureX = $rw[0]; $captureY = $rw[1]; $captureW = $pwW; $captureH = $pwH
+      $stats = Get-CaptureColorStats $bmp
+      $nearBlank = ($stats.uniqueColors -le ${NEAR_MONO_MAX_UNIQUE}) -or ($stats.variance -le ${NEAR_MONO_MAX_LUMINANCE_VARIANCE})
+    } else {
+      $pwBmp.Dispose()
+    }
+  }
+}
+if ($allowPwFallback -and $nearBlank) { $captureSignal = 'capture_blank' }
+elseif ($pwTried -eq 1 -and -not $nearBlank) { $captureSignal = 'printwindow' }
+`;
         const script = `
+${hwndResolve}
 ${captureRegion}
 ${saveLine}
 $bmp = New-Object System.Drawing.Bitmap($captureW, $captureH)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen($captureX, $captureY, 0, 0, (New-Object System.Drawing.Size($captureW, $captureH)))
 $g.Dispose()
+${blankProbe}
 $maxW = ${maxWidth}
 if ($maxW -gt 0 -and $bmp.Width -gt $maxW) {
     $ratio = $maxW / $bmp.Width
@@ -874,7 +949,8 @@ $imgW = $imgCheck.Width
 $imgH = $imgCheck.Height
 $imgCheck.Dispose()
 $bmp.Dispose()
-"$($outFile)|$($info.Length)|$($captureW)x$($captureH)|$($captureX)|$($captureY)|$($imgW)|$($imgH)"
+$hwndOut = if ($hwndCapture -ne [IntPtr]::Zero) { $hwndCapture.ToInt64() } else { 0 }
+"$($outFile)|$($info.Length)|$($captureW)x$($captureH)|$($captureX)|$($captureY)|$($imgW)|$($imgH)|$($captureSignal)|$($stats.uniqueColors)|$($pwTried)|$($hwndOut)"
 `;
         const result = await shell.exec(script, 20000);
         if (result.exitCode !== 0) {
@@ -888,7 +964,31 @@ $bmp.Dispose()
         const originY = parseInt(parts[4] || '0', 10);
         const imageW = parseInt(parts[5] || '0', 10);
         const imageH = parseInt(parts[6] || '0', 10);
+        const captureSignal = parts[7] || 'ok';
+        const uniqueColors = parseInt(parts[8] || '-1', 10);
+        const pwTried = parseInt(parts[9] || '0', 10) === 1;
+        const hwndOut = parseInt(parts[10] || '0', 10);
         const [capW, capH] = capturedSize.split('x').map(Number);
+        const blankDecision = allowPwFallback
+            ? resolveCaptureBlankDecision({
+                isNearBlank: captureSignal === 'capture_blank',
+                targetHwnd: hwndOut || null,
+                printWindowTried: pwTried || captureSignal === 'printwindow',
+                stillBlankAfterPrintWindow: captureSignal === 'capture_blank' && pwTried,
+            })
+            : 'ok';
+        // Follow-target near-mono after optional PrintWindow → explicit failure (do not annotate as success).
+        if (allowPwFallback && (captureSignal === 'capture_blank' || blankDecision === 'capture_blank')) {
+            return {
+                isError: true,
+                content: [{
+                        type: 'text',
+                        text: `Screenshot capture_blank: near-monochrome capture (uniqueColors=${Number.isFinite(uniqueColors) ? uniqueColors : '?'}).` +
+                            ` PrintWindow tried=${pwTried ? 'yes' : 'no'}, hwnd=${hwndOut || 0}.` +
+                            ` File kept for debug: ${filePath}. Target window may not have painted yet — refocus/repaint and retry.`,
+                    }],
+            };
+        }
         // Store metadata for screenshot_click
         const meta = {
             captureX: originX, captureY: originY,
@@ -1606,12 +1706,12 @@ if (-not $procs) { $hwnd = [IntPtr]::Zero } else { $hwnd = $procs.MainWindowHand
             return { ok: false, reason: 'focus_failed:window_not_found', detail: 'title or handle required' };
         }
         const script = `
-if (-not ("FocusProbe" -as [type])) {
+if (-not ("FocusProbe38" -as [type])) {
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-public class FocusProbe {
+public class FocusProbe38 {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
@@ -1621,16 +1721,27 @@ public class FocusProbe {
   [DllImport("user32.dll")] public static extern IntPtr GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] public static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
+  [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+  // RDW_INVALIDATE|RDW_ERASE|RDW_FRAME|RDW_ALLCHILDREN|RDW_UPDATENOW
+  const uint RDW_AFTER_RESTORE = 0x0001 | 0x0004 | 0x0400 | 0x0080 | 0x0100;
   public static string TitleOf(IntPtr h) {
     var sb = new StringBuilder(512);
     GetWindowText(h, sb, sb.Capacity);
     return sb.ToString();
   }
+  public static void RepaintAfterRestore(IntPtr hWnd) {
+    InvalidateRect(hWnd, IntPtr.Zero, true);
+    RedrawWindow(hWnd, IntPtr.Zero, IntPtr.Zero, RDW_AFTER_RESTORE);
+    System.Threading.Thread.Sleep(80); // ≤120ms first-frame wait
+  }
   public static bool ForceForeground(IntPtr hWnd) {
     if (hWnd == IntPtr.Zero) return false;
     // Restore minimized only; do not SW_SHOW(5) already-visible windows (avoids gray/black flicker).
-    if (IsIconic(hWnd)) ShowWindow(hWnd, 9);
+    bool didRestore = false;
+    if (IsIconic(hWnd)) { ShowWindow(hWnd, 9); didRestore = true; }
+    if (didRestore) RepaintAfterRestore(hWnd);
     IntPtr fg = GetForegroundWindow();
     if (fg == hWnd) return true;
     uint fgPid; uint fgTid = (uint)GetWindowThreadProcessId(fg, out fgPid);
@@ -1660,16 +1771,17 @@ $probe = @{
 }
 if ($hwnd -ne [IntPtr]::Zero) {
   $probe.targetHwnd = $hwnd.ToInt64()
-  $probe.iconic = [FocusProbe]::IsIconic($hwnd)
-  $probe.visible = [FocusProbe]::IsWindowVisible($hwnd)
-  $probe.targetTitle = [FocusProbe]::TitleOf($hwnd)
-  $probe.setForegroundOk = [FocusProbe]::ForceForeground($hwnd)
+  $probe.iconic = [FocusProbe38]::IsIconic($hwnd)
+  $probe.visible = [FocusProbe38]::IsWindowVisible($hwnd)
+  $probe.targetTitle = [FocusProbe38]::TitleOf($hwnd)
+  # ponytail: restore→repaint mirrors shouldRepaintAfterFocusShow('restore')
+  $probe.setForegroundOk = [FocusProbe38]::ForceForeground($hwnd)
   Start-Sleep -Milliseconds 80
-  $fg = [FocusProbe]::GetForegroundWindow()
+  $fg = [FocusProbe38]::GetForegroundWindow()
   $probe.foregroundHwnd = $fg.ToInt64()
-  $probe.foregroundTitle = [FocusProbe]::TitleOf($fg)
-  $probe.visible = [FocusProbe]::IsWindowVisible($hwnd)
-  $probe.iconic = [FocusProbe]::IsIconic($hwnd)
+  $probe.foregroundTitle = [FocusProbe38]::TitleOf($fg)
+  $probe.visible = [FocusProbe38]::IsWindowVisible($hwnd)
+  $probe.iconic = [FocusProbe38]::IsIconic($hwnd)
 }
 Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
 `;
@@ -1777,32 +1889,42 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
 $p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue
 if (-not $p -or $p.MainWindowHandle -eq [IntPtr]::Zero) { Write-Output '__SPECTRAI_FOCUS_JSON__{"targetHwnd":0,"foregroundHwnd":0,"visible":false,"iconic":false,"foregroundTitle":""}'; return }
 $hwnd = $p.MainWindowHandle
-if (-not ("FocusProbePid" -as [type])) {
+if (-not ("FocusProbePid38" -as [type])) {
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
-public class FocusProbePid {
+public class FocusProbePid38 {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
+  [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+  const uint RDW_AFTER_RESTORE = 0x0001 | 0x0004 | 0x0400 | 0x0080 | 0x0100;
   public static string TitleOf(IntPtr h) { var sb = new StringBuilder(512); GetWindowText(h, sb, sb.Capacity); return sb.ToString(); }
+  public static void RepaintAfterRestore(IntPtr hWnd) {
+    InvalidateRect(hWnd, IntPtr.Zero, true);
+    RedrawWindow(hWnd, IntPtr.Zero, IntPtr.Zero, RDW_AFTER_RESTORE);
+    System.Threading.Thread.Sleep(80);
+  }
 }
 "@
 }
-if ([FocusProbePid]::IsIconic($hwnd)) { [FocusProbePid]::ShowWindow($hwnd, 9) | Out-Null }
-[FocusProbePid]::SetForegroundWindow($hwnd) | Out-Null
+$didRestorePid = $false
+if ([FocusProbePid38]::IsIconic($hwnd)) { [FocusProbePid38]::ShowWindow($hwnd, 9) | Out-Null; $didRestorePid = $true }
+if ($didRestorePid) { [FocusProbePid38]::RepaintAfterRestore($hwnd) }
+[FocusProbePid38]::SetForegroundWindow($hwnd) | Out-Null
 Start-Sleep -Milliseconds 40
-$fg = [FocusProbePid]::GetForegroundWindow()
+$fg = [FocusProbePid38]::GetForegroundWindow()
 $probe = @{
   targetHwnd = $hwnd.ToInt64()
   foregroundHwnd = $fg.ToInt64()
-  visible = [bool]([FocusProbePid]::IsWindowVisible($hwnd))
-  iconic = [bool]([FocusProbePid]::IsIconic($hwnd))
-  foregroundTitle = [FocusProbePid]::TitleOf($fg)
+  visible = [bool]([FocusProbePid38]::IsWindowVisible($hwnd))
+  iconic = [bool]([FocusProbePid38]::IsIconic($hwnd))
+  foregroundTitle = [FocusProbePid38]::TitleOf($fg)
 }
 Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
 `;

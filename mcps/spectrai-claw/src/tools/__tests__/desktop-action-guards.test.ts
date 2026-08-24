@@ -6,12 +6,16 @@ import {
   interpretActivatableHidVerify,
   interpretActivatableSelectVerify,
   isActivatableSelectionItem,
+  isNearMonochromeCapture,
   localActivationStateChanged,
+  resolveCaptureBlankDecision,
   resolveFocusShowAction,
   resolveFollowWindowCaptureBounds,
   resolveHidClickTypeForActivatable,
   resolveScreenshotCaptureMode,
   shouldFallbackClickAfterUia,
+  shouldPrintWindowFallback,
+  shouldRepaintAfterFocusShow,
 } from '../desktop-action-guards.js'
 
 describe('isActivatableSelectionItem', () => {
@@ -362,6 +366,71 @@ describe('resolveScreenshotCaptureMode / resolveFollowWindowCaptureBounds', () =
         primaryScreen: primary,
       }),
       primary,
+    )
+  })
+})
+
+describe('shouldRepaintAfterFocusShow', () => {
+  it('repaints only after iconic restore', () => {
+    assert.equal(shouldRepaintAfterFocusShow(resolveFocusShowAction({ iconic: true })), true)
+    assert.equal(shouldRepaintAfterFocusShow(resolveFocusShowAction({ iconic: false })), false)
+    assert.equal(shouldRepaintAfterFocusShow('restore'), true)
+    assert.equal(shouldRepaintAfterFocusShow('none'), false)
+  })
+})
+
+describe('isNearMonochromeCapture / PrintWindow blank path', () => {
+  it('flags solid / near-solid gray (smoke #E0E0E0 uniq=1)', () => {
+    assert.equal(isNearMonochromeCapture({ uniqueColors: 1 }), true)
+    assert.equal(isNearMonochromeCapture({ uniqueColors: 4 }), true)
+    assert.equal(isNearMonochromeCapture({ uniqueColors: 5 }), false)
+    assert.equal(
+      isNearMonochromeCapture({ uniqueColors: 20, luminanceVariance: 2 }),
+      true,
+    )
+    assert.equal(
+      isNearMonochromeCapture({ uniqueColors: 20, luminanceVariance: 30 }),
+      false,
+    )
+  })
+
+  it('PrintWindow only when blank + resolvable HWND', () => {
+    assert.equal(shouldPrintWindowFallback({ isNearBlank: true, targetHwnd: 42 }), true)
+    assert.equal(shouldPrintWindowFallback({ isNearBlank: true, targetHwnd: 0 }), false)
+    assert.equal(shouldPrintWindowFallback({ isNearBlank: true, targetHwnd: null }), false)
+    assert.equal(shouldPrintWindowFallback({ isNearBlank: false, targetHwnd: 42 }), false)
+  })
+
+  it('resolveCaptureBlankDecision: try PrintWindow then capture_blank', () => {
+    assert.equal(
+      resolveCaptureBlankDecision({ isNearBlank: false }),
+      'ok',
+    )
+    assert.equal(
+      resolveCaptureBlankDecision({ isNearBlank: true, targetHwnd: 99 }),
+      'try_printwindow',
+    )
+    assert.equal(
+      resolveCaptureBlankDecision({ isNearBlank: true, targetHwnd: null }),
+      'capture_blank',
+    )
+    assert.equal(
+      resolveCaptureBlankDecision({
+        isNearBlank: true,
+        targetHwnd: 99,
+        printWindowTried: true,
+        stillBlankAfterPrintWindow: false,
+      }),
+      'ok',
+    )
+    assert.equal(
+      resolveCaptureBlankDecision({
+        isNearBlank: true,
+        targetHwnd: 99,
+        printWindowTried: true,
+        stillBlankAfterPrintWindow: true,
+      }),
+      'capture_blank',
     )
   })
 })

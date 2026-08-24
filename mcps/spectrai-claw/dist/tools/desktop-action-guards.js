@@ -163,3 +163,61 @@ export function resolveFollowWindowCaptureBounds(input) {
     }
     return { ...input.primaryScreen };
 }
+/**
+ * After iconic SW_RESTORE, force a cheap client/frame repaint before SetForeground.
+ * Visible non-iconic windows must not get ShowWindow(5); repaint is restore-only.
+ */
+export function shouldRepaintAfterFocusShow(action) {
+    return action === 'restore';
+}
+/** Cheap downsample unique-color ceiling for "整窗灰" / DWM placeholder detection. */
+export const NEAR_MONO_MAX_UNIQUE = 4;
+/** Luma variance ceiling (0–255 scale); solid gray ≈ 0. */
+export const NEAR_MONO_MAX_LUMINANCE_VARIANCE = 8;
+/**
+ * Near-monochrome / blank capture heuristic.
+ * uniq≤N OR (when provided) luma variance≤threshold → blank.
+ */
+export function isNearMonochromeCapture(stats, opts) {
+    const maxUnique = opts?.maxUnique ?? NEAR_MONO_MAX_UNIQUE;
+    const maxVar = opts?.maxLuminanceVariance ?? NEAR_MONO_MAX_LUMINANCE_VARIANCE;
+    if (!Number.isFinite(stats.uniqueColors) || stats.uniqueColors < 0)
+        return false;
+    if (stats.uniqueColors <= maxUnique)
+        return true;
+    if (stats.luminanceVariance != null &&
+        Number.isFinite(stats.luminanceVariance) &&
+        stats.luminanceVariance <= maxVar) {
+        return true;
+    }
+    return false;
+}
+export function hasResolvableCaptureHwnd(hwnd) {
+    return hwnd != null && Number.isFinite(hwnd) && hwnd !== 0;
+}
+/**
+ * PrintWindow(PW_RENDERFULLCONTENT) only when the GDI screen grab looks blank
+ * AND the caller already resolved a target HWND (follow* / fg).
+ */
+export function shouldPrintWindowFallback(input) {
+    return input.isNearBlank && hasResolvableCaptureHwnd(input.targetHwnd);
+}
+/**
+ * Screenshot blank-path state machine:
+ * blank+hwnd → try PrintWindow once; still blank → capture_blank signal;
+ * blank without hwnd → capture_blank (do not silently annotate as success).
+ */
+export function resolveCaptureBlankDecision(input) {
+    const hasHwnd = hasResolvableCaptureHwnd(input.targetHwnd);
+    if (!input.printWindowTried) {
+        if (!input.isNearBlank)
+            return 'ok';
+        if (hasHwnd)
+            return 'try_printwindow';
+        return 'capture_blank';
+    }
+    // After PrintWindow: only the post-fallback blank flag matters.
+    if (input.stillBlankAfterPrintWindow)
+        return 'capture_blank';
+    return 'ok';
+}
