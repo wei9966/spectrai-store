@@ -83,6 +83,26 @@
 | 业务代码 App 特化字符串 | 仍为 0 |
 | build + 相关单测 | 全绿（本轮复跑 17/17） |
 
+## 冒烟核验（2026-08-24，Local Latest）
+
+### 浏览器 ✅
+1. `browser_get_capabilities`：9222 available
+2. `{type:'css', value:"a[href*='qwen…']"}` → 命中正确链接，不再落到首页首链
+3. 伪/空 selector → `element=null`（不再 DEFAULT 假命中）
+4. `{type:'text', value:'DeepSeek Harness…'}` click → `urlChanged` 后验通过
+5. 可见导航链 `a[href='/blog_list']` click → `urlChanged` 通过
+
+### 微信（仅懵逼三人组）⚠️ 半通
+1. 曾成功：搜索面板打开，UIA 标出 `懵逼三人组` ListItem
+2. `click_element` 双击该 ListItem → `activation_unconfirmed`（窗口 title 始终是「微信」，激活证据靠 title 会假失败）
+3. 后续窗口被挪/最大化后：UIA 树变空、主屏截图像黑/空，未能完成发「今日热点速览」
+4. **未向其他会话发消息**；本轮停在开群前，避免乱点
+
+### 下一刀候选（按阻塞度）
+1. **桌面激活证据**：窗口 title 不变的 App（如微信）不要只靠 `beforeTitle/afterTitle`；应认局部态 / 搜索面板关闭 / 聊天区出现等通用证据
+2. **截图/DPI/多屏**：主屏 1280×720 + 副屏场景下，窗口坐标与截图像素偶发错位，导致 annotate 空
+3. **annotated 缓存**：`screenshot annotate=true` 后立刻 `click_element(number, screenshotPath=…)` 偶发 “No annotated elements”（需同一次返回的缓存，或别强绑 savePath）
+
 ## 非目标
 
 - 不靠 Agent 多试几次掩盖「验错/假失败」
