@@ -15,6 +15,7 @@
 | **P3.5** | **浏览器 selector `{type,value}` 归一化，避免 DEFAULT 首链假命中** | ✅ |
 | **P3.6** | **桌面激活后验：title 不变时认通用局部证据（elementGone / 非 selection 名命中）** | ✅ `be41540` |
 | **P3.7** | **灰/黑屏：跟窗截屏参数 + 少动已可见窗口（去掉二次 ShowWindow(5)）** | ✅ `6aa43bd` |
+| **P3.8** | **整窗灰：restore 后等重绘 + 近单色截图兜底 PrintWindow** | ⬅️ 进行中 |
 | P4 | Swift daemon / 纯视觉主导 | 暂缓 |
 | Sync | store → claudeops builtin-mcps（`npm run sync:builtin-claw`） | ✅ 产物已就位（gitignore，打包前再跑） |
 | Pack | claudeops 打安装包 | ⬅️ 待你确认再打 |
@@ -102,9 +103,12 @@
 
 ### 下一刀候选（按阻塞度）
 1. **桌面激活证据** ✅ `be41540`：title 不变时认 `elementGone` / 非 selection 名命中
-2. **灰/黑屏** ✅ `6aa43bd`：去掉已可见窗的二次 `ShowWindow(5)`；`screenshot` 增加 `followForeground|followHandle|followWindowTitle|followProcessId`（未显式 monitor/区域时跟窗所在屏，找不到回退主屏）
-3. **截图/DPI/多屏剩余**：坐标与像素偶发错位仍可能存在；若冒烟仍灰，先让调用方传 `followForeground=true`，再考虑默认跟前台窗
-4. **annotated 缓存**：`screenshot annotate=true` 后立刻 `click_element(number, screenshotPath=…)` 偶发 “No annotated elements”（需同一次返回的缓存，或别强绑 savePath）
+2. **灰/黑屏（截错屏/二次 Show）** ✅ `6aa43bd`：去掉已可见窗二次 `ShowWindow(5)`；跟窗截屏可选参数
+3. **整窗灰（探活新确认）** ← **P3.8**：冒烟图 `wechat-smoke-fixed.png` / `m0.png` / `main4.png` 为近单色 `#E0E0E0`，**连按窗口区域截也是灰**，说明不是“只截错屏”，而是目标窗客户端未重绘/DWM 占位。通用修法：
+   - restore（`ShowWindow(9)`）后：`InvalidateRect`+`RedrawWindow`（或短等首帧），再 `SetForeground`
+   - `CopyFromScreen` 结果近单色（uniq 色极少 / 方差极低）→ 对目标 HWND 走 `PrintWindow(..., PW_RENDERFULLCONTENT)` 兜底；仍灰则返回 `capture_blank` 而不是当成功图
+   - 可选：focus 成功后默认 `followForeground`（找不到回退主屏）
+4. **annotated 缓存**：`screenshot annotate=true` 后立刻 `click_element(number, screenshotPath=…)` 偶发 “No annotated elements”
 
 ## 非目标
 
