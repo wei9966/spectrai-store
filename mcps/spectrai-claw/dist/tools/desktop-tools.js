@@ -544,7 +544,7 @@ try {
           if ($afterState.Value -eq $targetText) { $result.verify = 'verified' } else { $result.verify = 'state_not_changed' }
           $result.detail = "value=$($afterState.Value);focus=$($afterState.Focus)"
         } elseif ($isActivatableItem) {
-          # selected/focus-only ≠ activated. Cheap evidence: Toggle/Expand/Value change, title contains name, or title changed.
+          # selected/focus-only ≠ activated. Cheap evidence: Toggle/Expand/Value, title, or non-selection Name hit.
           $afterTitles = Read-ActivationTitles $best
           $result.afterTitle = [string]$afterTitles.WindowTitle
           $result.foregroundTitle = [string]$afterTitles.ForegroundTitle
@@ -552,20 +552,40 @@ try {
           $targetName = [string]$meta.Name
           # Keep Selected/Focus flips out of local activation signal (Select false positives).
           $localChanged = ($beforeState.Toggle -ne $afterState.Toggle) -or ($beforeState.Expand -ne $afterState.Expand) -or ($beforeState.Value -ne $afterState.Value)
+          $outsideName = $false
+          if ($targetName -and $roots.Count -gt 0) {
+            try {
+              foreach ($root in $roots) {
+                $desc = $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+                $limit = [Math]::Min($desc.Count, 500)
+                for ($i = 0; $i -lt $limit; $i++) {
+                  try {
+                    $el = $desc.Item($i)
+                    $nm = [string]$el.Current.Name
+                    if (-not $nm -or -not $nm.Contains($targetName)) { continue }
+                    $ctShort = ([string]$el.Current.ControlType.ProgrammaticName) -replace '^ControlType\\.', ''
+                    if ($ctShort -notmatch '^(ListItem|TreeItem|TabItem|MenuItem)$') { $outsideName = $true; break }
+                  } catch {}
+                }
+                if ($outsideName) { break }
+              }
+            } catch {}
+          }
           $activated = $false
           if ($localChanged) { $activated = $true }
+          elseif ($outsideName) { $activated = $true }
           elseif ($targetName -and (($result.afterTitle -and $result.afterTitle.Contains($targetName)) -or ($result.foregroundTitle -and $result.foregroundTitle.Contains($targetName)))) { $activated = $true }
           elseif ($result.beforeTitle -and $result.afterTitle -and ($result.beforeTitle -ne $result.afterTitle)) { $activated = $true }
           elseif ($result.beforeTitle -and $result.foregroundTitle -and ($result.beforeTitle -ne $result.foregroundTitle)) { $activated = $true }
           if ($activated) {
             $result.verify = 'verified'
-            $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle)"
+            $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle);outsideName=$outsideName"
           } else {
             # Do not keep spinning on Select — force one HID (may escalate to double) click.
             $result.ok = $false
             $result.verify = 'state_not_changed'
             $result.reason = 'needs_fallback_click'
-            $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle);target=$targetName"
+            $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle);target=$targetName;outsideName=$outsideName"
           }
         } else {
           $changed = ($beforeState.Toggle -ne $afterState.Toggle) -or ($beforeState.Expand -ne $afterState.Expand) -or ($beforeState.Selected -ne $afterState.Selected) -or ($beforeState.Value -ne $afterState.Value)
@@ -1391,6 +1411,126 @@ Write-Output "__SPECTRAI_ACT_JSON__$($out | ConvertTo-Json -Compress)"
         }
     }
     /**
+     * Cheap local activation probe after HID click when window title may stay unchanged:
+     * - original selection row gone from tree
+     * - target name appears on a non-selection control in the same process
+     */
+    async function probeActivationLocalEvidence(element) {
+        const processId = element.processId != null ? sn(element.processId) : 0;
+        const rectX = element.rectX != null ? sn(element.rectX) : sn(element.screenX);
+        const rectY = element.rectY != null ? sn(element.rectY) : sn(element.screenY);
+        const rectW = element.rectW != null ? sn(element.rectW) : 0;
+        const rectH = element.rectH != null ? sn(element.rectH) : 0;
+        const script = `
+$meta = @{
+  Name = '${sp(element.name || '')}'
+  ControlType = '${sp(element.controlType || '')}'
+  ProcessId = ${processId}
+  CenterX = ${sn(element.screenX)}
+  CenterY = ${sn(element.screenY)}
+  RectX = ${rectX}
+  RectY = ${rectY}
+  RectW = ${rectW}
+  RectH = ${rectH}
+}
+$out = @{ elementGone = $false; targetNameOutsideSelection = $false }
+try {
+  $roots = @()
+  if ($meta.ProcessId -gt 0) {
+    try {
+      $pidCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$meta.ProcessId)
+      $pidWindows = [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children, $pidCond)
+      for ($i = 0; $i -lt $pidWindows.Count; $i++) { $roots += $pidWindows.Item($i) }
+    } catch {}
+  }
+  if ($roots.Count -eq 0) {
+    try {
+      $pt = New-Object System.Windows.Point($meta.CenterX, $meta.CenterY)
+      $hit = [Windows.Automation.AutomationElement]::FromPoint($pt)
+      if ($hit) {
+        $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+        $cur = $hit
+        while ($null -ne $cur -and $cur -ne [Windows.Automation.AutomationElement]::RootElement) {
+          if ($cur.Current.ControlType -eq [Windows.Automation.ControlType]::Window) { $roots += $cur; break }
+          $cur = $walker.GetParent($cur)
+        }
+      }
+    } catch {}
+  }
+  if ($roots.Count -eq 0) { $roots = @([Windows.Automation.AutomationElement]::RootElement) }
+
+  $targetName = [string]$meta.Name
+  $wantCt = ([string]$meta.ControlType) -replace '^ControlType\\.', ''
+  $foundOriginal = $false
+  $outsideHit = $false
+  foreach ($root in $roots) {
+    try {
+      $desc = $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+      $limit = [Math]::Min($desc.Count, 500)
+      for ($i = 0; $i -lt $limit; $i++) {
+        try {
+          $el = $desc.Item($i)
+          $cur = $el.Current
+          $nm = [string]$cur.Name
+          $ct = [string]$cur.ControlType.ProgrammaticName
+          $ctShort = $ct -replace '^ControlType\\.', ''
+          $rect = $cur.BoundingRectangle
+          if (-not $foundOriginal -and $targetName -and $nm -eq $targetName) {
+            $ctOk = (-not $wantCt) -or ($ctShort -eq $wantCt) -or ($ct -eq $meta.ControlType)
+            if ($ctOk -and -not $rect.IsEmpty) {
+              $cx = $rect.X + ($rect.Width / 2)
+              $cy = $rect.Y + ($rect.Height / 2)
+              $dx = $cx - $meta.CenterX
+              $dy = $cy - $meta.CenterY
+              $dist = [Math]::Sqrt(($dx * $dx) + ($dy * $dy))
+              $sizeOk = $true
+              if ($meta.RectW -gt 0 -and $meta.RectH -gt 0) {
+                $dw = [Math]::Abs($rect.Width - $meta.RectW)
+                $dh = [Math]::Abs($rect.Height - $meta.RectH)
+                if (($dw + $dh) -gt 80) { $sizeOk = $false }
+              }
+              if ($dist -le 48 -and $sizeOk) { $foundOriginal = $true }
+            }
+          }
+          if (-not $outsideHit -and $targetName -and $nm -and $nm.Contains($targetName)) {
+            if ($ctShort -notmatch '^(ListItem|TreeItem|TabItem|MenuItem)$') {
+              $outsideHit = $true
+            }
+          }
+          if ($foundOriginal -and $outsideHit) { break }
+        } catch {}
+      }
+    } catch {}
+    if ($foundOriginal -and $outsideHit) { break }
+  }
+  # Only claim gone when we had a concrete name to re-find; empty-name rows stay unknown.
+  $out.elementGone = ($targetName -and -not $foundOriginal)
+  $out.targetNameOutsideSelection = $outsideHit
+} catch {}
+Write-Output "__SPECTRAI_ACT_LOCAL_JSON__$($out | ConvertTo-Json -Compress)"
+`;
+        try {
+            const result = await shell.exec(script, 3500);
+            const marker = '__SPECTRAI_ACT_LOCAL_JSON__';
+            const line = result.stdout
+                .split('\n')
+                .map(l => l.trim())
+                .filter(Boolean)
+                .reverse()
+                .find(l => l.startsWith(marker));
+            if (!line)
+                return { elementGone: false, targetNameOutsideSelection: false };
+            const parsed = JSON.parse(line.slice(marker.length));
+            return {
+                elementGone: parsed.elementGone === true,
+                targetNameOutsideSelection: parsed.targetNameOutsideSelection === true,
+            };
+        }
+        catch {
+            return { elementGone: false, targetNameOutsideSelection: false };
+        }
+    }
+    /**
      * P0-3: ensure target HWND is foreground + visible + non-minimized.
      * Fail-fast with target_occluded / focus_failed; does not minimize SpectrAI by default.
      */
@@ -1710,11 +1850,18 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
                 after = await readActivationTitles(element.processId);
             }
             catch { /* ignore */ }
+            let localProbe = { elementGone: false, targetNameOutsideSelection: false };
+            try {
+                localProbe = await probeActivationLocalEvidence(element);
+            }
+            catch { /* ignore */ }
             const activated = activationEvidenceMatches({
                 targetName: element.name || '',
                 beforeTitle: beforeTitles.windowTitle || beforeTitles.foregroundTitle || '',
                 afterTitle: after.windowTitle,
                 foregroundTitle: after.foregroundTitle,
+                elementGone: localProbe.elementGone,
+                targetNameOutsideSelection: localProbe.targetNameOutsideSelection,
             });
             const hidVerify = interpretActivatableHidVerify({ activatedAfter: activated });
             if (!hidVerify.ok) {
@@ -1722,7 +1869,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
                     isError: true,
                     content: [{
                             type: 'text',
-                            text: `Click did not activate: ${hidVerify.verify} (selected≠activated). target="${element.name}" beforeTitle=${beforeTitles.windowTitle || beforeTitles.foregroundTitle || ''} afterTitle=${after.windowTitle} fgTitle=${after.foregroundTitle} method=hidMouse (${button} ${hidClickType}) reason=${hidVerify.reason} uiaFallback=${uiaFallbackReason}${beforeHint}\nVerification image: ${verifyImgPath}`,
+                            text: `Click did not activate: ${hidVerify.verify} (selected≠activated). target="${element.name}" beforeTitle=${beforeTitles.windowTitle || beforeTitles.foregroundTitle || ''} afterTitle=${after.windowTitle} fgTitle=${after.foregroundTitle} elementGone=${localProbe.elementGone} outsideName=${localProbe.targetNameOutsideSelection} method=hidMouse (${button} ${hidClickType}) reason=${hidVerify.reason} uiaFallback=${uiaFallbackReason}${beforeHint}\nVerification image: ${verifyImgPath}`,
                         }],
                 };
             }
@@ -1730,7 +1877,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
             return {
                 content: [{
                         type: 'text',
-                        text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${hidClickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};fgTitle=${after.foregroundTitle})${beforeHint}\n\nVerification image: ${verifyImgPath}`,
+                        text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${hidClickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};fgTitle=${after.foregroundTitle};elementGone=${localProbe.elementGone};outsideName=${localProbe.targetNameOutsideSelection})${beforeHint}\n\nVerification image: ${verifyImgPath}`,
                     }],
             };
         }

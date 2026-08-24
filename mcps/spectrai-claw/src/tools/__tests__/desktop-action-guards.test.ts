@@ -217,6 +217,46 @@ describe('activationEvidenceMatches', () => {
       false,
     )
   })
+
+  it('title unchanged + elementGone → activated', () => {
+    assert.equal(
+      activationEvidenceMatches({
+        targetName: 'Session Row',
+        beforeTitle: 'App',
+        afterTitle: 'App',
+        foregroundTitle: 'App',
+        elementGone: true,
+      }),
+      true,
+    )
+  })
+
+  it('title unchanged + targetNameOutsideSelection → activated', () => {
+    assert.equal(
+      activationEvidenceMatches({
+        targetName: 'Session Row',
+        beforeTitle: 'App',
+        afterTitle: 'App',
+        foregroundTitle: 'App',
+        targetNameOutsideSelection: true,
+      }),
+      true,
+    )
+  })
+
+  it('title unchanged + only ListItem still present / no outside hit → not activated', () => {
+    assert.equal(
+      activationEvidenceMatches({
+        targetName: 'Session Row',
+        beforeTitle: 'App',
+        afterTitle: 'App',
+        foregroundTitle: 'App',
+        elementGone: false,
+        targetNameOutsideSelection: false,
+      }),
+      false,
+    )
+  })
 })
 
 describe('classifyForegroundResult', () => {

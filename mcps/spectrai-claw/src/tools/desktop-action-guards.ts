@@ -52,10 +52,13 @@ export function localActivationStateChanged(
 }
 
 /**
- * Cheap activation evidence after Select:
+ * Cheap activation evidence after Select / HID:
  * 1) non-Selected local UIA state change, or
- * 2) owning/fg window title contains target name, or
- * 3) window/fg title changed vs before.
+ * 2) clicked selection row left the tree, or
+ * 3) target name appears on a non-selection control in-process, or
+ * 4) owning/fg window title contains target name, or
+ * 5) window/fg title changed vs before.
+ * Selected/Focus-only flips alone are never evidence.
  */
 export function activationEvidenceMatches(input: {
   targetName?: string
@@ -63,8 +66,12 @@ export function activationEvidenceMatches(input: {
   afterTitle?: string
   foregroundTitle?: string
   localStateChanged?: boolean
+  elementGone?: boolean
+  targetNameOutsideSelection?: boolean
 }): boolean {
   if (input.localStateChanged) return true
+  if (input.elementGone) return true
+  if (input.targetNameOutsideSelection) return true
   const target = String(input.targetName || '').trim()
   const after = String(input.afterTitle || '')
   const fg = String(input.foregroundTitle || '')
