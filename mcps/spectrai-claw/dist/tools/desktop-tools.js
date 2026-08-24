@@ -36,6 +36,8 @@ import { registerTool } from './registry.js';
 import { visionLocate } from './vision-grounding.js';
 import { renderHud } from './hud-renderer.js';
 import { inferElementCapability } from '../computer-use/providers/windows/uia-mapper.js';
+import { activationEvidenceMatches, classifyForegroundResult, interpretActivatableHidVerify, interpretActivatableSelectVerify, isActivatableSelectionItem, resolveHidClickTypeForActivatable, shouldFallbackClickAfterUia, } from './desktop-action-guards.js';
+import { isUiaElementCandidate, parseAnnotatedSource, } from './click-accuracy.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 // OCR worker script path (runs in separate STA process for WinRT async compatibility)
@@ -58,17 +60,12 @@ function getMouseClickFlags(button, clickType) {
 function getMouseClickEvents(flags) {
     return flags.split(';').map(f => `[Win32]::mouse_event(${f}, 0, 0, 0, [UIntPtr]::Zero)`).join('\n');
 }
-function isUiaElementCandidate(element) {
-    if (!element || element.controlType.startsWith('OCR') || element.source === 'OCR')
-        return false;
-    return Boolean(element.name || element.automationId || element.className);
-}
 // Rank an annotated element by how confidently it can be acted on natively.
 // Reuses the computer-use capability inference so the screenshot workflow and the
 // (currently unwired) UIA runtime agree on what "actionable" means.
 function elementActionabilityScore(el) {
     const cap = inferElementCapability({
-        source: el.source === 'OCR' ? 'ocr' : 'uia',
+        source: el.source === 'OCR' ? 'ocr' : 'uia', // OCR_UIA → uia
         controlType: el.controlType,
         className: el.className,
         patterns: el.patterns,
@@ -152,30 +149,39 @@ function parseUiaActionResult(stdout) {
         .reverse()
         .find(l => l.startsWith(marker));
     if (!line) {
-        return { ok: false, method: '', reason: 'uia_no_result', screenX: 0, screenY: 0, rectW: 0, rectH: 0 };
+        return { ok: false, method: '', reason: 'uia_no_result', screenX: 0, screenY: 0, rectW: 0, rectH: 0, clickX: 0, clickY: 0 };
     }
     const payload = line.slice(marker.length);
     try {
         const parsed = JSON.parse(payload);
+        const screenX = typeof parsed.screenX === 'number' && Number.isFinite(parsed.screenX) ? parsed.screenX : 0;
+        const screenY = typeof parsed.screenY === 'number' && Number.isFinite(parsed.screenY) ? parsed.screenY : 0;
+        const clickX = typeof parsed.clickX === 'number' && Number.isFinite(parsed.clickX) ? parsed.clickX : screenX;
+        const clickY = typeof parsed.clickY === 'number' && Number.isFinite(parsed.clickY) ? parsed.clickY : screenY;
         return {
             ok: parsed.ok === true,
             method: typeof parsed.method === 'string' ? parsed.method : '',
             reason: typeof parsed.reason === 'string' ? parsed.reason : '',
-            screenX: typeof parsed.screenX === 'number' && Number.isFinite(parsed.screenX) ? parsed.screenX : 0,
-            screenY: typeof parsed.screenY === 'number' && Number.isFinite(parsed.screenY) ? parsed.screenY : 0,
+            screenX,
+            screenY,
             rectW: typeof parsed.rectW === 'number' && Number.isFinite(parsed.rectW) ? parsed.rectW : 0,
             rectH: typeof parsed.rectH === 'number' && Number.isFinite(parsed.rectH) ? parsed.rectH : 0,
+            clickX,
+            clickY,
             verify: typeof parsed.verify === 'string' ? parsed.verify : '',
             detail: typeof parsed.detail === 'string' ? parsed.detail : '',
+            beforeTitle: typeof parsed.beforeTitle === 'string' ? parsed.beforeTitle : '',
+            afterTitle: typeof parsed.afterTitle === 'string' ? parsed.afterTitle : '',
+            foregroundTitle: typeof parsed.foregroundTitle === 'string' ? parsed.foregroundTitle : '',
         };
     }
     catch {
-        return { ok: false, method: '', reason: 'uia_result_parse_failed', screenX: 0, screenY: 0, rectW: 0, rectH: 0 };
+        return { ok: false, method: '', reason: 'uia_result_parse_failed', screenX: 0, screenY: 0, rectW: 0, rectH: 0, clickX: 0, clickY: 0 };
     }
 }
 async function tryUiaAction(element, action, text) {
     if (!isUiaElementCandidate(element)) {
-        return { ok: false, method: '', reason: 'uia_metadata_not_available', screenX: element.screenX, screenY: element.screenY, rectW: element.rectW ?? 0, rectH: element.rectH ?? 0 };
+        return { ok: false, method: '', reason: 'uia_metadata_not_available', screenX: element.screenX, screenY: element.screenY, rectW: element.rectW ?? 0, rectH: element.rectH ?? 0, clickX: element.screenX, clickY: element.screenY };
     }
     const processId = element.processId != null ? sn(element.processId) : 0;
     const rectX = element.rectX != null ? sn(element.rectX) : sn(element.screenX);
@@ -198,7 +204,8 @@ $meta = @{
 }
 $actionKind = '${action}'
 $targetText = '${sp(text || '')}'
-$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH; verify = ''; detail = '' }
+$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH; clickX = [int]$meta.CenterX; clickY = [int]$meta.CenterY; verify = ''; detail = ''; beforeTitle = ''; afterTitle = ''; foregroundTitle = '' }
+$isActivatableItem = $meta.ControlType -match 'ListItem|TreeItem|TabItem|MenuItem'
 
 # Read element-local UIA state for before/after comparison (post-action verification).
 function Read-ElementState {
@@ -215,6 +222,37 @@ function Read-ElementState {
     if ($el.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$o)) { $s.Value = "$(([Windows.Automation.ValuePattern]$o).Current.Value)" }
     $s.Focus = "$($el.Current.HasKeyboardFocus)"
   } catch { $s.Alive = $false }
+  return $s
+}
+
+# Cheap activation probe: owning window title + same-process foreground title.
+function Read-ActivationTitles {
+  param([Windows.Automation.AutomationElement]$el)
+  $s = @{ WindowTitle = ''; ForegroundTitle = '' }
+  try {
+    $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+    $cur = $el
+    $window = $null
+    while ($null -ne $cur) {
+      try {
+        if ($cur.Current.ControlType -eq [Windows.Automation.ControlType]::Window) { $window = $cur; break }
+      } catch { break }
+      $cur = $walker.GetParent($cur)
+    }
+    if ($null -eq $window -and $roots.Count -gt 0) { $window = $roots[0] }
+    if ($null -ne $window) {
+      try { $s.WindowTitle = [string]$window.Current.Name } catch {}
+    }
+    try {
+      $pid = 0
+      if ($null -ne $el) { $pid = [int]$el.Current.ProcessId }
+      elseif ($meta.ProcessId -gt 0) { $pid = [int]$meta.ProcessId }
+      if ($pid -gt 0) {
+        $p = Get-Process -Id $pid -ErrorAction SilentlyContinue
+        if ($p -and $p.MainWindowTitle) { $s.ForegroundTitle = [string]$p.MainWindowTitle }
+      }
+    } catch {}
+  } catch {}
   return $s
 }
 
@@ -374,9 +412,25 @@ try {
         $result.screenY = [int]($bestRect.Y + ($bestRect.Height / 2))
         $result.rectW = [int]$bestRect.Width
         $result.rectH = [int]$bestRect.Height
+        # Prefer GetClickablePoint for HID fallback; rect centre if unavailable.
+        $result.clickX = $result.screenX
+        $result.clickY = $result.screenY
+        try {
+          $cp = New-Object System.Windows.Point
+          if ($best.GetClickablePoint([ref]$cp)) {
+            $result.clickX = [int]$cp.X
+            $result.clickY = [int]$cp.Y
+          }
+        } catch {}
       } catch {}
 
       $beforeState = Read-ElementState $best
+      $beforeTitles = @{ WindowTitle = ''; ForegroundTitle = '' }
+      if ($isActivatableItem) {
+        $beforeTitles = Read-ActivationTitles $best
+        $result.beforeTitle = [string]$beforeTitles.WindowTitle
+        if (-not $result.beforeTitle) { $result.beforeTitle = [string]$beforeTitles.ForegroundTitle }
+      }
 
       if ($actionKind -eq 'setValue') {
         try { $best.SetFocus() } catch {}
@@ -436,6 +490,7 @@ try {
           return $false
         }
 
+        # Invoke first for clickable controls; selection items fall through Select then HID if no activation evidence.
         $preferInvoke = $meta.ControlType -match 'Button|Hyperlink|MenuItem|SplitButton'
         try {
           if ($preferInvoke -and (Try-InvokePattern $best)) {
@@ -475,12 +530,43 @@ try {
       }
 
       if ($result.ok) {
+        Start-Sleep -Milliseconds 40
         $afterState = Read-ElementState $best
         if (-not $afterState.Alive) {
-          $result.verify = 'needs_resnapshot'
+          # Activatable rows leaving the tree usually means open/navigate succeeded.
+          if ($isActivatableItem) {
+            $result.verify = 'verified'
+            $result.detail = 'element_gone'
+          } else {
+            $result.verify = 'needs_resnapshot'
+          }
         } elseif ($actionKind -eq 'setValue') {
           if ($afterState.Value -eq $targetText) { $result.verify = 'verified' } else { $result.verify = 'state_not_changed' }
-          $result.detail = "value=$($afterState.Value)"
+          $result.detail = "value=$($afterState.Value);focus=$($afterState.Focus)"
+        } elseif ($isActivatableItem) {
+          # selected/focus-only ≠ activated. Cheap evidence: Toggle/Expand/Value change, title contains name, or title changed.
+          $afterTitles = Read-ActivationTitles $best
+          $result.afterTitle = [string]$afterTitles.WindowTitle
+          $result.foregroundTitle = [string]$afterTitles.ForegroundTitle
+          if (-not $result.afterTitle) { $result.afterTitle = $result.foregroundTitle }
+          $targetName = [string]$meta.Name
+          # Keep Selected/Focus flips out of local activation signal (Select false positives).
+          $localChanged = ($beforeState.Toggle -ne $afterState.Toggle) -or ($beforeState.Expand -ne $afterState.Expand) -or ($beforeState.Value -ne $afterState.Value)
+          $activated = $false
+          if ($localChanged) { $activated = $true }
+          elseif ($targetName -and (($result.afterTitle -and $result.afterTitle.Contains($targetName)) -or ($result.foregroundTitle -and $result.foregroundTitle.Contains($targetName)))) { $activated = $true }
+          elseif ($result.beforeTitle -and $result.afterTitle -and ($result.beforeTitle -ne $result.afterTitle)) { $activated = $true }
+          elseif ($result.beforeTitle -and $result.foregroundTitle -and ($result.beforeTitle -ne $result.foregroundTitle)) { $activated = $true }
+          if ($activated) {
+            $result.verify = 'verified'
+            $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle)"
+          } else {
+            # Do not keep spinning on Select — force one HID (may escalate to double) click.
+            $result.ok = $false
+            $result.verify = 'state_not_changed'
+            $result.reason = 'needs_fallback_click'
+            $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle);target=$targetName"
+          }
         } else {
           $changed = ($beforeState.Toggle -ne $afterState.Toggle) -or ($beforeState.Expand -ne $afterState.Expand) -or ($beforeState.Selected -ne $afterState.Selected) -or ($beforeState.Value -ne $afterState.Value)
           if ($result.method -eq 'uiaToggle' -or $result.method -eq 'uiaExpandCollapse' -or $result.method -eq 'uiaSelect') {
@@ -500,7 +586,7 @@ try {
 }
 Write-Output "__SPECTRAI_UIA_JSON__$($result | ConvertTo-Json -Compress)"
 `;
-    const execResult = await shell.exec(script, action === 'setValue' ? 7000 : 6000);
+    const execResult = await shell.exec(script, action === 'setValue' ? 4500 : 3500);
     if (execResult.exitCode !== 0) {
         return {
             ok: false,
@@ -510,15 +596,31 @@ Write-Output "__SPECTRAI_UIA_JSON__$($result | ConvertTo-Json -Compress)"
             screenY: element.screenY,
             rectW: element.rectW ?? 0,
             rectH: element.rectH ?? 0,
+            clickX: element.screenX,
+            clickY: element.screenY,
         };
     }
     const parsed = parseUiaActionResult(execResult.stdout);
     if (!parsed.ok && !parsed.reason) {
         parsed.reason = 'uia_action_failed';
     }
+    // Defense in depth: activatable Select/Invoke without verified activation evidence must not stay ok.
+    if (action === 'click' && isActivatableSelectionItem(element)) {
+        const activatedAfter = parsed.ok && parsed.verify === 'verified';
+        const interpreted = interpretActivatableSelectVerify({ activatedAfter });
+        if (!interpreted.ok) {
+            parsed.ok = false;
+            parsed.verify = interpreted.verify;
+            parsed.reason = interpreted.reason;
+        }
+    }
     if (parsed.screenX === 0 && parsed.screenY === 0) {
         parsed.screenX = element.screenX;
         parsed.screenY = element.screenY;
+    }
+    if ((parsed.clickX == null || (parsed.clickX === 0 && parsed.clickY === 0)) && (parsed.screenX || parsed.screenY)) {
+        parsed.clickX = parsed.screenX;
+        parsed.clickY = parsed.screenY;
     }
     if (parsed.rectW === 0 && element.rectW != null)
         parsed.rectW = element.rectW;
@@ -756,7 +858,7 @@ try {
                 $forceResult = [Win32]::ForceAccessibility([Win32]::chromeRenderHwnd)
                 $chromeForced = $forceResult
                 if ($forceResult) {
-                    Start-Sleep -Milliseconds 500  # Give Chrome time to build accessibility tree
+                    Start-Sleep -Milliseconds 150  # Give Chrome time to build accessibility tree
                 }
             }
         }
@@ -827,23 +929,40 @@ try {
         # Accept elements with name, automationId, or actionable control types even without name
         $label = if ($name) { $name } elseif ($aid) { $aid } else { '' }
         $isClickable = ($ct -match 'Button|Hyperlink|MenuItem|TabItem|ListItem|CheckBox|RadioButton|ComboBox|Slider|Image')
+        # Empty name + no pattern + not clickable → skip/de-rank noise
+        if (-not $label -and -not $isClickable -and $pats.Count -eq 0) { continue }
         if (-not $label -and -not $isClickable) { continue }
         # Pure Image with no actionable pattern is decorative — skip to cut noise
         if (-not $name -and -not $aid -and $ct -match 'Image' -and $pats.Count -eq 0) { continue }
         if (-not $label) { $label = $ct -replace 'ControlType\\.', '' }
+        # Dedup same-name same-bounds parent/child: keep the one with patterns
+        $dupKey = "$label|$([int]$rect.X)|$([int]$rect.Y)|$([int]$rect.Width)|$([int]$rect.Height)"
+        $dupIdx = -1
+        for ($di = 0; $di -lt $filtered.Count; $di++) {
+            $prev = $filtered[$di]
+            if ("$($prev.Name)|$($prev.X)|$($prev.Y)|$($prev.W)|$($prev.H)" -eq $dupKey) { $dupIdx = $di; break }
+        }
+        if ($dupIdx -ge 0) {
+            $prevPatCount = if ($filtered[$dupIdx].PAT) { @($filtered[$dupIdx].PAT -split ';' | Where-Object { $_ }).Count } else { 0 }
+            if ($pats.Count -gt $prevPatCount) {
+                $filtered[$dupIdx] = @{N=$filtered[$dupIdx].N; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'; EN=$isEnabled; OFF=$isOffscreen; PAT=$patStr}
+            }
+            continue
+        }
         $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'; EN=$isEnabled; OFF=$isOffscreen; PAT=$patStr}
         $idx++
         if ($idx -gt 80) { break }
     }
-    Write-Output "UIA_STATS:total=$uiaTotal,filtered=$($filtered.Count),chromeForced=$chromeForced"
+    Write-Output "UIA_STATS:total=$uiaTotal,filtered=$($filtered.Count),actionable=$($uiaActionable.Count),chromeForced=$chromeForced"
 } catch {
     Write-Output "UIA_ERROR:$($_.Exception.Message)"
 }
 
-# ====== Phase 2: OCR fallback if UIA found few elements ======
+# ====== Phase 2: OCR fallback if actionable UIA is sparse ======
 # WinRT async requires STA thread. PersistentShell runs MTA (STA blocks ReadLine).
 # Solution: run external ocr-worker.ps1 in a separate powershell.exe -STA process.
-if ($filtered.Count -lt 10) {
+# Threshold: actionable (pattern-bearing) count, not raw filtered.Count.
+if ($uiaActionable.Count -lt 5) {
     try {
         $ocrWorker = '${OCR_WORKER_PS1.replace(/\\/g, '\\\\')}'.Replace('\\\\','\\')
         $ocrImgPath = $imgPath.Replace('\\\\','\\')
@@ -857,7 +976,7 @@ if ($filtered.Count -lt 10) {
         $psi.RedirectStandardError = $true
         $proc = [System.Diagnostics.Process]::Start($psi)
         $stderr = $proc.StandardError.ReadToEnd()
-        $proc.WaitForExit(20000)
+        $proc.WaitForExit(8000)
         if ($proc.ExitCode -ne 0) { Write-Output "OCR_PROC_ERR:exit=$($proc.ExitCode),stderr=$stderr" }
 
         $ocrExists = Test-Path $ocrOut
@@ -874,11 +993,18 @@ if ($filtered.Count -lt 10) {
                     $ocrCy = [int]$parts[2]
                     $ocrX = $ocrCx - [int]($ocrW / 2)
                     $ocrY = $ocrCy - [int]($ocrH / 2)
-                    # Anchor OCR text to an actionable UIA element whose bounds contain its centre,
-                    # so we click a native element (with pattern) instead of a raw OCR coordinate.
+                    # Anchor OCR→UIA: centre-in-bounds OR distance ≤ max(24, min(edge)*0.3)
                     $anchor = $null
+                    $bestDist = [double]::PositiveInfinity
                     foreach ($cand in $uiaActionable) {
-                        if ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H)) { $anchor = $cand; break }
+                        $inside = ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H))
+                        if ($inside) { $anchor = $cand; break }
+                        $nx = [Math]::Max($cand.X, [Math]::Min($ocrCx, $cand.X + $cand.W))
+                        $ny = [Math]::Max($cand.Y, [Math]::Min($ocrCy, $cand.Y + $cand.H))
+                        $dist = [Math]::Sqrt(($ocrCx - $nx) * ($ocrCx - $nx) + ($ocrCy - $ny) * ($ocrCy - $ny))
+                        $edge = [Math]::Min($cand.W, $cand.H)
+                        $thresh = [Math]::Max(24, $edge * 0.3)
+                        if ($dist -le $thresh -and $dist -lt $bestDist) { $bestDist = $dist; $anchor = $cand }
                     }
                     if ($anchor) {
                         $filtered += @{N=$idx; Name=$parts[0]; CT=$anchor.CT; CX=$anchor.CX; CY=$anchor.CY; W=$anchor.W; H=$anchor.H; X=$anchor.X; Y=$anchor.Y; AID=''; CLS=''; PID=0; Src='OCR_UIA'; EN=$anchor.EN; OFF=$false; PAT=$anchor.PAT}
@@ -986,7 +1112,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                             rectY: parseNum(p[9]),
                             rectW,
                             rectH,
-                            source: p[12] === 'OCR' ? 'OCR' : 'UIA',
+                            source: parseAnnotatedSource(p[12]),
                             isEnabled: p[13] === undefined || p[13] === '' ? undefined : p[13] === 'True',
                             isOffscreen: p[14] === 'True',
                             patterns: p[15] ? p[15].split(';').filter(Boolean) : [],
@@ -998,8 +1124,8 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                     screenshotMetaMap.set(filePath, meta);
                     lastAnnotatedPath = filePath;
                 }
-                const uiaCount = elements.filter(e => !e.controlType.startsWith('OCR')).length;
-                const ocrCount = elements.filter(e => e.controlType.startsWith('OCR')).length;
+                const uiaCount = elements.filter(e => e.source === 'UIA' || e.source === 'OCR_UIA').length;
+                const ocrCount = elements.filter(e => e.source === 'OCR').length;
                 const debugSuffix = debugLines.length > 0 ? `\n[debug: ${debugLines.join('; ')}]` : '';
                 elementListText = elements.length > 0
                     ? `\n\nDetected ${uiaCount} UI elements + ${ocrCount} OCR texts (use click_element to click by number, most actionable first):\n` +
@@ -1177,9 +1303,9 @@ Write-Output "clicked|$vPath"
         const events = getMouseClickEvents(clickFlags);
         const script = `
 [Win32]::SetCursorPos(${cx}, ${cy})
-Start-Sleep -Milliseconds 30
+Start-Sleep -Milliseconds 20
 ${events}
-Start-Sleep -Milliseconds 200
+Start-Sleep -Milliseconds 80
 $vSize = 150
 $vx = [Math]::Max(0, ${cx} - $vSize)
 $vy = [Math]::Max(0, ${cy} - $vSize)
@@ -1208,12 +1334,175 @@ $vBmp.Save($vPath, [System.Drawing.Imaging.ImageFormat]::Png)
 $vBmp.Dispose()
 Write-Output "clicked|$vPath"
 `;
-        const result = await shell.exec(script, 8000);
+        const result = await shell.exec(script, 5000);
         if (result.exitCode !== 0) {
             throw new Error(`HID click failed: ${result.stderr}`);
         }
         const parts = result.stdout.trim().split('|');
         return parts[1] || '';
+    }
+    /** Cheap activation titles for a process: main window + foreground title. */
+    async function readActivationTitles(processId) {
+        const pid = processId != null ? sn(processId) : 0;
+        const script = `
+$out = @{ windowTitle = ''; foregroundTitle = '' }
+try {
+  if (${pid} -gt 0) {
+    $p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue
+    if ($p) {
+      try { $out.windowTitle = [string]$p.MainWindowTitle } catch {}
+    }
+  }
+  if (-not ("FgTitleProbe" -as [type])) {
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class FgTitleProbe {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+  public static string Title() { var sb = new StringBuilder(512); GetWindowText(GetForegroundWindow(), sb, sb.Capacity); return sb.ToString(); }
+}
+"@
+  }
+  try { $out.foregroundTitle = [FgTitleProbe]::Title() } catch {}
+} catch {}
+Write-Output "__SPECTRAI_ACT_JSON__$($out | ConvertTo-Json -Compress)"
+`;
+        const result = await shell.exec(script, 2500);
+        const marker = '__SPECTRAI_ACT_JSON__';
+        const line = result.stdout
+            .split('\n')
+            .map(l => l.trim())
+            .filter(Boolean)
+            .reverse()
+            .find(l => l.startsWith(marker));
+        if (!line)
+            return { windowTitle: '', foregroundTitle: '' };
+        try {
+            const parsed = JSON.parse(line.slice(marker.length));
+            return {
+                windowTitle: typeof parsed.windowTitle === 'string' ? parsed.windowTitle : '',
+                foregroundTitle: typeof parsed.foregroundTitle === 'string' ? parsed.foregroundTitle : '',
+            };
+        }
+        catch {
+            return { windowTitle: '', foregroundTitle: '' };
+        }
+    }
+    /**
+     * P0-3: ensure target HWND is foreground + visible + non-minimized.
+     * Fail-fast with target_occluded / focus_failed; does not minimize SpectrAI by default.
+     */
+    async function ensureTargetForeground(opts) {
+        let findWindow;
+        if (opts.handle != null) {
+            findWindow = `$hwnd = [IntPtr]::new(${sn(opts.handle)})`;
+        }
+        else if (opts.title) {
+            const escaped = sp(opts.title);
+            findWindow = `
+$procs = Get-Process | Where-Object { $_.MainWindowTitle -like '*${escaped}*' -and $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
+if (-not $procs) { $hwnd = [IntPtr]::Zero } else { $hwnd = $procs.MainWindowHandle }`;
+        }
+        else {
+            return { ok: false, reason: 'focus_failed:window_not_found', detail: 'title or handle required' };
+        }
+        const script = `
+if (-not ("FocusProbe" -as [type])) {
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class FocusProbe {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetFocus(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+  public static string TitleOf(IntPtr h) {
+    var sb = new StringBuilder(512);
+    GetWindowText(h, sb, sb.Capacity);
+    return sb.ToString();
+  }
+  public static bool ForceForeground(IntPtr hWnd) {
+    if (hWnd == IntPtr.Zero) return false;
+    if (IsIconic(hWnd)) ShowWindow(hWnd, 9);
+    ShowWindow(hWnd, 5);
+    IntPtr fg = GetForegroundWindow();
+    if (fg == hWnd) return true;
+    uint fgPid; uint fgTid = (uint)GetWindowThreadProcessId(fg, out fgPid);
+    uint cur = GetCurrentThreadId();
+    bool attached = false;
+    if (fgTid != 0 && fgTid != cur) attached = AttachThreadInput(cur, fgTid, true);
+    try {
+      SetForegroundWindow(hWnd);
+      SetFocus(hWnd);
+    } finally {
+      if (attached) AttachThreadInput(cur, fgTid, false);
+    }
+    return GetForegroundWindow() == hWnd;
+  }
+}
+"@
+}
+${findWindow}
+$probe = @{
+  targetHwnd = 0
+  foregroundHwnd = 0
+  visible = $false
+  iconic = $false
+  foregroundTitle = ''
+  targetTitle = ''
+  setForegroundOk = $false
+}
+if ($hwnd -ne [IntPtr]::Zero) {
+  $probe.targetHwnd = $hwnd.ToInt64()
+  $probe.iconic = [FocusProbe]::IsIconic($hwnd)
+  $probe.visible = [FocusProbe]::IsWindowVisible($hwnd)
+  $probe.targetTitle = [FocusProbe]::TitleOf($hwnd)
+  $probe.setForegroundOk = [FocusProbe]::ForceForeground($hwnd)
+  Start-Sleep -Milliseconds 80
+  $fg = [FocusProbe]::GetForegroundWindow()
+  $probe.foregroundHwnd = $fg.ToInt64()
+  $probe.foregroundTitle = [FocusProbe]::TitleOf($fg)
+  $probe.visible = [FocusProbe]::IsWindowVisible($hwnd)
+  $probe.iconic = [FocusProbe]::IsIconic($hwnd)
+}
+Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
+`;
+        const result = await shell.exec(script, 8000);
+        const marker = '__SPECTRAI_FOCUS_JSON__';
+        const line = result.stdout
+            .split('\n')
+            .map(l => l.trim())
+            .filter(Boolean)
+            .reverse()
+            .find(l => l.startsWith(marker));
+        if (!line) {
+            return { ok: false, reason: 'focus_failed:no_probe', detail: result.stderr || result.stdout || '' };
+        }
+        let probe;
+        try {
+            probe = JSON.parse(line.slice(marker.length));
+        }
+        catch {
+            return { ok: false, reason: 'focus_failed:probe_parse', detail: line };
+        }
+        const classified = classifyForegroundResult({
+            targetHwnd: Number(probe.targetHwnd || 0),
+            foregroundHwnd: Number(probe.foregroundHwnd || 0),
+            visible: probe.visible === true,
+            iconic: probe.iconic === true,
+            foregroundTitle: typeof probe.foregroundTitle === 'string' ? probe.foregroundTitle : '',
+        });
+        const detail = `target=${probe.targetTitle || ''};fg=${probe.foregroundTitle || ''};targetHwnd=${probe.targetHwnd};fgHwnd=${probe.foregroundHwnd};visible=${probe.visible};iconic=${probe.iconic}`;
+        return { ok: classified.ok, reason: classified.reason, detail };
     }
     // 1c. click_element — click annotated element by number (100% precise)
     registerTool('click_element', '★ STEP 2 (BEST): Click an annotated element by its NUMBER from screenshot. This is the MOST PRECISE click method — uses exact element center coordinates, zero estimation.\n\nTake a screenshot first, then use the element number shown on the image.\nUses UIA native action first (Invoke/Toggle/Selection/ExpandCollapse/Focus), and falls back to HID click + verification screenshot if native action is not applicable or fails.', {
@@ -1273,16 +1562,100 @@ Write-Output "clicked|$vPath"
             catch { /* vision fallback failed — return original error */ }
             return { isError: true, content: [{ type: 'text', text: `Element #${elemNum} not found. Available: ${available}` }] };
         }
-        const clickX = element.screenX;
-        const clickY = element.screenY;
+        let clickX = element.screenX;
+        let clickY = element.screenY;
         const button = (args.button === 'right' || args.button === 'middle') ? args.button : 'left';
         const clickType = args.clickType === 'double' ? 'double' : 'single';
         lastActionableElement = element;
+        const activatableItem = isActivatableSelectionItem(element);
+        const beforeTitles = activatableItem
+            ? await readActivationTitles(element.processId).catch(() => ({ windowTitle: '', foregroundTitle: '' }))
+            : { windowTitle: '', foregroundTitle: '' };
+        // Fail-fast: refuse to click when owning process window is not usable foreground.
+        if (element.processId) {
+            try {
+                const pid = sn(element.processId);
+                if (pid > 0) {
+                    const focusScript = `
+$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue
+if (-not $p -or $p.MainWindowHandle -eq [IntPtr]::Zero) { Write-Output '__SPECTRAI_FOCUS_JSON__{"targetHwnd":0,"foregroundHwnd":0,"visible":false,"iconic":false,"foregroundTitle":""}'; return }
+$hwnd = $p.MainWindowHandle
+if (-not ("FocusProbePid" -as [type])) {
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class FocusProbePid {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+  public static string TitleOf(IntPtr h) { var sb = new StringBuilder(512); GetWindowText(h, sb, sb.Capacity); return sb.ToString(); }
+}
+"@
+}
+if ([FocusProbePid]::IsIconic($hwnd)) { [FocusProbePid]::ShowWindow($hwnd, 9) | Out-Null }
+[FocusProbePid]::ShowWindow($hwnd, 5) | Out-Null
+[FocusProbePid]::SetForegroundWindow($hwnd) | Out-Null
+Start-Sleep -Milliseconds 40
+$fg = [FocusProbePid]::GetForegroundWindow()
+$probe = @{
+  targetHwnd = $hwnd.ToInt64()
+  foregroundHwnd = $fg.ToInt64()
+  visible = [bool]([FocusProbePid]::IsWindowVisible($hwnd))
+  iconic = [bool]([FocusProbePid]::IsIconic($hwnd))
+  foregroundTitle = [FocusProbePid]::TitleOf($fg)
+}
+Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
+`;
+                    const focusOut = await shell.exec(focusScript, 4000);
+                    const marker = '__SPECTRAI_FOCUS_JSON__';
+                    const line = focusOut.stdout.split('\n').map(l => l.trim()).filter(Boolean).reverse().find(l => l.startsWith(marker));
+                    if (line) {
+                        try {
+                            const probe = JSON.parse(line.slice(marker.length));
+                            const classified = classifyForegroundResult({
+                                targetHwnd: Number(probe.targetHwnd || 0),
+                                foregroundHwnd: Number(probe.foregroundHwnd || 0),
+                                visible: probe.visible === true,
+                                iconic: probe.iconic === true,
+                                foregroundTitle: typeof probe.foregroundTitle === 'string' ? probe.foregroundTitle : '',
+                            });
+                            if (!classified.ok) {
+                                return {
+                                    isError: true,
+                                    content: [{
+                                            type: 'text',
+                                            text: `Click aborted: ${classified.reason}. Target window is not usable foreground (refusing to click occluded/wrong surface). fgTitle=${probe.foregroundTitle || ''}`,
+                                        }],
+                                };
+                            }
+                        }
+                        catch { /* ignore probe parse; continue */ }
+                    }
+                }
+            }
+            catch { /* focus probe best-effort */ }
+        }
         let uiaFallbackReason = '';
+        let uiaTitleDetail = '';
+        // Trusted UIA / OCR_UIA element: stay on UIA→HID path; do not divert to vision first.
         if (button === 'left' && clickType === 'single' && isUiaElementCandidate(element)) {
             try {
                 const uiaResult = await tryUiaAction(element, 'click');
-                if (uiaResult.ok) {
+                // Prefer GetClickablePoint for any subsequent HID fallback.
+                if (typeof uiaResult.clickX === 'number' && typeof uiaResult.clickY === 'number') {
+                    clickX = uiaResult.clickX;
+                    clickY = uiaResult.clickY;
+                }
+                else if (uiaResult.screenX || uiaResult.screenY) {
+                    clickX = uiaResult.screenX || clickX;
+                    clickY = uiaResult.screenY || clickY;
+                }
+                const needFallback = shouldFallbackClickAfterUia(uiaResult, activatableItem);
+                if (!needFallback && uiaResult.ok) {
                     lastActionableElement = {
                         ...element,
                         screenX: uiaResult.screenX || element.screenX,
@@ -1300,7 +1673,10 @@ Write-Output "clicked|$vPath"
                             }],
                     };
                 }
-                uiaFallbackReason = uiaResult.reason || 'uia_action_failed';
+                uiaFallbackReason = uiaResult.reason || uiaResult.verify || 'uia_action_failed';
+                if (uiaResult.beforeTitle || uiaResult.afterTitle || uiaResult.foregroundTitle) {
+                    uiaTitleDetail = ` beforeTitle=${uiaResult.beforeTitle || ''} afterTitle=${uiaResult.afterTitle || ''} fgTitle=${uiaResult.foregroundTitle || ''}`;
+                }
             }
             catch (err) {
                 uiaFallbackReason = `uia_exception:${err instanceof Error ? err.message : String(err)}`;
@@ -1312,19 +1688,57 @@ Write-Output "clicked|$vPath"
         else {
             uiaFallbackReason = 'uia_metadata_not_available';
         }
+        // Activatable selection rows: one HID short path (left-single escalates to double). Still no evidence → hard fail.
+        const hidClickType = resolveHidClickTypeForActivatable({
+            isActivatable: activatableItem,
+            button,
+            clickType,
+        });
         let verifyImgPath;
         try {
-            verifyImgPath = await hidClickAndVerify(clickX, clickY, button, clickType, `[${elemNum}] @(${clickX},${clickY})`);
+            verifyImgPath = await hidClickAndVerify(clickX, clickY, button, hidClickType, `[${elemNum}] @(${clickX},${clickY})`);
         }
         catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            return { isError: true, content: [{ type: 'text', text: `Click failed: ${msg}` }] };
+            return { isError: true, content: [{ type: 'text', text: `Click failed: ${msg}${uiaTitleDetail}` }] };
+        }
+        // After one HID center click on activatable selection items, re-check activation evidence. No second same-path spin.
+        if (activatableItem) {
+            const beforeHint = uiaTitleDetail || ` beforeTitle=${beforeTitles.windowTitle || beforeTitles.foregroundTitle || ''}`;
+            let after = { windowTitle: '', foregroundTitle: '' };
+            try {
+                after = await readActivationTitles(element.processId);
+            }
+            catch { /* ignore */ }
+            const activated = activationEvidenceMatches({
+                targetName: element.name || '',
+                beforeTitle: beforeTitles.windowTitle || beforeTitles.foregroundTitle || '',
+                afterTitle: after.windowTitle,
+                foregroundTitle: after.foregroundTitle,
+            });
+            const hidVerify = interpretActivatableHidVerify({ activatedAfter: activated });
+            if (!hidVerify.ok) {
+                return {
+                    isError: true,
+                    content: [{
+                            type: 'text',
+                            text: `Click did not activate: ${hidVerify.verify} (selected≠activated). target="${element.name}" beforeTitle=${beforeTitles.windowTitle || beforeTitles.foregroundTitle || ''} afterTitle=${after.windowTitle} fgTitle=${after.foregroundTitle} method=hidMouse (${button} ${hidClickType}) reason=${hidVerify.reason} uiaFallback=${uiaFallbackReason}${beforeHint}\nVerification image: ${verifyImgPath}`,
+                        }],
+                };
+            }
+            const fallbackReasonText = uiaFallbackReason ? `, uiaFallback=${uiaFallbackReason}` : '';
+            return {
+                content: [{
+                        type: 'text',
+                        text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${hidClickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};fgTitle=${after.foregroundTitle})${beforeHint}\n\nVerification image: ${verifyImgPath}`,
+                    }],
+            };
         }
         const fallbackReasonText = uiaFallbackReason ? `, uiaFallback=${uiaFallbackReason}` : '';
         return {
             content: [{
                     type: 'text',
-                    text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText})\n\nVerification image: ${verifyImgPath}\nShows 300x300 region centered on click with RED crosshair. Use Read tool to confirm it hit the right target.`,
+                    text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText})${uiaTitleDetail}\n\nVerification image: ${verifyImgPath}\nShows 300x300 region centered on click with RED crosshair. Use Read tool to confirm it hit the right target.`,
                 }],
         };
     }, { title: 'Click Element', destructiveHint: true });
@@ -1603,7 +2017,7 @@ Write-Output "scrolled"
         if (targetElement && isUiaElementCandidate(targetElement)) {
             try {
                 const uiaResult = await tryUiaAction(targetElement, 'setValue', text);
-                if (uiaResult.ok) {
+                if (uiaResult.ok && uiaResult.verify === 'verified') {
                     lastActionableElement = {
                         ...targetElement,
                         screenX: uiaResult.screenX || targetElement.screenX,
@@ -1611,9 +2025,7 @@ Write-Output "scrolled"
                         rectW: uiaResult.rectW || targetElement.rectW,
                         rectH: uiaResult.rectH || targetElement.rectH,
                     };
-                    const verifyText = uiaResult.verify
-                        ? ` verify=${uiaResult.verify}${uiaResult.detail ? ` (${uiaResult.detail})` : ''}`
-                        : '';
+                    const verifyText = uiaResult.detail ? ` verify=verified (${uiaResult.detail})` : ' verify=verified';
                     return {
                         content: [{
                                 type: 'text',
@@ -1621,7 +2033,7 @@ Write-Output "scrolled"
                             }],
                     };
                 }
-                uiaFallbackReason = uiaResult.reason || 'uia_value_failed';
+                uiaFallbackReason = uiaResult.reason || uiaResult.verify || 'uia_value_failed';
             }
             catch (err) {
                 uiaFallbackReason = `uia_exception:${err instanceof Error ? err.message : String(err)}`;
@@ -1633,19 +2045,29 @@ Write-Output "scrolled"
         else {
             uiaFallbackReason = 'uia_target_not_set';
         }
+        // Fallback: focus known target via center click (cheap) + SendKeys.
         const sanitized = sp(text);
         const sendKeySafe = sanitized.replace(/[+^%~(){}[\]]/g, '{$&}');
+        const focusClick = targetElement
+            ? `[Win32]::SetCursorPos(${sn(targetElement.screenX)}, ${sn(targetElement.screenY)}); Start-Sleep -Milliseconds 20; [Win32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); [Win32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 30\n`
+            : '';
         const script = `
-$wsh = New-Object -ComObject WScript.Shell
+${focusClick}$wsh = New-Object -ComObject WScript.Shell
 $wsh.SendKeys('${sendKeySafe}')
 Write-Output "typed"
 `;
-        const result = await shell.exec(script, 5000);
+        const result = await shell.exec(script, 3500);
         if (result.exitCode !== 0) {
             return { isError: true, content: [{ type: 'text', text: `Type failed: ${result.stderr}` }] };
         }
-        const fallbackText = uiaFallbackReason ? ` (uiaFallback=${uiaFallbackReason})` : '';
-        return { content: [{ type: 'text', text: `typed ${text.length} chars via method=sendKeys${fallbackText}` }] };
+        const fallbackText = uiaFallbackReason ? ` uiaFallback=${uiaFallbackReason}` : '';
+        const focusHint = targetElement ? ' focus=centerClick' : '';
+        return {
+            content: [{
+                    type: 'text',
+                    text: `typed ${text.length} chars via method=sendKeys${fallbackText}${focusHint}`,
+                }],
+        };
     }, { title: 'Keyboard Type', destructiveHint: true });
     // 7. keyboard_press
     registerTool('keyboard_press', 'Press a single key (e.g., Enter, Tab, Escape, F1-F12, Delete, etc.).', {
@@ -1867,8 +2289,8 @@ $trees | ConvertTo-Json -Depth ${jsonDepth}
         }
         return { content: [{ type: 'text', text: result.stdout.trim() || '[]' }] };
     }, { title: 'Window List', readOnlyHint: true });
-    // 12. window_focus
-    registerTool('window_focus', 'Bring a window to the foreground by title or handle.', {
+    // 12. window_focus — success = foreground + visible + non-minimized (P0-3)
+    registerTool('window_focus', 'Bring a window to the foreground by title or handle. Success requires the target HWND to be foreground, visible, and not minimized. Returns target_occluded / focus_failed instead of claiming success from SetForeground alone.', {
         type: 'object',
         properties: {
             title: { type: 'string', description: 'Window title (partial match)' },
@@ -1879,40 +2301,25 @@ $trees | ConvertTo-Json -Depth ${jsonDepth}
         if (!args.title && !args.handle) {
             return { isError: true, content: [{ type: 'text', text: 'Provide either title or handle' }] };
         }
-        let findWindow;
-        if (args.handle) {
-            const h = sn(args.handle);
-            findWindow = `$hwnd = [IntPtr]::new(${h})`;
+        const focusResult = await ensureTargetForeground({
+            title: typeof args.title === 'string' ? args.title : undefined,
+            handle: args.handle != null ? sn(args.handle) : undefined,
+        });
+        if (!focusResult.ok) {
+            return {
+                isError: true,
+                content: [{
+                        type: 'text',
+                        text: `Focus failed: ${focusResult.reason}. ${focusResult.detail}`,
+                    }],
+            };
         }
-        else {
-            const escaped = sp(args.title);
-            findWindow = `
-$procs = Get-Process | Where-Object { $_.MainWindowTitle -like '*${escaped}*' -and $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
-if (-not $procs) { Write-Error 'Window not found'; exit 1 }
-$hwnd = $procs.MainWindowHandle`;
-        }
-        const script = `
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class FocusHelper {
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-}
-"@
-${findWindow}
-if ([FocusHelper]::IsIconic($hwnd)) {
-    [FocusHelper]::ShowWindow($hwnd, 9)
-}
-[FocusHelper]::SetForegroundWindow($hwnd)
-Write-Output "focused window"
-`;
-        const result = await shell.exec(script);
-        if (result.exitCode !== 0) {
-            return { isError: true, content: [{ type: 'text', text: `Focus failed: ${result.stderr}` }] };
-        }
-        return { content: [{ type: 'text', text: result.stdout.trim() }] };
+        return {
+            content: [{
+                    type: 'text',
+                    text: `focused window (${focusResult.detail})`,
+                }],
+        };
     }, { title: 'Window Focus', destructiveHint: false });
     // 13. window_close
     registerTool('window_close', 'Close a window by title or handle.', {
@@ -1979,7 +2386,6 @@ Write-Output "closed window(s)"
         const scale = args.scale != null ? Math.max(1, Math.min(4, sn(args.scale))) : 1;
         const grid = args.grid !== false; // default ON
         const annotate = args.annotate !== false;
-        const imgPathEscaped = sp(OCR_WORKER_PS1.replace(/\\/g, '\\\\'));
         const script = `
 $zx = ${zx}; $zy = ${zy}; $zw = ${zw}; $zh = ${zh}; $scale = ${scale}
 $outFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "spectrai_zoom_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').png")
@@ -2099,7 +2505,7 @@ try {
         $wh = $window.Current.NativeWindowHandle
         if ($wh -ne 0) {
             $found = [Win32]::FindChromeRenderWidget([IntPtr]::new($wh))
-            if ($found) { [Win32]::ForceAccessibility([Win32]::chromeRenderHwnd); Start-Sleep -Milliseconds 300 }
+            if ($found) { [Win32]::ForceAccessibility([Win32]::chromeRenderHwnd); Start-Sleep -Milliseconds 150 }
         }
     }
 } catch {}
@@ -2140,19 +2546,33 @@ try {
         }
         $label = if ($name) { $name } elseif ($aid) { $aid } else { '' }
         $isClickable = ($ct -match 'Button|Hyperlink|MenuItem|TabItem|ListItem|CheckBox|RadioButton|ComboBox|Image')
+        if (-not $label -and -not $isClickable -and $pats.Count -eq 0) { continue }
         if (-not $label -and -not $isClickable) { continue }
         if (-not $name -and -not $aid -and $ct -match 'Image' -and $pats.Count -eq 0) { continue }
         if (-not $label) { $label = $ct -replace 'ControlType\\.', '' }
+        $dupKey = "$label|$([int]$rect.X)|$([int]$rect.Y)|$([int]$rect.Width)|$([int]$rect.Height)"
+        $dupIdx = -1
+        for ($di = 0; $di -lt $filtered.Count; $di++) {
+            $prev = $filtered[$di]
+            if ("$($prev.Name)|$($prev.X)|$($prev.Y)|$($prev.W)|$($prev.H)" -eq $dupKey) { $dupIdx = $di; break }
+        }
+        if ($dupIdx -ge 0) {
+            $prevPatCount = if ($filtered[$dupIdx].PAT) { @($filtered[$dupIdx].PAT -split ';' | Where-Object { $_ }).Count } else { 0 }
+            if ($pats.Count -gt $prevPatCount) {
+                $filtered[$dupIdx] = @{N=$filtered[$dupIdx].N; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'; EN=$isEnabled; OFF=$isOffscreen; PAT=$patStr}
+            }
+            continue
+        }
         $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'; EN=$isEnabled; OFF=$isOffscreen; PAT=$patStr}
         $idx++
         if ($idx -gt 60) { break }
     }
 } catch {}
 
-# OCR fallback
-if ($filtered.Count -lt 10) {
+# OCR fallback: only when actionable UIA is sparse (<5 with patterns)
+if ($uiaActionable.Count -lt 5) {
     try {
-        $ocrWorker = '${imgPathEscaped}'.Replace('\\\\','\\')
+        $ocrWorker = '${OCR_WORKER_PS1.replace(/\\/g, '\\\\')}'.Replace('\\\\','\\')
         $ocrImgPath = $imgPath.Replace('\\\\','\\')
         $ocrOut = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "spectrai_ocr_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').txt")
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -2175,8 +2595,16 @@ if ($filtered.Count -lt 10) {
                     $ocrX = $ocrCx - [int]($ocrW / 2)
                     $ocrY = $ocrCy - [int]($ocrH / 2)
                     $anchor = $null
+                    $bestDist = [double]::PositiveInfinity
                     foreach ($cand in $uiaActionable) {
-                        if ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H)) { $anchor = $cand; break }
+                        $inside = ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H))
+                        if ($inside) { $anchor = $cand; break }
+                        $nx = [Math]::Max($cand.X, [Math]::Min($ocrCx, $cand.X + $cand.W))
+                        $ny = [Math]::Max($cand.Y, [Math]::Min($ocrCy, $cand.Y + $cand.H))
+                        $dist = [Math]::Sqrt(($ocrCx - $nx) * ($ocrCx - $nx) + ($ocrCy - $ny) * ($ocrCy - $ny))
+                        $edge = [Math]::Min($cand.W, $cand.H)
+                        $thresh = [Math]::Max(24, $edge * 0.3)
+                        if ($dist -le $thresh -and $dist -lt $bestDist) { $bestDist = $dist; $anchor = $cand }
                     }
                     if ($anchor) {
                         $filtered += @{N=$idx; Name=$parts[0]; CT=$anchor.CT; CX=$anchor.CX; CY=$anchor.CY; W=$anchor.W; H=$anchor.H; X=$anchor.X; Y=$anchor.Y; AID=''; CLS=''; PID=0; Src='OCR_UIA'; EN=$anchor.EN; OFF=$false; PAT=$anchor.PAT}
@@ -2262,7 +2690,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                             rectY: parseNum(p[9]),
                             rectW,
                             rectH,
-                            source: p[12] === 'OCR' ? 'OCR' : 'UIA',
+                            source: parseAnnotatedSource(p[12]),
                             isEnabled: p[13] === undefined || p[13] === '' ? undefined : p[13] === 'True',
                             isOffscreen: p[14] === 'True',
                             patterns: p[15] ? p[15].split(';').filter(Boolean) : [],
@@ -2274,8 +2702,8 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                     screenshotMetaMap.set(filePath, meta);
                     lastAnnotatedPath = filePath;
                 }
-                const uiaCount = elements.filter(e => !e.controlType.startsWith('OCR')).length;
-                const ocrCount = elements.filter(e => e.controlType.startsWith('OCR')).length;
+                const uiaCount = elements.filter(e => e.source === 'UIA' || e.source === 'OCR_UIA').length;
+                const ocrCount = elements.filter(e => e.source === 'OCR').length;
                 elementListText = elements.length > 0
                     ? `\n\nDetected ${uiaCount} UI elements + ${ocrCount} OCR texts (most actionable first):\n` +
                         sortElementsForDisplay(elements).map(formatElementLine).join('\n')

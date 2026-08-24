@@ -1,8 +1,8 @@
-# SpectrAI Claw 探活复盘 → 修复优先级
+# SpectrAI Claw 探活修复优先级（准确率优先）
 
-> 通用桌面插件；不为单 App 特化。
-> 已完成：通道自愈 + 假成功治理 + 通用快点击。
-> **当前焦点：点击准确率 + 速度**（找对目标、点到可点点、少空等）。
+> 通用桌面/浏览器插件；不为单 App 特化。
+> 已完成：通道自愈 + 假成功治理 + 通用快点击 + OCR 锚点/可点点 + **P3 后验验准**。
+> **当前焦点：准确率（点对 + 验对）**；速度不是本轮主目标，多截图可接受。
 
 ## 进度总览
 
@@ -10,40 +10,70 @@
 |---|---|---|
 | P0 | 通道断 / 选中≠激活假成功 / 焦点遮挡 | ✅ `6000693` `80e0595` |
 | P1 | 去微信特化 + 通用快路径 | ✅ `78ea80b` |
-| **P2** | **准确率（找对/点对）+ 速度（少 OCR/少 sleep）** | ✅ 已落地（见下） |
-| P3 | Swift daemon / 纯视觉主导 | 暂缓 |
+| P2 | 找对/点对（OCR→UIA、可点点、少空跑 OCR） | ✅ `ca5b6f4` |
+| **P3** | **动作后验准：浏览器导航点击假失败 + 桌面激活证据** | ✅ `ee82e5d` `6b9b33c` |
+| P4 | Swift daemon / 纯视觉主导 | 暂缓 |
+| Sync | store → claudeops builtin-mcps → 再打包安装包 | ⬅️ 下一刀 |
 
-## P2 — 准确率 + 速度（本轮）
+## 探活真实故障（只记出现过的）
 
-### P2-A 点得更准（准确率）
-1. **OCR 只做线索**：邻域匹配不只「中心落在 bounds 内」，增加距离阈值（如 ≤24px 或短边 30%）锚到最近有 pattern 的 UIA；命中标记 `OCR_UIA`，坐标用 UIA 中心/可点点。
-2. **可点点优先**：HID/坐标回退时优先 `GetClickablePoint()`，失败再用 BoundingRectangle 中心；避免点到空白/被挡区域。
-3. **候选去噪**：同 bounds/同名父子重复保留有 pattern 的叶子；空名+无 pattern 降权/剔除（在现有打分上补齐，不重写框架）。
-4. **解析保留 `OCR_UIA` source**（勿塌成纯 UIA/OCR），便于 click 路径识别「已锚 UIA」。
+1. PowerShell/UIA 通道超时 / `process not available`
+2. `SelectionItem.Select` 返回成功，界面未真正打开目标项
+3. 浏览器 Bing 结果页：DOM `click` 链接后验失败，最后靠 `navigate` 兜底才进 DataLearner
+4. 桌面侧 `Select`/`vision_click` 不稳，靠双击 HID / Enter 才完成发送
 
-### P2-B 跑得更快（速度）
-1. Chrome/Electron 强制无障碍后等待：`500ms → ≤150ms`（可配置常量）。
-2. OCR 触发更苛刻：仅当**可操作 UIA（有 pattern）**过少时才跑 OCR（不要只看 `filtered.Count < 10` 的弱候选）。
-3. OCR worker / vision 超时下调到够用下限（annotate OCR `20s→8s` 量级；vision `25s→10s` 量级）。
-4. 有足够高分 UIA 时：跳过 OCR 整段；`click_element` 已有 UIA 则继续不进 vision。
-5. 不改协议大结构；不引入 App 白名单。
+## P3 — 已落地
+
+### 根因：浏览器 DOM 点链接为什么失败
+
+实测路径：Bing 搜索 → 点 DataLearner 指南链接 → 页其实能跳，但工具报失败。
+
+旧口径（`providers/browser/provider.ts`）：
+- `click` 默认后验是 `{ mutation: true }`
+- 后验优先用**旧 selector** 再读 `after` 状态
+- 导航后旧 `<a>` 已卸载 → 读不到 / mutationHash 对不上
+- 于是 `verification_failed`，即使 `location.href` 已变
+
+这是**验错了**，不是没点到。
+
+### P3-A 浏览器导航类点击验准 ✅ `ee82e5d`
+
+1. `click` 默认后验分层：优先认 **page URL / title 变化**（或显式 `urlIncludes`）→ 成功
+2. 导航后旧节点不可读时改读 **page-level state**，不再因旧 selector 假失败
+3. `verification_failed.details` 带 `beforeUrl/afterUrl/beforeTitle/afterTitle/checks`
+4. 已有 URL 变化时不再建议 desktop-vision-hid / 强迫 `navigate`
+5. 同页控件 click 仍走元素级 `mutation`
+
+单测：链接导航旧节点消失但 URL 变 → `ok=true`；同页 mutation 仍绿。
+
+### P3-B 桌面激活证据验准 ✅ `6b9b33c`
+
+1. 延续 P0/P1：`ListItem|TreeItem|TabItem|MenuItem` 的 Select ≠ 激活
+2. **假阳性收紧**：Selected/Focus-only 不算激活；Toggle/Expand/Value/元素消失才算局部证据
+3. activatable 无激活证据不得报成功；UIA 后至多一次 HID **double-click** 短路径
+4. HID 后仍无证据 → `activation_unconfirmed` 硬失败（不再假成功）
+5. 普通 Button/Hyperlink 等非 selection-item 行为保持原样
+
+单测：`desktop-action-guards` 13+ 相关断言全绿。
 
 ### 明确不做
-- 不为微信或其他 App 写 AutomationId 表
-- 不重接 computer-use Windows provider 整包
-- 不搞动作预算大框架（早停保持现有「Select 无证据→一次 HID」即可）
+
+- 不为微信/Bing 写特化 AutomationId / URL 表
+- 不为「更快」砍截图；准确率优先
+- 不把旁路 `.ps1` / 手工 `navigate` 当产品主路径
+- 不重接 computer-use 整包架构
 
 ## 回归口径
 
 | 指标 | 门槛 |
 |---|---|
-| OCR 文本中心误当点击目标（有邻近 UIA 时） | 应锚到 UIA |
-| `GetClickablePoint` 可用时 | HID 使用可点点而非盲中心 |
-| 可操作 UIA ≥ N 时 | 不启动 OCR worker |
-| Chrome force 等待 | ≤150ms |
-| build + 相关单测 | 全绿 |
-| 业务代码微信特化字符串 | 仍为 0 |
+| 点 `<a href>` 导致同 tab 导航 | 工具返回成功（URL/title 证据），不误报 `verification_failed` |
+| 同页按钮 click（无导航） | 仍用元素态/mutation 验证 |
+| ListItem Select 未激活 | 不得报成功；一次 HID 降级后仍无证据才失败 |
+| 业务代码 App 特化字符串 | 仍为 0 |
+| build + 相关单测 | 全绿（本轮复跑 17/17） |
 
 ## 非目标
-- 不靠 Agent 多试几次掩盖点偏/点慢
-- 不把旁路 `.ps1` 当产品能力
+
+- 不靠 Agent 多试几次掩盖「验错/假失败」
+- 不把「少截图」当本轮 KPI
