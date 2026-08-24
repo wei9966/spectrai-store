@@ -89,3 +89,41 @@ export declare function classifyForegroundResult(probe: ForegroundProbe): {
     ok: boolean;
     reason: string;
 };
+/**
+ * Focus ShowWindow policy: restore minimized only.
+ * Already-visible non-iconic windows must not get unconditional SW_SHOW(5).
+ * ponytail: ceiling = iconic-only restore; upgrade to SW_SHOWNA only if a real app needs it.
+ */
+export type FocusShowAction = 'none' | 'restore';
+export declare function resolveFocusShowAction(input: {
+    iconic: boolean;
+}): FocusShowAction;
+export type ScreenshotCaptureMode = 'explicit' | 'allScreens' | 'monitor' | 'followWindow' | 'primary';
+/**
+ * Pick screenshot capture mode. Explicit region / allScreens / monitor win.
+ * Optional follow* only applies when caller did not pin region/monitor/allScreens.
+ * Missing follow target → caller falls back to primary (same as legacy monitor=0).
+ */
+export declare function resolveScreenshotCaptureMode(input: {
+    hasExplicitRegion?: boolean;
+    allScreens?: boolean;
+    monitorExplicit?: boolean;
+    followForeground?: boolean;
+    followHandle?: number | null;
+    followWindowTitle?: string | null;
+    followProcessId?: number | null;
+}): ScreenshotCaptureMode;
+export interface ScreenBounds {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+/**
+ * Choose capture bounds from a followed window's screen, else primary.
+ * Pure: PS/Screen.FromHandle result is injected by caller.
+ */
+export declare function resolveFollowWindowCaptureBounds(input: {
+    windowScreen?: ScreenBounds | null;
+    primaryScreen: ScreenBounds;
+}): ScreenBounds;

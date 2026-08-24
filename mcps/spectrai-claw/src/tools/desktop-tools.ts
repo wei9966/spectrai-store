@@ -43,6 +43,7 @@ import {
   interpretActivatableSelectVerify,
   isActivatableSelectionItem,
   resolveHidClickTypeForActivatable,
+  resolveScreenshotCaptureMode,
   shouldFallbackClickAfterUia,
 } from './desktop-action-guards.js'
 import {
@@ -748,7 +749,11 @@ export async function registerDesktopTools(): Promise<void> {
         quality: { type: 'number', description: 'JPEG compression quality 1-100. Default: 95 (high quality for accurate AI analysis)' },
         savePath: { type: 'string', description: 'File path to save screenshot. Default: auto-generated temp file (.png)' },
         allScreens: { type: 'boolean', description: 'Capture all monitors as one image (virtual screen). Default: false' },
-        monitor: { type: 'number', description: 'Monitor index (0-based). Default: 0 (primary). Ignored if allScreens=true' },
+        monitor: { type: 'number', description: 'Monitor index (0-based). Default: 0 (primary). Ignored if allScreens=true. When set, disables follow* window screen capture.' },
+        followForeground: { type: 'boolean', description: 'When no x/y/width/height, allScreens, or monitor is set: capture the screen that contains the current foreground window. Falls back to primary if unresolved.' },
+        followHandle: { type: 'number', description: 'Capture the screen containing this HWND. Only used when region/allScreens/monitor are unset.' },
+        followWindowTitle: { type: 'string', description: 'Capture the screen containing the first top-level window whose title contains this text. Only used when region/allScreens/monitor are unset.' },
+        followProcessId: { type: 'number', description: 'Capture the screen containing the main window of this process id. Only used when region/allScreens/monitor are unset.' },
         grid: { type: 'boolean', description: 'Overlay coordinate grid. Default: false' },
         annotate: { type: 'boolean', description: 'Auto-detect interactive elements via UIA and draw numbered markers. Use click_element(number) to click. Default: true' },
       },
@@ -758,9 +763,14 @@ export async function registerDesktopTools(): Promise<void> {
       const quality = args.quality != null ? Math.max(1, Math.min(100, sn(args.quality))) : 95
       const maxWidth = args.maxWidth != null ? sn(args.maxWidth) : 0
       const allScreens = args.allScreens === true
-      const monitorIdx = args.monitor != null ? sn(args.monitor) : 0
+      const monitorExplicit = args.monitor != null
+      const monitorIdx = monitorExplicit ? sn(args.monitor) : 0
       const grid = args.grid === true
       const annotate = args.annotate !== false // default ON
+      const followForeground = args.followForeground === true
+      const followHandle = args.followHandle != null ? sn(args.followHandle) : null
+      const followWindowTitle = typeof args.followWindowTitle === 'string' ? args.followWindowTitle : null
+      const followProcessId = args.followProcessId != null ? sn(args.followProcessId) : null
 
       // Determine save path
       let outPath: string
@@ -775,9 +785,19 @@ export async function registerDesktopTools(): Promise<void> {
         ? `$outFile = '${sp(outPath.replace(/\\/g, '\\\\'))}'`
         : `$outFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "spectrai_ss_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').png")`
 
+      const captureMode = resolveScreenshotCaptureMode({
+        hasExplicitRegion: args.x != null || args.y != null || args.width != null || args.height != null,
+        allScreens,
+        monitorExplicit,
+        followForeground,
+        followHandle,
+        followWindowTitle,
+        followProcessId,
+      })
+
       // Build capture region script
       let captureRegion: string
-      if (args.x != null || args.y != null || args.width != null || args.height != null) {
+      if (captureMode === 'explicit') {
         const rx = args.x != null ? sn(args.x) : 0
         const ry = args.y != null ? sn(args.y) : 0
         captureRegion = `
@@ -788,14 +808,52 @@ $captureH = ${args.height != null ? sn(args.height) : 0}
 if ($captureW -le 0) { $captureW = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width - $captureX }
 if ($captureH -le 0) { $captureH = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height - $captureY }
 `
-      } else if (allScreens) {
+      } else if (captureMode === 'allScreens') {
         captureRegion = `
 $captureX = [System.Windows.Forms.SystemInformation]::VirtualScreen.X
 $captureY = [System.Windows.Forms.SystemInformation]::VirtualScreen.Y
 $captureW = [System.Windows.Forms.SystemInformation]::VirtualScreen.Width
 $captureH = [System.Windows.Forms.SystemInformation]::VirtualScreen.Height
 `
+      } else if (captureMode === 'followWindow') {
+        const titleEsc = followWindowTitle ? sp(followWindowTitle) : ''
+        const handleLit = followHandle != null ? String(followHandle) : '0'
+        const pidLit = followProcessId != null ? String(followProcessId) : '0'
+        const useFg = followForeground ? '$true' : '$false'
+        captureRegion = `
+$hwndFollow = [IntPtr]::Zero
+if (${handleLit} -ne 0) { $hwndFollow = [IntPtr]::new(${handleLit}) }
+if ($hwndFollow -eq [IntPtr]::Zero -and ${pidLit} -ne 0) {
+  $pFollow = Get-Process -Id ${pidLit} -ErrorAction SilentlyContinue
+  if ($pFollow -and $pFollow.MainWindowHandle -ne [IntPtr]::Zero) { $hwndFollow = $pFollow.MainWindowHandle }
+}
+if ($hwndFollow -eq [IntPtr]::Zero -and '${titleEsc}' -ne '') {
+  $pFollow = Get-Process | Where-Object { $_.MainWindowTitle -like '*${titleEsc}*' -and $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
+  if ($pFollow) { $hwndFollow = $pFollow.MainWindowHandle }
+}
+if ($hwndFollow -eq [IntPtr]::Zero -and ${useFg}) {
+  if (-not ("FollowFg" -as [type])) {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class FollowFg {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+}
+"@
+  }
+  $hwndFollow = [FollowFg]::GetForegroundWindow()
+}
+$primary = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$captureX = $primary.X; $captureY = $primary.Y; $captureW = $primary.Width; $captureH = $primary.Height
+if ($hwndFollow -ne [IntPtr]::Zero) {
+  $mon = [System.Windows.Forms.Screen]::FromHandle($hwndFollow)
+  if ($mon -and $mon.Bounds.Width -gt 0 -and $mon.Bounds.Height -gt 0) {
+    $captureX = $mon.Bounds.X; $captureY = $mon.Bounds.Y; $captureW = $mon.Bounds.Width; $captureH = $mon.Bounds.Height
+  }
+}
+`
       } else {
+        // primary or explicit monitor index (legacy default monitor=0)
         captureRegion = `
 $screens = [System.Windows.Forms.Screen]::AllScreens
 $monIdx = ${monitorIdx}
@@ -1667,8 +1725,8 @@ public class FocusProbe {
   }
   public static bool ForceForeground(IntPtr hWnd) {
     if (hWnd == IntPtr.Zero) return false;
+    // Restore minimized only; do not SW_SHOW(5) already-visible windows (avoids gray/black flicker).
     if (IsIconic(hWnd)) ShowWindow(hWnd, 9);
-    ShowWindow(hWnd, 5);
     IntPtr fg = GetForegroundWindow();
     if (fg == hWnd) return true;
     uint fgPid; uint fgTid = (uint)GetWindowThreadProcessId(fg, out fgPid);
@@ -1843,7 +1901,6 @@ public class FocusProbePid {
 "@
 }
 if ([FocusProbePid]::IsIconic($hwnd)) { [FocusProbePid]::ShowWindow($hwnd, 9) | Out-Null }
-[FocusProbePid]::ShowWindow($hwnd, 5) | Out-Null
 [FocusProbePid]::SetForegroundWindow($hwnd) | Out-Null
 Start-Sleep -Milliseconds 40
 $fg = [FocusProbePid]::GetForegroundWindow()

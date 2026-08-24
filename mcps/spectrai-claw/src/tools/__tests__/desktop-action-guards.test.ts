@@ -7,7 +7,10 @@ import {
   interpretActivatableSelectVerify,
   isActivatableSelectionItem,
   localActivationStateChanged,
+  resolveFocusShowAction,
+  resolveFollowWindowCaptureBounds,
   resolveHidClickTypeForActivatable,
+  resolveScreenshotCaptureMode,
   shouldFallbackClickAfterUia,
 } from '../desktop-action-guards.js'
 
@@ -295,6 +298,70 @@ describe('classifyForegroundResult', () => {
         foregroundTitle: 'Notepad',
       }).reason,
       'focus_failed:not_foreground',
+    )
+  })
+})
+
+describe('resolveFocusShowAction', () => {
+  it('restores only when iconic; visible windows stay untouched', () => {
+    assert.equal(resolveFocusShowAction({ iconic: true }), 'restore')
+    assert.equal(resolveFocusShowAction({ iconic: false }), 'none')
+  })
+})
+
+describe('resolveScreenshotCaptureMode / resolveFollowWindowCaptureBounds', () => {
+  it('explicit / allScreens / monitor beat follow*', () => {
+    assert.equal(
+      resolveScreenshotCaptureMode({
+        hasExplicitRegion: true,
+        followForeground: true,
+      }),
+      'explicit',
+    )
+    assert.equal(
+      resolveScreenshotCaptureMode({
+        allScreens: true,
+        followHandle: 42,
+      }),
+      'allScreens',
+    )
+    assert.equal(
+      resolveScreenshotCaptureMode({
+        monitorExplicit: true,
+        followWindowTitle: 'App',
+      }),
+      'monitor',
+    )
+  })
+
+  it('follow* selects followWindow; otherwise primary', () => {
+    assert.equal(resolveScreenshotCaptureMode({ followForeground: true }), 'followWindow')
+    assert.equal(resolveScreenshotCaptureMode({ followHandle: 123 }), 'followWindow')
+    assert.equal(resolveScreenshotCaptureMode({ followWindowTitle: 'Notes' }), 'followWindow')
+    assert.equal(resolveScreenshotCaptureMode({ followProcessId: 456 }), 'followWindow')
+    assert.equal(resolveScreenshotCaptureMode({}), 'primary')
+    assert.equal(resolveScreenshotCaptureMode({ followHandle: 0, followProcessId: 0 }), 'primary')
+  })
+
+  it('falls back to primary when window screen missing / invalid', () => {
+    const primary = { x: 0, y: 0, width: 1920, height: 1080 }
+    assert.deepEqual(
+      resolveFollowWindowCaptureBounds({
+        windowScreen: { x: 1920, y: 0, width: 2560, height: 1440 },
+        primaryScreen: primary,
+      }),
+      { x: 1920, y: 0, width: 2560, height: 1440 },
+    )
+    assert.deepEqual(
+      resolveFollowWindowCaptureBounds({ windowScreen: null, primaryScreen: primary }),
+      primary,
+    )
+    assert.deepEqual(
+      resolveFollowWindowCaptureBounds({
+        windowScreen: { x: 0, y: 0, width: 0, height: 0 },
+        primaryScreen: primary,
+      }),
+      primary,
     )
   })
 })

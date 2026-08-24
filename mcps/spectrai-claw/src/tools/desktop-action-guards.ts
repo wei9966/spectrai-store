@@ -169,3 +169,82 @@ export function classifyForegroundResult(probe: ForegroundProbe): {
   }
   return { ok: false, reason: 'focus_failed:not_foreground' }
 }
+
+/**
+ * Focus ShowWindow policy: restore minimized only.
+ * Already-visible non-iconic windows must not get unconditional SW_SHOW(5).
+ * ponytail: ceiling = iconic-only restore; upgrade to SW_SHOWNA only if a real app needs it.
+ */
+export type FocusShowAction = 'none' | 'restore'
+
+export function resolveFocusShowAction(input: { iconic: boolean }): FocusShowAction {
+  return input.iconic ? 'restore' : 'none'
+}
+
+export type ScreenshotCaptureMode =
+  | 'explicit'
+  | 'allScreens'
+  | 'monitor'
+  | 'followWindow'
+  | 'primary'
+
+/**
+ * Pick screenshot capture mode. Explicit region / allScreens / monitor win.
+ * Optional follow* only applies when caller did not pin region/monitor/allScreens.
+ * Missing follow target → caller falls back to primary (same as legacy monitor=0).
+ */
+export function resolveScreenshotCaptureMode(input: {
+  hasExplicitRegion?: boolean
+  allScreens?: boolean
+  monitorExplicit?: boolean
+  followForeground?: boolean
+  followHandle?: number | null
+  followWindowTitle?: string | null
+  followProcessId?: number | null
+}): ScreenshotCaptureMode {
+  if (input.hasExplicitRegion) return 'explicit'
+  if (input.allScreens) return 'allScreens'
+  if (input.monitorExplicit) return 'monitor'
+  const title = String(input.followWindowTitle || '').trim()
+  const handle = input.followHandle
+  const pid = input.followProcessId
+  if (
+    input.followForeground === true ||
+    (handle != null && Number.isFinite(handle) && handle !== 0) ||
+    title.length > 0 ||
+    (pid != null && Number.isFinite(pid) && pid !== 0)
+  ) {
+    return 'followWindow'
+  }
+  return 'primary'
+}
+
+export interface ScreenBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * Choose capture bounds from a followed window's screen, else primary.
+ * Pure: PS/Screen.FromHandle result is injected by caller.
+ */
+export function resolveFollowWindowCaptureBounds(input: {
+  windowScreen?: ScreenBounds | null
+  primaryScreen: ScreenBounds
+}): ScreenBounds {
+  const s = input.windowScreen
+  if (
+    s &&
+    Number.isFinite(s.x) &&
+    Number.isFinite(s.y) &&
+    Number.isFinite(s.width) &&
+    Number.isFinite(s.height) &&
+    s.width > 0 &&
+    s.height > 0
+  ) {
+    return { x: s.x, y: s.y, width: s.width, height: s.height }
+  }
+  return { ...input.primaryScreen }
+}
