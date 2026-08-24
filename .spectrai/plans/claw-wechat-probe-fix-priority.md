@@ -13,6 +13,8 @@
 | P2 | 找对/点对（OCR→UIA、可点点、少空跑 OCR） | ✅ `ca5b6f4` |
 | **P3** | **动作后验准：浏览器导航点击假失败 + 桌面激活证据** | ✅ `ee82e5d` `6b9b33c` |
 | **P3.5** | **浏览器 selector `{type,value}` 归一化，避免 DEFAULT 首链假命中** | ✅ |
+| **P3.6** | **桌面激活后验：title 不变时认通用局部证据（elementGone / 非 selection 名命中）** | ✅ `be41540` |
+| **P3.7** | **灰/黑屏：focus 后跟窗截屏 + 少动已可见窗口** | ⬅️ 下一刀 |
 | P4 | Swift daemon / 纯视觉主导 | 暂缓 |
 | Sync | store → claudeops builtin-mcps（`npm run sync:builtin-claw`） | ✅ 产物已就位（gitignore，打包前再跑） |
 | Pack | claudeops 打安装包 | ⬅️ 待你确认再打 |
@@ -99,9 +101,13 @@
 4. **未向其他会话发消息**；本轮停在开群前，避免乱点
 
 ### 下一刀候选（按阻塞度）
-1. **桌面激活证据**：窗口 title 不变的 App（如微信）不要只靠 `beforeTitle/afterTitle`；应认局部态 / 搜索面板关闭 / 聊天区出现等通用证据
-2. **截图/DPI/多屏**：主屏 1280×720 + 副屏场景下，窗口坐标与截图像素偶发错位，导致 annotate 空
-3. **annotated 缓存**：`screenshot annotate=true` 后立刻 `click_element(number, screenshotPath=…)` 偶发 “No annotated elements”（需同一次返回的缓存，或别强绑 savePath）
+1. **桌面激活证据**：窗口 title 不变的 App（如微信）不要只靠 `beforeTitle/afterTitle`；应认局部态 / 搜索面板关闭 / 聊天区出现等通用证据 ← **P3.6 进行中**
+2. **灰/黑屏（探活新证据）**：自动 `window_focus`/`ensureTargetForeground` 后看到「灰屏」——优先两条通用根因，不做 App 特化：
+   - **截错屏**：`screenshot` 默认 `monitor=0`（主屏）；目标窗在副屏/被挪走后，主屏截图就是灰/黑/空，annotate/UIA 区域也像「树变空」
+   - **激活过猛**：`ShowWindow(9)` restore 后无条件再 `ShowWindow(5)=SW_SHOW`；对部分窗体会改状态/未等首帧绘制就截，看起来像灰框
+   - 修复方向：focus 后按目标 HWND 的 `Screen.FromHandle` 截其所在屏；仅 iconic 时 restore，已可见只 `SetForeground`；可选短等首帧/非空像素探针
+3. **截图/DPI/多屏**：主屏 1280×720 + 副屏场景下，窗口坐标与截图像素偶发错位，导致 annotate 空（与上条合并做）
+4. **annotated 缓存**：`screenshot annotate=true` 后立刻 `click_element(number, screenshotPath=…)` 偶发 “No annotated elements”（需同一次返回的缓存，或别强绑 savePath）
 
 ## 非目标
 
