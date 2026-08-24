@@ -149,7 +149,7 @@ export function registerBrowserComputerUseTools() {
         const element = await provider.findElement(readObject(args.selector) ?? {}, readObject(args.target));
         return json({ element });
     }, { title: 'Browser find element', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_execute_action', 'Browser Computer Use: execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover and contextMenu, then verify via DOM value/text/focus/url/mutation state. Visual/HID is only a fallback suggestion.', {
+    registerTool('browser_execute_action', 'Browser Computer Use: execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover and contextMenu. Click verification prefers page URL/title changes (navigation success) before element mutation; vanished link nodes after navigation are not treated as failure. Visual/HID is only a fallback when there is no navigation evidence.', {
         type: 'object',
         properties: {
             connection: connectionSchema,

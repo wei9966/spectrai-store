@@ -56,7 +56,60 @@ test('BrowserDomCdpProvider smoke: capability report marks debug endpoint availa
   }
 })
 
-async function startFakeCdpServer(): Promise<FakeCdpServer> {
+test('BrowserDomCdpProvider click: navigated link succeeds when old node is unreadable but URL changed', async () => {
+  const fake = await startFakeCdpServer({ mode: 'link-navigation' })
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.executeAction({
+      type: 'click',
+      selector: { css: 'a.result-link', role: 'link' },
+      element: fakeLinkElement(),
+      timeoutMs: 50,
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.verification?.status, 'passed')
+    assert.equal(result.verification?.checks.some((check) => check.name === 'urlChanged' && check.ok), true)
+    assert.equal(result.after?.url, 'https://fixture.local/guide')
+    assert.equal(result.failure, undefined)
+    assert.equal(result.fallback, undefined)
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider click: same-page control still verifies via mutation', async () => {
+  const fake = await startFakeCdpServer({ mode: 'same-page-toggle' })
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.executeAction({
+      type: 'click',
+      selector: { css: '#toggle' },
+      timeoutMs: 50,
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.verification?.status, 'passed')
+    assert.deepEqual(result.verification?.checks.map((check) => check.name), ['mutation'])
+    assert.equal(result.before?.url, result.after?.url)
+  } finally {
+    await fake.close()
+  }
+})
+
+interface FakeCdpServerOptions {
+  mode?: 'form' | 'link-navigation' | 'same-page-toggle'
+}
+
+async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<FakeCdpServer> {
+  const mode = options.mode ?? 'form'
+  const page = {
+    url: 'https://fixture.local/form',
+    title: 'Fixture Form',
+    value: 'initial',
+    mutationHash: 'initial',
+    navigated: false,
+  }
   const sockets = new Set<Socket>()
   const server = http.createServer((request, response) => {
     const address = server.address() as AddressInfo
@@ -69,8 +122,8 @@ async function startFakeCdpServer(): Promise<FakeCdpServer> {
         {
           id: 'page_1',
           type: 'page',
-          url: 'https://fixture.local/form',
-          title: 'Fixture Form',
+          url: page.url,
+          title: page.title,
           webSocketDebuggerUrl: `ws://127.0.0.1:${address.port}/devtools/page/page_1`,
         },
       ])
@@ -105,7 +158,7 @@ async function startFakeCdpServer(): Promise<FakeCdpServer> {
         if (!frame) break
         buffer = frame.rest
         const command = JSON.parse(frame.payload.toString('utf8')) as { id: number; method: string; params?: { expression?: string } }
-        socket.write(encodeServerFrame(JSON.stringify({ id: command.id, result: fakeRuntimeEvaluate(command.params?.expression ?? '') })))
+        socket.write(encodeServerFrame(JSON.stringify({ id: command.id, result: fakeRuntimeEvaluate(command.params?.expression ?? '', mode, page) })))
       }
     })
   })
@@ -123,13 +176,17 @@ async function startFakeCdpServer(): Promise<FakeCdpServer> {
   }
 }
 
-function fakeRuntimeEvaluate(expression: string): Record<string, unknown> {
+function fakeRuntimeEvaluate(
+  expression: string,
+  mode: NonNullable<FakeCdpServerOptions['mode']>,
+  page: { url: string; title: string; value: string; mutationHash: string; navigated: boolean },
+): Record<string, unknown> {
   if (expression.includes('const __spectraiTask = "find"')) {
     return {
       result: {
         type: 'object',
         value: {
-          element: fakeElement('initial'),
+          element: mode === 'link-navigation' ? fakeLinkElement() : fakeElement(page.value),
           warnings: [],
         },
       },
@@ -137,6 +194,54 @@ function fakeRuntimeEvaluate(expression: string): Record<string, unknown> {
   }
 
   if (expression.includes('const __spectraiTask = "action"')) {
+    if (mode === 'link-navigation') {
+      // Simulate async navigation: action returns stale page / missing old node after click.
+      const before = fakeState('link', {
+        url: 'https://fixture.local/search',
+        title: 'Search Results',
+        mutationHash: 'search-results',
+      })
+      page.url = 'https://fixture.local/guide'
+      page.title = 'Guide'
+      page.mutationHash = 'guide'
+      page.navigated = true
+      return {
+        result: {
+          type: 'object',
+          value: {
+            ok: true,
+            method: 'dom',
+            before,
+            // Old <a> already gone; stale after lacks usable element mutation evidence.
+            after: undefined,
+            element: null,
+            warnings: [],
+          },
+        },
+      }
+    }
+
+    if (mode === 'same-page-toggle') {
+      const before = fakeState('off', { mutationHash: 'off' })
+      page.mutationHash = 'on'
+      page.value = 'on'
+      return {
+        result: {
+          type: 'object',
+          value: {
+            ok: true,
+            method: 'dom',
+            before,
+            after: fakeState('on', { mutationHash: 'on' }),
+            element: fakeElement('on'),
+            warnings: [],
+          },
+        },
+      }
+    }
+
+    page.value = 'spectrai browser provider'
+    page.mutationHash = 'spectrai browser provider'
     return {
       result: {
         type: 'object',
@@ -153,10 +258,24 @@ function fakeRuntimeEvaluate(expression: string): Record<string, unknown> {
   }
 
   if (expression.includes('const __spectraiTask = "state"')) {
+    if (mode === 'link-navigation' && page.navigated && expression.includes('"selector"')) {
+      // Old selector unreadable after navigation — page-level re-read still works.
+      return {
+        result: {
+          type: 'object',
+          value: null,
+        },
+      }
+    }
     return {
       result: {
         type: 'object',
-        value: fakeState('spectrai browser provider'),
+        value: fakeState(page.value, {
+          url: page.url,
+          title: page.title,
+          mutationHash: page.mutationHash,
+          focused: mode !== 'link-navigation',
+        }),
       },
     }
   }
@@ -166,10 +285,10 @@ function fakeRuntimeEvaluate(expression: string): Record<string, unknown> {
       result: {
         type: 'object',
         value: {
-          url: 'https://fixture.local/form',
-          title: 'Fixture Form',
+          url: page.url,
+          title: page.title,
           timestamp: '2026-05-25T00:00:00.000Z',
-          elements: [fakeElement('initial')],
+          elements: [mode === 'link-navigation' ? fakeLinkElement() : fakeElement(page.value)],
           frames: [],
           warnings: [],
         },
@@ -211,16 +330,48 @@ function fakeElement(value: string) {
   }
 }
 
-function fakeState(value: string) {
+function fakeLinkElement() {
   return {
-    url: 'https://fixture.local/form',
-    title: 'Fixture Form',
-    text: '',
-    value,
-    focused: true,
+    id: 'browser_fixture_link',
+    provider: 'browser' as const,
+    role: 'link',
+    label: 'Guide',
+    text: 'Guide',
+    tagName: 'a',
+    attributes: { href: 'https://fixture.local/guide', class: 'result-link', 'data-spectrai-cuid': 'browser_fixture_link' },
+    bounds: { x: 12, y: 40, width: 180, height: 24 },
+    actionable: true,
     enabled: true,
     visible: true,
-    mutationHash: value,
+    focused: false,
+    metadata: {
+      targetId: '',
+      framePath: [] as string[],
+      cssPath: 'a.result-link',
+      xpath: '//a[@class="result-link"]',
+      selector: { css: 'a.result-link', role: 'link' },
+      spectraiId: 'browser_fixture_link',
+      tagName: 'a',
+      editable: false,
+      clickable: true,
+      source: 'dom' as const,
+    },
+  }
+}
+
+function fakeState(
+  value: string,
+  overrides: Partial<{ url: string; title: string; mutationHash: string; focused: boolean }> = {},
+) {
+  return {
+    url: overrides.url ?? 'https://fixture.local/form',
+    title: overrides.title ?? 'Fixture Form',
+    text: '',
+    value,
+    focused: overrides.focused ?? true,
+    enabled: true,
+    visible: true,
+    mutationHash: overrides.mutationHash ?? value,
   }
 }
 

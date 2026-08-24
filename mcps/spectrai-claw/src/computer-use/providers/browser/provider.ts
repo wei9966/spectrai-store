@@ -119,9 +119,12 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     const before = actionWithSelector.selector ? await this.safeElementState(resolvedTarget, actionWithSelector.selector) : undefined
     const raw = await this.evaluate<RawActionPayload>(resolvedTarget, buildActionExpression(actionWithSelector))
     const targetElement = raw.element ? this.withTargetMetadata(raw.element, resolvedTarget, actionWithSelector.selector) : actionWithSelector.element
-    const verification = await this.verifyAction(resolvedTarget, actionWithSelector, before, raw.after)
+    const beforeState = raw.before ?? before
+    const verified = await this.verifyAction(resolvedTarget, actionWithSelector, beforeState, raw.after)
+    const { after: verifiedAfter, ...verification } = verified
+    const afterState = verifiedAfter ?? raw.after
     const ok = raw.ok === true && verification.ok
-    const failure = ok ? undefined : this.toFailure(raw.failure, verification)
+    const failure = ok ? undefined : this.toFailure(raw.failure, verification, beforeState, afterState)
 
     return {
       ok,
@@ -129,8 +132,8 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
       action: actionWithSelector.type,
       method: raw.method ?? 'dom',
       target: targetElement ?? undefined,
-      before: raw.before ?? before,
-      after: raw.after,
+      before: beforeState,
+      after: afterState,
       verification,
       failure,
       fallback: ok ? undefined : this.fallbackForFailure(failure, actionWithSelector),
@@ -325,7 +328,7 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     }
   }
 
-  private async safeElementState(target: BrowserTarget, selector: BrowserSelector): Promise<BrowserElementState | undefined> {
+  private async safeElementState(target: BrowserTarget, selector?: BrowserSelector): Promise<BrowserElementState | undefined> {
     try {
       return await this.evaluate<BrowserElementState>(target, buildElementStateExpression(selector))
     } catch {
@@ -338,27 +341,83 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     action: BrowserAction,
     before?: BrowserElementState,
     afterFromAction?: BrowserElementState,
-  ): Promise<BrowserActionVerificationResult> {
+  ): Promise<BrowserActionVerificationResult & { after?: BrowserElementState }> {
     const verify = this.defaultVerification(action)
     if (!verify) {
-      return { ok: true, status: 'not_requested', checks: [] }
+      return { ok: true, status: 'not_requested', checks: [], after: afterFromAction }
     }
 
     const selector = action.selector ?? action.element?.metadata.selector
+    const linkLike = isLinkLikeClick(action)
     let after = afterFromAction
-    if (!after || verify.networkIdleMs != null) {
+
+    // Prefer page-level state for clicks: old selectors often vanish after navigation.
+    const preferPageState = action.type === 'click' || verify.urlIncludes != null
+    if (!after || verify.networkIdleMs != null || preferPageState) {
       if (verify.networkIdleMs && verify.networkIdleMs > 0) {
         await sleep(Math.min(verify.networkIdleMs, 5_000))
+      } else if (preferPageState) {
+        // Brief settle for SPA/history navigations that finish after the DOM click returns.
+        await sleep(Math.min(verify.timeoutMs ?? 250, 1_000))
       }
-      after = selector ? await this.safeElementState(target, selector) : await this.evaluate<BrowserElementState>(target, buildElementStateExpression())
+      const pageAfter = await this.safeElementState(target)
+      if (pageAfter) {
+        const actionNavigated = Boolean(after && before && (before.url !== after.url || before.title !== after.title))
+        const pageNavigated = Boolean(before && (before.url !== pageAfter.url || before.title !== pageAfter.title))
+        if (!after || pageNavigated || (preferPageState && !actionNavigated)) {
+          after = pageAfter
+        }
+        // ponytail: keep action after when it already shows navigation and page re-read is still stale
+      } else if (!after && selector) {
+        after = await this.safeElementState(target, selector)
+      }
+    }
+
+    const urlChanged = Boolean(before && after && before.url !== after.url)
+    const titleChanged = Boolean(before && after && before.title !== after.title)
+    const pageChanged = urlChanged || titleChanged
+
+    // Navigation evidence wins even when the old <a> is gone / unreadable.
+    if (action.type === 'click' && pageChanged) {
+      const checks: BrowserActionVerificationResult['checks'] = [
+        {
+          name: urlChanged ? 'urlChanged' : 'titleChanged',
+          ok: true,
+          expected: 'changed',
+          actual: { beforeUrl: before?.url, afterUrl: after?.url, beforeTitle: before?.title, afterTitle: after?.title },
+        },
+      ]
+      if (verify.urlIncludes != null) {
+        checks.push({
+          name: 'urlIncludes',
+          ok: Boolean(after?.url.includes(verify.urlIncludes)),
+          expected: verify.urlIncludes,
+          actual: after?.url,
+        })
+      }
+      const ok = checks.every((check) => check.ok)
+      return {
+        ok,
+        status: ok ? 'passed' : 'failed',
+        checks,
+        message: ok ? undefined : 'Browser DOM post-action verification failed.',
+        after,
+      }
     }
 
     if (!after) {
       return {
         ok: false,
         status: 'failed',
-        checks: [{ name: 'state_available', ok: false }],
+        checks: [
+          {
+            name: 'state_available',
+            ok: false,
+            actual: { beforeUrl: before?.url, linkLike },
+          },
+        ],
         message: 'Could not read DOM state after action.',
+        after,
       }
     }
 
@@ -369,14 +428,22 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     if (verify.selected != null) checks.push({ name: 'selected', ok: after.selected === verify.selected, expected: verify.selected, actual: after.selected })
     if (verify.focused != null) checks.push({ name: 'focused', ok: after.focused === verify.focused, expected: verify.focused, actual: after.focused })
     if (verify.urlIncludes != null) checks.push({ name: 'urlIncludes', ok: after.url.includes(verify.urlIncludes), expected: verify.urlIncludes, actual: after.url })
-    if (verify.mutation === true && before) checks.push({ name: 'mutation', ok: before.mutationHash !== after.mutationHash || before.url !== after.url, expected: 'changed', actual: { before: before.mutationHash, after: after.mutationHash } })
+    if (verify.mutation === true && before) {
+      checks.push({
+        name: 'mutation',
+        ok: before.mutationHash !== after.mutationHash || before.url !== after.url || before.title !== after.title,
+        expected: 'changed',
+        actual: { before: before.mutationHash, after: after.mutationHash, beforeUrl: before.url, afterUrl: after.url },
+      })
+    }
 
-    const ok = checks.every((check) => check.ok)
+    const ok = checks.length === 0 ? true : checks.every((check) => check.ok)
     return {
       ok,
       status: ok ? 'passed' : 'failed',
       checks,
       message: ok ? undefined : 'Browser DOM post-action verification failed.',
+      after,
     }
   }
 
@@ -389,18 +456,30 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
       return { value: action.optionValue ?? action.value ?? '' }
     }
     if (action.type === 'click') {
+      // Links prefer navigation evidence; same-page controls still use mutation.
       return { mutation: true, timeoutMs: action.timeoutMs }
     }
     return undefined
   }
 
-  private toFailure(rawFailure: BrowserActionFailure | undefined, verification: BrowserActionVerificationResult): BrowserActionFailure | undefined {
+  private toFailure(
+    rawFailure: BrowserActionFailure | undefined,
+    verification: BrowserActionVerificationResult,
+    before?: BrowserElementState,
+    after?: BrowserElementState,
+  ): BrowserActionFailure | undefined {
     if (rawFailure) return rawFailure
     if (!verification.ok) {
       return {
         code: 'verification_failed',
         message: verification.message ?? 'Browser action verification failed.',
-        details: { checks: verification.checks },
+        details: {
+          checks: verification.checks,
+          beforeUrl: before?.url,
+          afterUrl: after?.url,
+          beforeTitle: before?.title,
+          afterTitle: after?.title,
+        },
       }
     }
     return undefined
@@ -414,8 +493,34 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     if (failure.code === 'cross_origin_frame' || failure.code === 'permission_required') {
       return { provider: 'playwright', action: action.type, reason: 'Use Playwright/CDP frame or permission-aware file input APIs for this browser-gated operation.' }
     }
-    return { provider: 'desktop-vision-hid', action: action.type, reason: 'DOM verification failed; fall back to the visual/HID provider only after rereading page state.' }
+    if (failure.code === 'verification_failed') {
+      const beforeUrl = typeof failure.details?.beforeUrl === 'string' ? failure.details.beforeUrl : undefined
+      const afterUrl = typeof failure.details?.afterUrl === 'string' ? failure.details.afterUrl : undefined
+      if (beforeUrl && afterUrl && beforeUrl !== afterUrl) {
+        // URL already moved; do not push Agent toward navigate / vision.
+        return undefined
+      }
+    }
+    return {
+      provider: 'desktop-vision-hid',
+      action: action.type,
+      reason: 'DOM verification failed with no navigation evidence; fall back to the visual/HID provider only after rereading page state.',
+    }
   }
+}
+
+function isLinkLikeClick(action: BrowserAction): boolean {
+  if (action.type !== 'click') return false
+  const element = action.element
+  if (!element) {
+    const role = action.selector?.role?.toLowerCase()
+    const css = action.selector?.css?.toLowerCase() ?? ''
+    return role === 'link' || /(^|[\s,#.>~+])a([\s,.#:>[~]|$)/.test(css) || css.includes('a[href')
+  }
+  const tag = element.tagName?.toLowerCase()
+  const role = element.role?.toLowerCase()
+  const href = element.attributes?.href
+  return tag === 'a' || role === 'link' || typeof href === 'string'
 }
 
 function extractRuntimeValue<T>(payload: RuntimeEvaluateResult): T {
