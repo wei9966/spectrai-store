@@ -1,26 +1,27 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
-  chatOpenMatches,
+  activationEvidenceMatches,
   classifyForegroundResult,
-  interpretSessionSelectVerify,
-  isSessionListItem,
+  interpretActivatableSelectVerify,
+  isActivatableSelectionItem,
   shouldFallbackClickAfterUia,
 } from '../desktop-action-guards.js'
 
-describe('isSessionListItem', () => {
-  it('matches ListItem and session_item_*', () => {
-    assert.equal(isSessionListItem({ controlType: 'ControlType.ListItem' }), true)
-    assert.equal(isSessionListItem({ automationId: 'session_item_12' }), true)
-    assert.equal(isSessionListItem({ controlType: 'Button', automationId: 'chat_input_field' }), false)
+describe('isActivatableSelectionItem', () => {
+  it('matches ListItem / TreeItem / TabItem / MenuItem', () => {
+    assert.equal(isActivatableSelectionItem({ controlType: 'ControlType.ListItem' }), true)
+    assert.equal(isActivatableSelectionItem({ controlType: 'TreeItem' }), true)
+    assert.equal(isActivatableSelectionItem({ controlType: 'TabItem' }), true)
+    assert.equal(isActivatableSelectionItem({ controlType: 'MenuItem' }), true)
+    assert.equal(isActivatableSelectionItem({ controlType: 'Button', automationId: 'ok_btn' }), false)
   })
 })
 
-describe('interpretSessionSelectVerify / shouldFallbackClickAfterUia', () => {
-  it('Select + IsSelected but title unchanged → not ok / needs_fallback_click', () => {
-    const interpreted = interpretSessionSelectVerify({
-      selectedAfter: true,
-      openedAfter: false,
+describe('interpretActivatableSelectVerify / shouldFallbackClickAfterUia', () => {
+  it('Select without activation evidence → not ok / needs_fallback_click', () => {
+    const interpreted = interpretActivatableSelectVerify({
+      activatedAfter: false,
     })
     assert.equal(interpreted.ok, false)
     assert.equal(interpreted.verify, 'state_not_changed')
@@ -34,10 +35,9 @@ describe('interpretSessionSelectVerify / shouldFallbackClickAfterUia', () => {
     )
   })
 
-  it('opened chat title → verified / no fallback', () => {
-    const interpreted = interpretSessionSelectVerify({
-      selectedAfter: true,
-      openedAfter: true,
+  it('activation evidence → verified / no fallback', () => {
+    const interpreted = interpretActivatableSelectVerify({
+      activatedAfter: true,
     })
     assert.equal(interpreted.ok, true)
     assert.equal(interpreted.verify, 'verified')
@@ -48,18 +48,49 @@ describe('interpretSessionSelectVerify / shouldFallbackClickAfterUia', () => {
   })
 })
 
-describe('chatOpenMatches', () => {
-  it('matches window title or current_chat_name_label', () => {
+describe('activationEvidenceMatches', () => {
+  it('matches title contain / title change / local state', () => {
     assert.equal(
-      chatOpenMatches({ windowTitle: '懵逼三人组-下一站翻身', chatName: '' }, '懵逼三人组-下一站翻身'),
+      activationEvidenceMatches({
+        targetName: 'Project Alpha',
+        beforeTitle: 'Mail',
+        afterTitle: 'Project Alpha — Mail',
+      }),
       true,
     )
     assert.equal(
-      chatOpenMatches({ windowTitle: '微信', chatName: '懵逼三人组-下一站翻身' }, '懵逼三人组-下一站翻身'),
+      activationEvidenceMatches({
+        targetName: 'Project Alpha',
+        beforeTitle: 'Inbox',
+        afterTitle: 'Inbox',
+        foregroundTitle: 'Project Alpha',
+      }),
       true,
     )
     assert.equal(
-      chatOpenMatches({ windowTitle: '文件传输助手', chatName: '文件传输助手' }, '懵逼三人组-下一站翻身'),
+      activationEvidenceMatches({
+        targetName: 'Project Alpha',
+        beforeTitle: 'Inbox',
+        afterTitle: 'Drafts',
+      }),
+      true,
+    )
+    assert.equal(
+      activationEvidenceMatches({
+        targetName: 'Project Alpha',
+        beforeTitle: 'Inbox',
+        afterTitle: 'Inbox',
+        localStateChanged: true,
+      }),
+      true,
+    )
+    assert.equal(
+      activationEvidenceMatches({
+        targetName: 'Project Alpha',
+        beforeTitle: 'Inbox',
+        afterTitle: 'Inbox',
+        foregroundTitle: 'Inbox',
+      }),
       false,
     )
   })

@@ -37,11 +37,10 @@ import { visionLocate } from './vision-grounding.js'
 import { renderHud } from './hud-renderer.js'
 import { inferElementCapability } from '../computer-use/providers/windows/uia-mapper.js'
 import {
-  chatOpenMatches,
+  activationEvidenceMatches,
   classifyForegroundResult,
-  isSessionListItem,
+  isActivatableSelectionItem,
   shouldFallbackClickAfterUia,
-  type ChatOpenState,
 } from './desktop-action-guards.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -102,7 +101,7 @@ interface UiaActionResult {
   detail?: string
   beforeTitle?: string
   afterTitle?: string
-  afterChatName?: string
+  foregroundTitle?: string
 }
 
 function getMouseClickFlags(button: string, clickType: string): string {
@@ -224,7 +223,7 @@ function parseUiaActionResult(stdout: string): UiaActionResult {
       detail: typeof parsed.detail === 'string' ? parsed.detail : '',
       beforeTitle: typeof parsed.beforeTitle === 'string' ? parsed.beforeTitle : '',
       afterTitle: typeof parsed.afterTitle === 'string' ? parsed.afterTitle : '',
-      afterChatName: typeof parsed.afterChatName === 'string' ? parsed.afterChatName : '',
+      foregroundTitle: typeof parsed.foregroundTitle === 'string' ? parsed.foregroundTitle : '',
     }
   } catch {
     return { ok: false, method: '', reason: 'uia_result_parse_failed', screenX: 0, screenY: 0, rectW: 0, rectH: 0 }
@@ -262,8 +261,8 @@ $meta = @{
 }
 $actionKind = '${action}'
 $targetText = '${sp(text || '')}'
-$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH; verify = ''; detail = ''; beforeTitle = ''; afterTitle = ''; afterChatName = '' }
-$isSessionItem = ($meta.ControlType -match 'ListItem') -or ($meta.AutomationId -match '^session_item_')
+$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH; verify = ''; detail = ''; beforeTitle = ''; afterTitle = ''; foregroundTitle = '' }
+$isActivatableItem = $meta.ControlType -match 'ListItem|TreeItem|TabItem|MenuItem'
 
 # Read element-local UIA state for before/after comparison (post-action verification).
 function Read-ElementState {
@@ -283,10 +282,10 @@ function Read-ElementState {
   return $s
 }
 
-# Business postcondition for chat/session open: top-bar label or owning window title.
-function Read-ChatOpenState {
+# Cheap activation probe: owning window title + same-process foreground title.
+function Read-ActivationTitles {
   param([Windows.Automation.AutomationElement]$el)
-  $s = @{ WindowTitle = ''; ChatName = '' }
+  $s = @{ WindowTitle = ''; ForegroundTitle = '' }
   try {
     $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
     $cur = $el
@@ -300,12 +299,16 @@ function Read-ChatOpenState {
     if ($null -eq $window -and $roots.Count -gt 0) { $window = $roots[0] }
     if ($null -ne $window) {
       try { $s.WindowTitle = [string]$window.Current.Name } catch {}
-      try {
-        $idCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::AutomationIdProperty, 'current_chat_name_label')
-        $label = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $idCond)
-        if ($null -ne $label) { $s.ChatName = [string]$label.Current.Name }
-      } catch {}
     }
+    try {
+      $pid = 0
+      if ($null -ne $el) { $pid = [int]$el.Current.ProcessId }
+      elseif ($meta.ProcessId -gt 0) { $pid = [int]$meta.ProcessId }
+      if ($pid -gt 0) {
+        $p = Get-Process -Id $pid -ErrorAction SilentlyContinue
+        if ($p -and $p.MainWindowTitle) { $s.ForegroundTitle = [string]$p.MainWindowTitle }
+      }
+    } catch {}
   } catch {}
   return $s
 }
@@ -469,8 +472,12 @@ try {
       } catch {}
 
       $beforeState = Read-ElementState $best
-      $beforeChat = @{ WindowTitle = ''; ChatName = '' }
-      if ($isSessionItem) { $beforeChat = Read-ChatOpenState $best; $result.beforeTitle = [string]$beforeChat.WindowTitle }
+      $beforeTitles = @{ WindowTitle = ''; ForegroundTitle = '' }
+      if ($isActivatableItem) {
+        $beforeTitles = Read-ActivationTitles $best
+        $result.beforeTitle = [string]$beforeTitles.WindowTitle
+        if (-not $result.beforeTitle) { $result.beforeTitle = [string]$beforeTitles.ForegroundTitle }
+      }
 
       if ($actionKind -eq 'setValue') {
         try { $best.SetFocus() } catch {}
@@ -530,6 +537,7 @@ try {
           return $false
         }
 
+        # Invoke first for clickable controls; selection items fall through Select then HID if no activation evidence.
         $preferInvoke = $meta.ControlType -match 'Button|Hyperlink|MenuItem|SplitButton'
         try {
           if ($preferInvoke -and (Try-InvokePattern $best)) {
@@ -569,33 +577,35 @@ try {
       }
 
       if ($result.ok) {
-        Start-Sleep -Milliseconds 120
+        Start-Sleep -Milliseconds 40
         $afterState = Read-ElementState $best
         if (-not $afterState.Alive) {
           $result.verify = 'needs_resnapshot'
         } elseif ($actionKind -eq 'setValue') {
           if ($afterState.Value -eq $targetText) { $result.verify = 'verified' } else { $result.verify = 'state_not_changed' }
-          $result.detail = "value=$($afterState.Value)"
-        } elseif ($isSessionItem) {
-          # P0-2: selected ≠ opened. Require chat title / current_chat_name_label to match target name.
-          $afterChat = Read-ChatOpenState $best
-          $result.afterTitle = [string]$afterChat.WindowTitle
-          $result.afterChatName = [string]$afterChat.ChatName
+          $result.detail = "value=$($afterState.Value);focus=$($afterState.Focus)"
+        } elseif ($isActivatableItem) {
+          # selected ≠ activated. Cheap evidence: local non-Selected change, title contains name, or title changed.
+          $afterTitles = Read-ActivationTitles $best
+          $result.afterTitle = [string]$afterTitles.WindowTitle
+          $result.foregroundTitle = [string]$afterTitles.ForegroundTitle
+          if (-not $result.afterTitle) { $result.afterTitle = $result.foregroundTitle }
           $targetName = [string]$meta.Name
-          $opened = $false
-          if ($targetName) {
-            if (($afterChat.ChatName -and $afterChat.ChatName.Contains($targetName)) -or ($afterChat.WindowTitle -and $afterChat.WindowTitle.Contains($targetName))) {
-              $opened = $true
-            }
-          }
-          if ($opened) {
+          $localChanged = ($beforeState.Toggle -ne $afterState.Toggle) -or ($beforeState.Expand -ne $afterState.Expand) -or ($beforeState.Value -ne $afterState.Value) -or ($beforeState.Focus -ne $afterState.Focus -and $afterState.Focus -eq 'True')
+          $activated = $false
+          if ($localChanged) { $activated = $true }
+          elseif ($targetName -and (($result.afterTitle -and $result.afterTitle.Contains($targetName)) -or ($result.foregroundTitle -and $result.foregroundTitle.Contains($targetName)))) { $activated = $true }
+          elseif ($result.beforeTitle -and $result.afterTitle -and ($result.beforeTitle -ne $result.afterTitle)) { $activated = $true }
+          elseif ($result.beforeTitle -and $result.foregroundTitle -and ($result.beforeTitle -ne $result.foregroundTitle)) { $activated = $true }
+          if ($activated) {
             $result.verify = 'verified'
-            $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);afterChatName=$($result.afterChatName)"
+            $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle)"
           } else {
+            # Do not keep spinning on Select — force one HID center click.
             $result.ok = $false
             $result.verify = 'state_not_changed'
             $result.reason = 'needs_fallback_click'
-            $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);afterChatName=$($result.afterChatName);target=$targetName"
+            $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle);target=$targetName"
           }
         } else {
           $changed = ($beforeState.Toggle -ne $afterState.Toggle) -or ($beforeState.Expand -ne $afterState.Expand) -or ($beforeState.Selected -ne $afterState.Selected) -or ($beforeState.Value -ne $afterState.Value)
@@ -617,7 +627,7 @@ try {
 Write-Output "__SPECTRAI_UIA_JSON__$($result | ConvertTo-Json -Compress)"
 `
 
-  const execResult = await shell.exec(script, action === 'setValue' ? 7000 : 6000)
+  const execResult = await shell.exec(script, action === 'setValue' ? 4500 : 3500)
   if (execResult.exitCode !== 0) {
     return {
       ok: false,
@@ -1312,9 +1322,9 @@ Write-Output "clicked|$vPath"
     const events = getMouseClickEvents(clickFlags)
     const script = `
 [Win32]::SetCursorPos(${cx}, ${cy})
-Start-Sleep -Milliseconds 30
+Start-Sleep -Milliseconds 20
 ${events}
-Start-Sleep -Milliseconds 200
+Start-Sleep -Milliseconds 80
 $vSize = 150
 $vx = [Math]::Max(0, ${cx} - $vSize)
 $vy = [Math]::Max(0, ${cy} - $vSize)
@@ -1343,7 +1353,7 @@ $vBmp.Save($vPath, [System.Drawing.Imaging.ImageFormat]::Png)
 $vBmp.Dispose()
 Write-Output "clicked|$vPath"
 `
-    const result = await shell.exec(script, 8000)
+    const result = await shell.exec(script, 5000)
     if (result.exitCode !== 0) {
       throw new Error(`HID click failed: ${result.stderr}`)
     }
@@ -1351,58 +1361,51 @@ Write-Output "clicked|$vPath"
     return parts[1] || ''
   }
 
-  /** Read WeChat-like chat open state (window title + current_chat_name_label). */
-  async function readChatOpenState(processId?: number): Promise<ChatOpenState> {
+  /** Cheap activation titles for a process: main window + foreground title. */
+  async function readActivationTitles(processId?: number): Promise<{ windowTitle: string; foregroundTitle: string }> {
     const pid = processId != null ? sn(processId) : 0
     const script = `
-$out = @{ windowTitle = ''; chatName = '' }
+$out = @{ windowTitle = ''; foregroundTitle = '' }
 try {
-  $root = [Windows.Automation.AutomationElement]::RootElement
-  $window = $null
   if (${pid} -gt 0) {
-    $pidCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ProcessIdProperty, [int]${pid})
-    $wins = $root.FindAll([Windows.Automation.TreeScope]::Children, $pidCond)
-    if ($wins.Count -gt 0) { $window = $wins.Item(0) }
-  }
-  if ($null -eq $window) {
-    $typeCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Window)
-    $wins = $root.FindAll([Windows.Automation.TreeScope]::Children, $typeCond)
-    for ($i = 0; $i -lt $wins.Count; $i++) {
-      $w = $wins.Item($i)
-      try {
-        $n = [string]$w.Current.Name
-        if ($n -match '微信|WeChat|Weixin') { $window = $w; break }
-      } catch {}
+    $p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue
+    if ($p) {
+      try { $out.windowTitle = [string]$p.MainWindowTitle } catch {}
     }
   }
-  if ($null -ne $window) {
-    try { $out.windowTitle = [string]$window.Current.Name } catch {}
-    try {
-      $idCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::AutomationIdProperty, 'current_chat_name_label')
-      $label = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $idCond)
-      if ($null -ne $label) { $out.chatName = [string]$label.Current.Name }
-    } catch {}
+  if (-not ("FgTitleProbe" -as [type])) {
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class FgTitleProbe {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+  public static string Title() { var sb = new StringBuilder(512); GetWindowText(GetForegroundWindow(), sb, sb.Capacity); return sb.ToString(); }
+}
+"@
   }
+  try { $out.foregroundTitle = [FgTitleProbe]::Title() } catch {}
 } catch {}
-Write-Output "__SPECTRAI_CHAT_JSON__$($out | ConvertTo-Json -Compress)"
+Write-Output "__SPECTRAI_ACT_JSON__$($out | ConvertTo-Json -Compress)"
 `
-    const result = await shell.exec(script, 5000)
-    const marker = '__SPECTRAI_CHAT_JSON__'
+    const result = await shell.exec(script, 2500)
+    const marker = '__SPECTRAI_ACT_JSON__'
     const line = result.stdout
       .split('\n')
       .map(l => l.trim())
       .filter(Boolean)
       .reverse()
       .find(l => l.startsWith(marker))
-    if (!line) return { windowTitle: '', chatName: '' }
+    if (!line) return { windowTitle: '', foregroundTitle: '' }
     try {
-      const parsed = JSON.parse(line.slice(marker.length)) as Partial<ChatOpenState>
+      const parsed = JSON.parse(line.slice(marker.length)) as Partial<{ windowTitle: string; foregroundTitle: string }>
       return {
         windowTitle: typeof parsed.windowTitle === 'string' ? parsed.windowTitle : '',
-        chatName: typeof parsed.chatName === 'string' ? parsed.chatName : '',
+        foregroundTitle: typeof parsed.foregroundTitle === 'string' ? parsed.foregroundTitle : '',
       }
     } catch {
-      return { windowTitle: '', chatName: '' }
+      return { windowTitle: '', foregroundTitle: '' }
     }
   }
 
@@ -1595,9 +1598,12 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
       const button = (args.button === 'right' || args.button === 'middle') ? args.button as string : 'left'
       const clickType = args.clickType === 'double' ? 'double' : 'single'
       lastActionableElement = element
-      const sessionItem = isSessionListItem(element)
+      const activatableItem = isActivatableSelectionItem(element)
+      const beforeTitles = activatableItem
+        ? await readActivationTitles(element.processId).catch(() => ({ windowTitle: '', foregroundTitle: '' }))
+        : { windowTitle: '', foregroundTitle: '' }
 
-      // P0-3 fail-fast: refuse to click when owning process window is not usable foreground.
+      // Fail-fast: refuse to click when owning process window is not usable foreground.
       if (element.processId) {
         try {
           const pid = sn(element.processId)
@@ -1625,7 +1631,7 @@ public class FocusProbePid {
 if ([FocusProbePid]::IsIconic($hwnd)) { [FocusProbePid]::ShowWindow($hwnd, 9) | Out-Null }
 [FocusProbePid]::ShowWindow($hwnd, 5) | Out-Null
 [FocusProbePid]::SetForegroundWindow($hwnd) | Out-Null
-Start-Sleep -Milliseconds 60
+Start-Sleep -Milliseconds 40
 $fg = [FocusProbePid]::GetForegroundWindow()
 $probe = @{
   targetHwnd = $hwnd.ToInt64()
@@ -1636,7 +1642,7 @@ $probe = @{
 }
 Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
 `
-            const focusOut = await shell.exec(focusScript, 6000)
+            const focusOut = await shell.exec(focusScript, 4000)
             const marker = '__SPECTRAI_FOCUS_JSON__'
             const line = focusOut.stdout.split('\n').map(l => l.trim()).filter(Boolean).reverse().find(l => l.startsWith(marker))
             if (line) {
@@ -1672,10 +1678,11 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
 
       let uiaFallbackReason = ''
       let uiaTitleDetail = ''
+      // Trusted UIA element: stay on UIA→HID path; do not divert to vision first.
       if (button === 'left' && clickType === 'single' && isUiaElementCandidate(element)) {
         try {
           const uiaResult = await tryUiaAction(element, 'click')
-          const needFallback = shouldFallbackClickAfterUia(uiaResult, sessionItem)
+          const needFallback = shouldFallbackClickAfterUia(uiaResult, activatableItem)
           if (!needFallback && uiaResult.ok) {
             lastActionableElement = {
               ...element,
@@ -1695,8 +1702,8 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
             }
           }
           uiaFallbackReason = uiaResult.reason || uiaResult.verify || 'uia_action_failed'
-          if (uiaResult.beforeTitle || uiaResult.afterTitle || uiaResult.afterChatName) {
-            uiaTitleDetail = ` beforeTitle=${uiaResult.beforeTitle || ''} afterTitle=${uiaResult.afterTitle || ''} afterChatName=${uiaResult.afterChatName || ''}`
+          if (uiaResult.beforeTitle || uiaResult.afterTitle || uiaResult.foregroundTitle) {
+            uiaTitleDetail = ` beforeTitle=${uiaResult.beforeTitle || ''} afterTitle=${uiaResult.afterTitle || ''} fgTitle=${uiaResult.foregroundTitle || ''}`
           }
         } catch (err: unknown) {
           uiaFallbackReason = `uia_exception:${err instanceof Error ? err.message : String(err)}`
@@ -1715,20 +1722,25 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
         return { isError: true, content: [{ type: 'text', text: `Click failed: ${msg}${uiaTitleDetail}` }] }
       }
 
-      // P0-2: after HID fallback on session items, re-check chat title / label.
-      if (sessionItem) {
-        const beforeHint = uiaTitleDetail
-        let after = { windowTitle: '', chatName: '' }
+      // After one HID center click on activatable selection items, re-check activation evidence. No second same-path spin.
+      if (activatableItem) {
+        const beforeHint = uiaTitleDetail || ` beforeTitle=${beforeTitles.windowTitle || beforeTitles.foregroundTitle || ''}`
+        let after = { windowTitle: '', foregroundTitle: '' }
         try {
-          after = await readChatOpenState(element.processId)
+          after = await readActivationTitles(element.processId)
         } catch { /* ignore */ }
-        const opened = chatOpenMatches(after, element.name || '')
-        if (!opened) {
+        const activated = activationEvidenceMatches({
+          targetName: element.name || '',
+          beforeTitle: beforeTitles.windowTitle || beforeTitles.foregroundTitle || '',
+          afterTitle: after.windowTitle,
+          foregroundTitle: after.foregroundTitle,
+        })
+        if (!activated) {
           return {
             isError: true,
             content: [{
               type: 'text',
-              text: `Click did not open chat: state_not_changed (selected≠opened). target="${element.name}" afterTitle=${after.windowTitle} afterChatName=${after.chatName} method=hidMouse uiaFallback=${uiaFallbackReason}${beforeHint}\nVerification image: ${verifyImgPath}`,
+              text: `Click did not activate: state_not_changed (selected≠activated). target="${element.name}" beforeTitle=${beforeTitles.windowTitle || beforeTitles.foregroundTitle || ''} afterTitle=${after.windowTitle} fgTitle=${after.foregroundTitle} method=hidMouse reason=needs_fallback_click uiaFallback=${uiaFallbackReason}${beforeHint}\nVerification image: ${verifyImgPath}`,
             }],
           }
         }
@@ -1736,7 +1748,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
         return {
           content: [{
             type: 'text',
-            text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};afterChatName=${after.chatName})${beforeHint}\n\nVerification image: ${verifyImgPath}`,
+            text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};fgTitle=${after.foregroundTitle})${beforeHint}\n\nVerification image: ${verifyImgPath}`,
           }],
         }
       }
@@ -2068,7 +2080,7 @@ Write-Output "scrolled"
       if (targetElement && isUiaElementCandidate(targetElement)) {
         try {
           const uiaResult = await tryUiaAction(targetElement, 'setValue', text)
-          if (uiaResult.ok) {
+          if (uiaResult.ok && uiaResult.verify === 'verified') {
             lastActionableElement = {
               ...targetElement,
               screenX: uiaResult.screenX || targetElement.screenX,
@@ -2076,9 +2088,7 @@ Write-Output "scrolled"
               rectW: uiaResult.rectW || targetElement.rectW,
               rectH: uiaResult.rectH || targetElement.rectH,
             }
-            const verifyText = uiaResult.verify
-              ? ` verify=${uiaResult.verify}${uiaResult.detail ? ` (${uiaResult.detail})` : ''}`
-              : ''
+            const verifyText = uiaResult.detail ? ` verify=verified (${uiaResult.detail})` : ' verify=verified'
             return {
               content: [{
                 type: 'text',
@@ -2086,7 +2096,7 @@ Write-Output "scrolled"
               }],
             }
           }
-          uiaFallbackReason = uiaResult.reason || 'uia_value_failed'
+          uiaFallbackReason = uiaResult.reason || uiaResult.verify || 'uia_value_failed'
         } catch (err: unknown) {
           uiaFallbackReason = `uia_exception:${err instanceof Error ? err.message : String(err)}`
         }
@@ -2096,19 +2106,29 @@ Write-Output "scrolled"
         uiaFallbackReason = 'uia_target_not_set'
       }
 
+      // Fallback: focus known target via center click (cheap) + SendKeys.
       const sanitized = sp(text)
       const sendKeySafe = sanitized.replace(/[+^%~(){}[\]]/g, '{$&}')
+      const focusClick = targetElement
+        ? `[Win32]::SetCursorPos(${sn(targetElement.screenX)}, ${sn(targetElement.screenY)}); Start-Sleep -Milliseconds 20; [Win32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); [Win32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 30\n`
+        : ''
       const script = `
-$wsh = New-Object -ComObject WScript.Shell
+${focusClick}$wsh = New-Object -ComObject WScript.Shell
 $wsh.SendKeys('${sendKeySafe}')
 Write-Output "typed"
 `
-      const result = await shell.exec(script, 5000)
+      const result = await shell.exec(script, 3500)
       if (result.exitCode !== 0) {
         return { isError: true, content: [{ type: 'text', text: `Type failed: ${result.stderr}` }] }
       }
-      const fallbackText = uiaFallbackReason ? ` (uiaFallback=${uiaFallbackReason})` : ''
-      return { content: [{ type: 'text', text: `typed ${text.length} chars via method=sendKeys${fallbackText}` }] }
+      const fallbackText = uiaFallbackReason ? ` uiaFallback=${uiaFallbackReason}` : ''
+      const focusHint = targetElement ? ' focus=centerClick' : ''
+      return {
+        content: [{
+          type: 'text',
+          text: `typed ${text.length} chars via method=sendKeys${fallbackText}${focusHint}`,
+        }],
+      }
     },
     { title: 'Keyboard Type', destructiveHint: true },
   )

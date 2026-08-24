@@ -3,9 +3,9 @@
  * Kept side-effect free so unit tests do not touch PersistentShell.
  */
 
-export interface ChatOpenState {
+export interface ActivationTitles {
   windowTitle: string
-  chatName: string
+  foregroundTitle: string
 }
 
 export interface ForegroundProbe {
@@ -16,50 +16,64 @@ export interface ForegroundProbe {
   foregroundTitle?: string
 }
 
-/** WeChat session rows: ListItem or automationId session_item_*. */
-export function isSessionListItem(element: {
+/** List/Tree/Tab/Menu rows where Select/IsSelected ≠ activate/open. */
+export function isActivatableSelectionItem(element: {
   controlType?: string
   automationId?: string
 }): boolean {
   const ct = String(element.controlType || '').replace(/^ControlType\./i, '')
-  if (/^ListItem$/i.test(ct)) return true
-  const aid = String(element.automationId || '')
-  return /^session_item_/i.test(aid)
-}
-
-/** Business open check: top-bar label or window title contains the session name. */
-export function chatOpenMatches(state: ChatOpenState, targetName: string): boolean {
-  const target = String(targetName || '').trim()
-  if (!target) return false
-  const chat = String(state.chatName || '')
-  const title = String(state.windowTitle || '')
-  return chat.includes(target) || title.includes(target)
+  return /^(ListItem|TreeItem|TabItem|MenuItem)$/i.test(ct)
 }
 
 /**
- * Select/IsSelected alone is not "opened" for session rows.
- * UIA path should force HID fallback when business postcondition fails.
+ * Cheap activation evidence after Select:
+ * 1) non-Selected local UIA state change, or
+ * 2) owning/fg window title contains target name, or
+ * 3) window/fg title changed vs before.
+ */
+export function activationEvidenceMatches(input: {
+  targetName?: string
+  beforeTitle?: string
+  afterTitle?: string
+  foregroundTitle?: string
+  localStateChanged?: boolean
+}): boolean {
+  if (input.localStateChanged) return true
+  const target = String(input.targetName || '').trim()
+  const after = String(input.afterTitle || '')
+  const fg = String(input.foregroundTitle || '')
+  const before = String(input.beforeTitle || '')
+  if (target) {
+    if (after.includes(target) || fg.includes(target)) return true
+  }
+  if (before && after && before !== after) return true
+  if (before && fg && before !== fg) return true
+  return false
+}
+
+/**
+ * Select/IsSelected alone is not "activated" for selection-like rows.
+ * UIA path should force one HID fallback when activation evidence is missing.
  */
 export function shouldFallbackClickAfterUia(
   result: { ok: boolean; verify?: string; reason?: string },
-  isSession: boolean,
+  isActivatable: boolean,
 ): boolean {
-  if (!isSession) return !result.ok
+  if (!isActivatable) return !result.ok
   if (result.reason === 'needs_fallback_click') return true
   if (result.verify === 'needs_fallback_click' || result.verify === 'state_not_changed') return true
   if (!result.ok) return true
   return false
 }
 
-/** Treat Select+IsSelected without chat title change as non-success. */
-export function interpretSessionSelectVerify(input: {
-  selectedAfter: boolean
-  openedAfter: boolean
+/** Treat Select without activation evidence as non-success. */
+export function interpretActivatableSelectVerify(input: {
+  activatedAfter: boolean
 }): { ok: boolean; verify: string; reason: string } {
-  if (input.openedAfter) {
+  if (input.activatedAfter) {
     return { ok: true, verify: 'verified', reason: '' }
   }
-  // selected≠opened
+  // selected ≠ activated
   return {
     ok: false,
     verify: 'state_not_changed',
