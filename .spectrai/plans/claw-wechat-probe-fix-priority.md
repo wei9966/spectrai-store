@@ -13,7 +13,8 @@
 | P2 | 找对/点对（OCR→UIA、可点点、少空跑 OCR） | ✅ `ca5b6f4` |
 | **P3** | **动作后验准：浏览器导航点击假失败 + 桌面激活证据** | ✅ `ee82e5d` `6b9b33c` |
 | P4 | Swift daemon / 纯视觉主导 | 暂缓 |
-| Sync | store → claudeops builtin-mcps → 再打包安装包 | ⬅️ 下一刀 |
+| Sync | store → claudeops builtin-mcps（`npm run sync:builtin-claw`） | ✅ 产物已就位（gitignore，打包前再跑） |
+| Pack | claudeops 打安装包 | ⬅️ 待你确认再打 |
 
 ## 探活真实故障（只记出现过的）
 
