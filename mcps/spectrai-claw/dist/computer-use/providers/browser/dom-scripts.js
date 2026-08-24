@@ -1,23 +1,17 @@
-import type { BrowserAction, BrowserActionVerification, BrowserSelector } from './types.js'
-
-export function buildDomSnapshotExpression(selector: BrowserSelector | undefined, maxElements: number): string {
-  return wrapBrowserExpression('snapshot', { selector, maxElements })
+export function buildDomSnapshotExpression(selector, maxElements) {
+    return wrapBrowserExpression('snapshot', { selector, maxElements });
 }
-
-export function buildFindElementExpression(selector: BrowserSelector): string {
-  return wrapBrowserExpression('find', { selector, maxElements: 1 })
+export function buildFindElementExpression(selector) {
+    return wrapBrowserExpression('find', { selector, maxElements: 1 });
 }
-
-export function buildActionExpression(action: BrowserAction): string {
-  return wrapBrowserExpression('action', { action })
+export function buildActionExpression(action) {
+    return wrapBrowserExpression('action', { action });
 }
-
-export function buildElementStateExpression(selector?: BrowserSelector, verification?: BrowserActionVerification): string {
-  return wrapBrowserExpression('state', { selector, verification })
+export function buildElementStateExpression(selector, verification) {
+    return wrapBrowserExpression('state', { selector, verification });
 }
-
-function wrapBrowserExpression(task: 'snapshot' | 'find' | 'action' | 'state', payload: Record<string, unknown>): string {
-  return `(() => {
+function wrapBrowserExpression(task, payload) {
+    return `(() => {
     const __spectraiTask = ${JSON.stringify(task)};
     const __spectraiPayload = ${JSON.stringify(payload)};
 
@@ -513,5 +507,5 @@ function wrapBrowserExpression(task: 'snapshot' | 'find' | 'action' | 'state', p
     if (__spectraiTask === 'state') return state(__spectraiPayload.selector);
     if (__spectraiTask === 'action') return runAction(__spectraiPayload.action);
     return { warnings, failure: { code: 'unsupported_task', message: __spectraiTask } };
-  })()`
+  })()`;
 }

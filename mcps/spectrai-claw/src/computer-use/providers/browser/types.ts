@@ -42,11 +42,15 @@ export interface BrowserWindow {
 
 export interface BrowserSelector {
   kind?: BrowserSelectorKind
+  /** Agent 常传 type/value；tools 层会归一到扁平 css|xpath|... */
+  type?: string
+  value?: string | number | boolean | Partial<BrowserBounds>
   css?: string
   xpath?: string
   text?: string
   role?: string
   ariaLabel?: string
+  'aria-label'?: string
   testId?: string
   testIdAttribute?: string
   framePath?: string[]

@@ -1,6 +1,7 @@
 import { registerTool } from '../../../tools/registry.js'
 import { ensureDebugBrowser } from './ensure-debug-browser.js'
 import { BrowserDomCdpProvider } from './provider.js'
+import { normalizeBrowserSelector } from './selector-normalize.js'
 import type { BrowserAction, BrowserConnectionOptions, BrowserSelector, BrowserTargetQuery } from './types.js'
 
 const connectionSchema = {
@@ -40,11 +41,17 @@ const selectorSchema = {
   type: 'object',
   properties: {
     kind: { type: 'string', enum: ['css', 'xpath', 'text', 'role', 'aria-label', 'testId', 'bounds', 'elementId'] },
+    type: { type: 'string', description: 'Agent alias for kind; normalized to kind + flat locator fields.' },
+    value: {
+      description: 'Agent alias for the locator payload paired with type/kind.',
+      anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }, boundsSchema],
+    },
     css: { type: 'string' },
     xpath: { type: 'string' },
     text: { type: 'string' },
     role: { type: 'string' },
     ariaLabel: { type: 'string' },
+    'aria-label': { type: 'string' },
     testId: { type: 'string' },
     testIdAttribute: { type: 'string' },
     framePath: { type: 'array', items: { type: 'string' } },
@@ -158,7 +165,7 @@ export function registerBrowserComputerUseTools(): void {
     },
     async (args) => {
       const provider = await createProvider(args)
-      const snapshot = await provider.readDomSnapshot(readObject<BrowserSelector>(args.selector), Number(args.maxElements ?? 200), readObject<BrowserTargetQuery>(args.target))
+      const snapshot = await provider.readDomSnapshot(normalizeBrowserSelector(readObject(args.selector)), Number(args.maxElements ?? 200), readObject<BrowserTargetQuery>(args.target))
       return json(snapshot)
     },
     { title: 'Browser DOM state', readOnlyHint: true, destructiveHint: false, idempotentHint: false },
@@ -179,7 +186,7 @@ export function registerBrowserComputerUseTools(): void {
     },
     async (args) => {
       const provider = await createProvider(args)
-      const element = await provider.findElement(readObject<BrowserSelector>(args.selector) ?? {}, readObject<BrowserTargetQuery>(args.target))
+      const element = await provider.findElement(normalizeBrowserSelector(readObject(args.selector)) ?? {}, readObject<BrowserTargetQuery>(args.target))
       return json({ element })
     },
     { title: 'Browser find element', readOnlyHint: true, destructiveHint: false, idempotentHint: false },
@@ -200,7 +207,8 @@ export function registerBrowserComputerUseTools(): void {
     },
     async (args) => {
       const provider = await createProvider(args)
-      const result = await provider.executeAction(readObject<BrowserAction>(args.action) ?? { type: 'click' }, readObject<BrowserTargetQuery>(args.target))
+      const action = normalizeActionSelector(readObject<BrowserAction>(args.action) ?? { type: 'click' })
+      const result = await provider.executeAction(action, readObject<BrowserTargetQuery>(args.target))
       return json(result)
     },
     { title: 'Browser execute action', readOnlyHint: false, destructiveHint: false, idempotentHint: false },
@@ -236,6 +244,14 @@ function readObject<T>(value: unknown): T | undefined {
     return value as T
   }
   return undefined
+}
+
+function normalizeActionSelector(action: BrowserAction): BrowserAction {
+  if (!action.selector) return action
+  return {
+    ...action,
+    selector: normalizeBrowserSelector(action.selector as BrowserSelector | Record<string, unknown>),
+  }
 }
 
 function json(value: unknown) {

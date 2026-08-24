@@ -12,6 +12,7 @@
 | P1 | 去微信特化 + 通用快路径 | ✅ `78ea80b` |
 | P2 | 找对/点对（OCR→UIA、可点点、少空跑 OCR） | ✅ `ca5b6f4` |
 | **P3** | **动作后验准：浏览器导航点击假失败 + 桌面激活证据** | ✅ `ee82e5d` `6b9b33c` |
+| **P3.5** | **浏览器 selector `{type,value}` 归一化，避免 DEFAULT 首链假命中** | ✅ |
 | P4 | Swift daemon / 纯视觉主导 | 暂缓 |
 | Sync | store → claudeops builtin-mcps（`npm run sync:builtin-claw`） | ✅ 产物已就位（gitignore，打包前再跑） |
 | Pack | claudeops 打安装包 | ⬅️ 待你确认再打 |
@@ -56,6 +57,14 @@
 5. 普通 Button/Hyperlink 等非 selection-item 行为保持原样
 
 单测：`desktop-action-guards` 13+ 相关断言全绿。
+
+### P3.5 — 浏览器 selector type/value 归一化 ✅
+
+根因：Agent 常传 `{type:'css', value:"a[href*='x']"}`，内部只认扁平 `css|xpath|...`；未归一时落到 `DEFAULT_SELECTOR`，假命中页面首个 `<a>`。
+
+1. `selector-normalize.ts`：`{type|kind,value}` → 扁平 locator；`aria-label`/`ariaLabel` 别名
+2. `tools.ts` schema 接纳 `type`/`value`/`aria-label`，入口统一 normalize
+3. `dom-scripts.ts` page 侧内联防御：有具体定位意图但无可用字段 → `candidates=[]`，禁止 DEFAULT 假命中
 
 ### 明确不做
 

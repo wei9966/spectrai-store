@@ -1,6 +1,7 @@
 import { registerTool } from '../../../tools/registry.js';
 import { ensureDebugBrowser } from './ensure-debug-browser.js';
 import { BrowserDomCdpProvider } from './provider.js';
+import { normalizeBrowserSelector } from './selector-normalize.js';
 const connectionSchema = {
     type: 'object',
     properties: {
@@ -35,11 +36,17 @@ const selectorSchema = {
     type: 'object',
     properties: {
         kind: { type: 'string', enum: ['css', 'xpath', 'text', 'role', 'aria-label', 'testId', 'bounds', 'elementId'] },
+        type: { type: 'string', description: 'Agent alias for kind; normalized to kind + flat locator fields.' },
+        value: {
+            description: 'Agent alias for the locator payload paired with type/kind.',
+            anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }, boundsSchema],
+        },
         css: { type: 'string' },
         xpath: { type: 'string' },
         text: { type: 'string' },
         role: { type: 'string' },
         ariaLabel: { type: 'string' },
+        'aria-label': { type: 'string' },
         testId: { type: 'string' },
         testIdAttribute: { type: 'string' },
         framePath: { type: 'array', items: { type: 'string' } },
@@ -132,7 +139,7 @@ export function registerBrowserComputerUseTools() {
         additionalProperties: false,
     }, async (args) => {
         const provider = await createProvider(args);
-        const snapshot = await provider.readDomSnapshot(readObject(args.selector), Number(args.maxElements ?? 200), readObject(args.target));
+        const snapshot = await provider.readDomSnapshot(normalizeBrowserSelector(readObject(args.selector)), Number(args.maxElements ?? 200), readObject(args.target));
         return json(snapshot);
     }, { title: 'Browser DOM state', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
     registerTool('browser_find_element', 'Browser Computer Use: find one DOM element by css/xpath/text/role/aria-label/testId/framePath/url/title/bounds selector and return a canonical element with DOM metadata.', {
@@ -146,7 +153,7 @@ export function registerBrowserComputerUseTools() {
         additionalProperties: false,
     }, async (args) => {
         const provider = await createProvider(args);
-        const element = await provider.findElement(readObject(args.selector) ?? {}, readObject(args.target));
+        const element = await provider.findElement(normalizeBrowserSelector(readObject(args.selector)) ?? {}, readObject(args.target));
         return json({ element });
     }, { title: 'Browser find element', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
     registerTool('browser_execute_action', 'Browser Computer Use: execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover and contextMenu. Click verification prefers page URL/title changes (navigation success) before element mutation; vanished link nodes after navigation are not treated as failure. Visual/HID is only a fallback when there is no navigation evidence.', {
@@ -160,7 +167,8 @@ export function registerBrowserComputerUseTools() {
         additionalProperties: false,
     }, async (args) => {
         const provider = await createProvider(args);
-        const result = await provider.executeAction(readObject(args.action) ?? { type: 'click' }, readObject(args.target));
+        const action = normalizeActionSelector(readObject(args.action) ?? { type: 'click' });
+        const result = await provider.executeAction(action, readObject(args.target));
         return json(result);
     }, { title: 'Browser execute action', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
     registerTool('browser_get_capabilities', 'Browser Computer Use: report DOM/CDP background read/invoke/type capability, limitations, frame/permission/userGesture constraints and fallback order.', {
@@ -185,6 +193,14 @@ function readObject(value) {
         return value;
     }
     return undefined;
+}
+function normalizeActionSelector(action) {
+    if (!action.selector)
+        return action;
+    return {
+        ...action,
+        selector: normalizeBrowserSelector(action.selector),
+    };
 }
 function json(value) {
     const text = JSON.stringify(value, null, 2);
