@@ -148,41 +148,106 @@ while ($true) {
 }
 `
 
-class PersistentShell {
+const START_TIMEOUT_MS = 30000
+const PING_FAIL_THRESHOLD = 2
+
+/** Machine-readable unhealthy prefix for callers / probes */
+export const PS_UNHEALTHY = 'PS_UNHEALTHY'
+
+export class PersistentShell {
   private proc: ChildProcess | null = null
   private ready = false
-  private readyPromise: Promise<void> | null = null
+  private starting: Promise<void> | null = null
   private stdoutBuf = ''
   private pendingResolve: ((result: ShellResult) => void) | null = null
   private pendingReject: ((err: Error) => void) | null = null
   private pendingTimer: ReturnType<typeof setTimeout> | null = null
+  /** Serial queue: at most one script in-flight (ponytail: chain, no PriorityQueue). */
+  private queue: Promise<unknown> = Promise.resolve()
+  private consecutivePingFails = 0
+  /** Generation guard so stale exit/error handlers cannot wipe a newer proc. */
+  private generation = 0
 
-  /** Start or restart the persistent PowerShell process */
+  /** Start the persistent PowerShell process (idempotent; awaits in-flight start). */
   async start(): Promise<void> {
-    if (this.proc && !this.proc.killed) return
+    if (this.ready && this.proc && !this.proc.killed) return
+    if (this.starting) return this.starting
+
+    this.starting = this.spawnAndWaitReady().finally(() => {
+      this.starting = null
+    })
+    return this.starting
+  }
+
+  /** Explicit cold start after kill/hang. */
+  async restart(): Promise<void> {
+    this.kill()
+    await this.start()
+  }
+
+  private forceKill(proc: ChildProcess): void {
+    if (proc.killed) return
+    const pid = proc.pid
+    try {
+      proc.kill('SIGTERM')
+    } catch {
+      /* ignore */
+    }
+    // Windows: SIGTERM often leaves powershell.exe alive and blocks Node exit
+    if (process.platform === 'win32' && pid) {
+      try {
+        spawn('taskkill', ['/pid', String(pid), '/t', '/f'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        })
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  private async spawnAndWaitReady(): Promise<void> {
+    if (this.proc) {
+      this.kill()
+    }
+
     this.ready = false
     this.stdoutBuf = ''
+    const generation = ++this.generation
 
-    this.readyPromise = new Promise<void>((resolveReady) => {
-      this.proc = spawn('powershell.exe', [
+    await new Promise<void>((resolveReady, rejectReady) => {
+      let settled = false
+      const finish = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        clearTimeout(startTimer)
+        fn()
+      }
+
+      const startTimer = setTimeout(() => {
+        this.kill()
+        finish(() => rejectReady(new Error(`${PS_UNHEALTHY}: bootstrap timed out after ${START_TIMEOUT_MS}ms`)))
+      }, START_TIMEOUT_MS)
+
+      const proc = spawn('powershell.exe', [
         '-NoProfile', '-NoLogo', '-NonInteractive', '-Command', '-',
       ], {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       })
+      this.proc = proc
 
-      this.proc.stdout!.setEncoding('utf-8')
-      this.proc.stderr!.setEncoding('utf-8')
+      proc.stdout!.setEncoding('utf-8')
+      proc.stderr!.setEncoding('utf-8')
 
-      // Handle initial READY signal and subsequent command outputs
-      this.proc.stdout!.on('data', (chunk: string) => {
+      proc.stdout!.on('data', (chunk: string) => {
+        if (this.generation !== generation || this.proc !== proc) return
         if (!this.ready) {
-          // Waiting for bootstrap READY signal
           this.stdoutBuf += chunk
           if (this.stdoutBuf.includes('READY')) {
             this.ready = true
             this.stdoutBuf = ''
-            resolveReady()
+            finish(() => resolveReady())
           }
           return
         }
@@ -190,10 +255,11 @@ class PersistentShell {
         this.tryResolve()
       })
 
-      // Collect stderr but don't block
-      this.proc.stderr!.on('data', () => { /* swallow — errors are captured via 2>&1 */ })
+      proc.stderr!.on('data', () => { /* swallow — errors via 2>&1 */ })
 
-      this.proc.on('exit', (code) => {
+      proc.on('exit', (code) => {
+        if (this.generation !== generation || this.proc !== proc) return
+        const wasReady = this.ready
         this.ready = false
         this.proc = null
         if (this.pendingReject) {
@@ -202,9 +268,13 @@ class PersistentShell {
           this.pendingResolve = null
           this.clearTimer()
         }
+        if (!wasReady) {
+          finish(() => rejectReady(new Error(`${PS_UNHEALTHY}: exited during bootstrap (code ${code})`)))
+        }
       })
 
-      this.proc.on('error', (err) => {
+      proc.on('error', (err) => {
+        if (this.generation !== generation || this.proc !== proc) return
         this.ready = false
         if (this.pendingReject) {
           this.pendingReject(err)
@@ -212,22 +282,33 @@ class PersistentShell {
           this.pendingResolve = null
           this.clearTimer()
         }
+        finish(() => rejectReady(new Error(`${PS_UNHEALTHY}: spawn failed: ${err.message}`)))
       })
 
-      // Send bootstrap script
-      const b64 = Buffer.from(BOOTSTRAP_SCRIPT, 'utf-8').toString('base64')
-      // Bootstrap runs as initial command, but since it's the command loop itself,
-      // we actually pass it as the -Command argument. Let me restructure:
-      // Actually, we already pass `-Command -` and the bootstrap IS the stdin.
-      // We need to write the bootstrap as the first thing to stdin.
+      try {
+        proc.stdin!.write(BOOTSTRAP_SCRIPT + '\n')
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        finish(() => rejectReady(new Error(`${PS_UNHEALTHY}: stdin write failed: ${msg}`)))
+      }
     })
+  }
 
-    // Write the bootstrap loop script to stdin
-    // Since we use `-Command -`, PowerShell reads from stdin.
-    // We can't use the base64 protocol for bootstrap itself — we write it directly.
-    this.proc!.stdin!.write(BOOTSTRAP_SCRIPT + '\n')
-
-    await this.readyPromise
+  private async ensureReady(): Promise<void> {
+    if (this.ready && this.proc && !this.proc.killed) return
+    try {
+      await this.start()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(
+        msg.startsWith(PS_UNHEALTHY)
+          ? msg
+          : `${PS_UNHEALTHY}: PowerShell process not available: ${msg}`,
+      )
+    }
+    if (!this.proc || !this.ready) {
+      throw new Error(`${PS_UNHEALTHY}: PowerShell process not available: failed to become ready`)
+    }
   }
 
   private tryResolve(): void {
@@ -237,7 +318,6 @@ class PersistentShell {
     const output = this.stdoutBuf.substring(0, markerIdx)
     this.stdoutBuf = this.stdoutBuf.substring(markerIdx + MARKER.length).replace(/^\r?\n/, '')
 
-    // Check for error marker in output
     const errMatch = output.match(new RegExp(ERR_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(.+?)' + ERR_SUFFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
 
     if (this.pendingResolve) {
@@ -259,14 +339,7 @@ class PersistentShell {
     }
   }
 
-  /** Execute a script in the persistent process */
-  async exec(script: string, timeout = 30000): Promise<ShellResult> {
-    await this.start()
-
-    if (!this.proc || !this.ready) {
-      throw new Error('PowerShell process not available')
-    }
-
+  private execUnlocked(script: string, timeout: number): Promise<ShellResult> {
     return new Promise<ShellResult>((resolve, reject) => {
       this.pendingResolve = resolve
       this.pendingReject = reject
@@ -274,27 +347,74 @@ class PersistentShell {
       this.pendingTimer = setTimeout(() => {
         this.pendingResolve = null
         this.pendingReject = null
-        // Kill and restart on timeout
+        // Kill on timeout; next exec/restart cold-starts
         this.kill()
         reject(new Error(`PowerShell command timed out after ${timeout}ms`))
       }, timeout)
 
-      const b64 = Buffer.from(script, 'utf-8').toString('base64')
-      this.proc!.stdin!.write(b64 + '\n')
+      try {
+        const b64 = Buffer.from(script, 'utf-8').toString('base64')
+        this.proc!.stdin!.write(b64 + '\n')
+      } catch (err) {
+        this.clearTimer()
+        this.pendingResolve = null
+        this.pendingReject = null
+        this.kill()
+        const msg = err instanceof Error ? err.message : String(err)
+        reject(new Error(`${PS_UNHEALTHY}: PowerShell process not available: ${msg}`))
+      }
     })
   }
 
-  /** Kill the persistent process */
+  /** Execute a script in the persistent process (serialized). */
+  async exec(script: string, timeout = 30000): Promise<ShellResult> {
+    const run = this.queue.then(async () => {
+      await this.ensureReady()
+      return this.execUnlocked(script, timeout)
+    })
+    // Keep queue alive after failures so later callers still serialize
+    this.queue = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  /**
+   * Lightweight liveness probe. Consecutive failures yield PS_UNHEALTHY and attempt restart.
+   */
+  async ping(timeout = 5000): Promise<ShellResult> {
+    try {
+      const result = await this.exec("Write-Output 'PONG'", timeout)
+      if (result.exitCode !== 0 || !result.stdout.includes('PONG')) {
+        throw new Error('unexpected ping result')
+      }
+      this.consecutivePingFails = 0
+      return result
+    } catch (err) {
+      this.consecutivePingFails += 1
+      const fails = this.consecutivePingFails
+      if (fails >= PING_FAIL_THRESHOLD) {
+        await this.restart().catch(() => undefined)
+      }
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(`${PS_UNHEALTHY}: consecutive_ping_failures=${fails}: ${msg}`)
+    }
+  }
+
+  /** Kill the persistent process (next exec will cold-start). */
   kill(): void {
     this.clearTimer()
-    if (this.proc && !this.proc.killed) {
-      this.proc.kill('SIGTERM')
-    }
+    const proc = this.proc
     this.proc = null
     this.ready = false
     this.stdoutBuf = ''
-    this.pendingResolve = null
-    this.pendingReject = null
+    this.generation += 1
+    if (this.pendingReject) {
+      this.pendingReject(new Error(`${PS_UNHEALTHY}: PowerShell process killed`))
+      this.pendingReject = null
+      this.pendingResolve = null
+    } else {
+      this.pendingResolve = null
+    }
+    if (proc) this.forceKill(proc)
   }
 }
 

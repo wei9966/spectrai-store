@@ -3,23 +3,39 @@ export interface ShellResult {
     stderr: string;
     exitCode: number;
 }
-declare class PersistentShell {
+/** Machine-readable unhealthy prefix for callers / probes */
+export declare const PS_UNHEALTHY = "PS_UNHEALTHY";
+export declare class PersistentShell {
     private proc;
     private ready;
-    private readyPromise;
+    private starting;
     private stdoutBuf;
     private pendingResolve;
     private pendingReject;
     private pendingTimer;
-    /** Start or restart the persistent PowerShell process */
+    /** Serial queue: at most one script in-flight (ponytail: chain, no PriorityQueue). */
+    private queue;
+    private consecutivePingFails;
+    /** Generation guard so stale exit/error handlers cannot wipe a newer proc. */
+    private generation;
+    /** Start the persistent PowerShell process (idempotent; awaits in-flight start). */
     start(): Promise<void>;
+    /** Explicit cold start after kill/hang. */
+    restart(): Promise<void>;
+    private forceKill;
+    private spawnAndWaitReady;
+    private ensureReady;
     private tryResolve;
     private clearTimer;
-    /** Execute a script in the persistent process */
+    private execUnlocked;
+    /** Execute a script in the persistent process (serialized). */
     exec(script: string, timeout?: number): Promise<ShellResult>;
-    /** Kill the persistent process */
+    /**
+     * Lightweight liveness probe. Consecutive failures yield PS_UNHEALTHY and attempt restart.
+     */
+    ping(timeout?: number): Promise<ShellResult>;
+    /** Kill the persistent process (next exec will cold-start). */
     kill(): void;
 }
 /** Singleton instance */
 export declare const shell: PersistentShell;
-export {};
