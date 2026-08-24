@@ -3,8 +3,11 @@ import { describe, it } from 'node:test'
 import {
   activationEvidenceMatches,
   classifyForegroundResult,
+  interpretActivatableHidVerify,
   interpretActivatableSelectVerify,
   isActivatableSelectionItem,
+  localActivationStateChanged,
+  resolveHidClickTypeForActivatable,
   shouldFallbackClickAfterUia,
 } from '../desktop-action-guards.js'
 
@@ -15,13 +18,59 @@ describe('isActivatableSelectionItem', () => {
     assert.equal(isActivatableSelectionItem({ controlType: 'TabItem' }), true)
     assert.equal(isActivatableSelectionItem({ controlType: 'MenuItem' }), true)
     assert.equal(isActivatableSelectionItem({ controlType: 'Button', automationId: 'ok_btn' }), false)
+    assert.equal(isActivatableSelectionItem({ controlType: 'Hyperlink' }), false)
+  })
+})
+
+describe('localActivationStateChanged', () => {
+  it('Selected-only / Focus-only flips are NOT activation', () => {
+    assert.equal(
+      localActivationStateChanged(
+        { selected: 'False', focus: 'False' },
+        { selected: 'True', focus: 'True' },
+      ),
+      false,
+    )
+  })
+
+  it('Toggle / Expand / Value / gone-from-tree ARE activation', () => {
+    assert.equal(
+      localActivationStateChanged({ expand: 'Collapsed' }, { expand: 'Expanded' }),
+      true,
+    )
+    assert.equal(
+      localActivationStateChanged({ toggle: 'Off' }, { toggle: 'On' }),
+      true,
+    )
+    assert.equal(
+      localActivationStateChanged({ value: 'a' }, { value: 'b' }),
+      true,
+    )
+    assert.equal(
+      localActivationStateChanged({ selected: 'False' }, { alive: false }),
+      true,
+    )
   })
 })
 
 describe('interpretActivatableSelectVerify / shouldFallbackClickAfterUia', () => {
-  it('Select without activation evidence → not ok / needs_fallback_click', () => {
+  it('Select only IsSelected / no title·local evidence → not ok + needs fallback', () => {
+    // Selected-only: localActivation false + title unchanged → no activation evidence.
+    const selectedOnlyLocal = localActivationStateChanged(
+      { selected: 'False', focus: 'False' },
+      { selected: 'True', focus: 'True' },
+    )
+    const evidence = activationEvidenceMatches({
+      targetName: 'Session row',
+      beforeTitle: 'Inbox',
+      afterTitle: 'Inbox',
+      foregroundTitle: 'Inbox',
+      localStateChanged: selectedOnlyLocal,
+    })
+    assert.equal(evidence, false)
+
     const interpreted = interpretActivatableSelectVerify({
-      activatedAfter: false,
+      activatedAfter: evidence,
     })
     assert.equal(interpreted.ok, false)
     assert.equal(interpreted.verify, 'state_not_changed')
@@ -35,15 +84,89 @@ describe('interpretActivatableSelectVerify / shouldFallbackClickAfterUia', () =>
     )
   })
 
-  it('activation evidence → verified / no fallback', () => {
+  it('title / local evidence present → verified / no fallback', () => {
+    const evidence = activationEvidenceMatches({
+      targetName: 'Project Alpha',
+      beforeTitle: 'Mail',
+      afterTitle: 'Project Alpha — Mail',
+      localStateChanged: false,
+    })
+    assert.equal(evidence, true)
     const interpreted = interpretActivatableSelectVerify({
-      activatedAfter: true,
+      activatedAfter: evidence,
     })
     assert.equal(interpreted.ok, true)
     assert.equal(interpreted.verify, 'verified')
     assert.equal(
       shouldFallbackClickAfterUia({ ok: true, verify: 'verified' }, true),
       false,
+    )
+  })
+
+  it('activatable ok without verify=verified still needs fallback (no false success)', () => {
+    assert.equal(
+      shouldFallbackClickAfterUia({ ok: true, verify: 'uncertain' }, true),
+      true,
+    )
+    assert.equal(
+      shouldFallbackClickAfterUia({ ok: true, verify: '' }, true),
+      true,
+    )
+    // Non-selection Button/Hyperlink: keep existing ok-based behavior.
+    assert.equal(
+      shouldFallbackClickAfterUia({ ok: true, verify: 'uncertain' }, false),
+      false,
+    )
+  })
+})
+
+describe('interpretActivatableHidVerify / resolveHidClickTypeForActivatable', () => {
+  it('HID after still no evidence → hard fail (activation_unconfirmed)', () => {
+    const hid = interpretActivatableHidVerify({ activatedAfter: false })
+    assert.equal(hid.ok, false)
+    assert.equal(hid.verify, 'state_not_changed')
+    assert.equal(hid.reason, 'activation_unconfirmed')
+  })
+
+  it('HID after evidence → verified', () => {
+    const hid = interpretActivatableHidVerify({ activatedAfter: true })
+    assert.equal(hid.ok, true)
+    assert.equal(hid.verify, 'verified')
+    assert.equal(hid.reason, '')
+  })
+
+  it('activatable left-single escalates to one double-click short path', () => {
+    assert.equal(
+      resolveHidClickTypeForActivatable({
+        isActivatable: true,
+        button: 'left',
+        clickType: 'single',
+      }),
+      'double',
+    )
+    assert.equal(
+      resolveHidClickTypeForActivatable({
+        isActivatable: true,
+        button: 'left',
+        clickType: 'double',
+      }),
+      'double',
+    )
+    assert.equal(
+      resolveHidClickTypeForActivatable({
+        isActivatable: false,
+        button: 'left',
+        clickType: 'single',
+      }),
+      'single',
+    )
+    assert.equal(
+      resolveHidClickTypeForActivatable({
+        isActivatable: true,
+        button: 'right',
+        clickType: 'single',
+      }),
+      'single',
     )
   })
 })

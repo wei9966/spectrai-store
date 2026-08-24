@@ -39,7 +39,10 @@ import { inferElementCapability } from '../computer-use/providers/windows/uia-ma
 import {
   activationEvidenceMatches,
   classifyForegroundResult,
+  interpretActivatableHidVerify,
+  interpretActivatableSelectVerify,
   isActivatableSelectionItem,
+  resolveHidClickTypeForActivatable,
   shouldFallbackClickAfterUia,
 } from './desktop-action-guards.js'
 import {
@@ -599,18 +602,25 @@ try {
         Start-Sleep -Milliseconds 40
         $afterState = Read-ElementState $best
         if (-not $afterState.Alive) {
-          $result.verify = 'needs_resnapshot'
+          # Activatable rows leaving the tree usually means open/navigate succeeded.
+          if ($isActivatableItem) {
+            $result.verify = 'verified'
+            $result.detail = 'element_gone'
+          } else {
+            $result.verify = 'needs_resnapshot'
+          }
         } elseif ($actionKind -eq 'setValue') {
           if ($afterState.Value -eq $targetText) { $result.verify = 'verified' } else { $result.verify = 'state_not_changed' }
           $result.detail = "value=$($afterState.Value);focus=$($afterState.Focus)"
         } elseif ($isActivatableItem) {
-          # selected ≠ activated. Cheap evidence: local non-Selected change, title contains name, or title changed.
+          # selected/focus-only ≠ activated. Cheap evidence: Toggle/Expand/Value change, title contains name, or title changed.
           $afterTitles = Read-ActivationTitles $best
           $result.afterTitle = [string]$afterTitles.WindowTitle
           $result.foregroundTitle = [string]$afterTitles.ForegroundTitle
           if (-not $result.afterTitle) { $result.afterTitle = $result.foregroundTitle }
           $targetName = [string]$meta.Name
-          $localChanged = ($beforeState.Toggle -ne $afterState.Toggle) -or ($beforeState.Expand -ne $afterState.Expand) -or ($beforeState.Value -ne $afterState.Value) -or ($beforeState.Focus -ne $afterState.Focus -and $afterState.Focus -eq 'True')
+          # Keep Selected/Focus flips out of local activation signal (Select false positives).
+          $localChanged = ($beforeState.Toggle -ne $afterState.Toggle) -or ($beforeState.Expand -ne $afterState.Expand) -or ($beforeState.Value -ne $afterState.Value)
           $activated = $false
           if ($localChanged) { $activated = $true }
           elseif ($targetName -and (($result.afterTitle -and $result.afterTitle.Contains($targetName)) -or ($result.foregroundTitle -and $result.foregroundTitle.Contains($targetName)))) { $activated = $true }
@@ -620,7 +630,7 @@ try {
             $result.verify = 'verified'
             $result.detail = "selected=$($afterState.Selected);beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle)"
           } else {
-            # Do not keep spinning on Select — force one HID center click.
+            # Do not keep spinning on Select — force one HID (may escalate to double) click.
             $result.ok = $false
             $result.verify = 'state_not_changed'
             $result.reason = 'needs_fallback_click'
@@ -664,6 +674,16 @@ Write-Output "__SPECTRAI_UIA_JSON__$($result | ConvertTo-Json -Compress)"
   const parsed = parseUiaActionResult(execResult.stdout)
   if (!parsed.ok && !parsed.reason) {
     parsed.reason = 'uia_action_failed'
+  }
+  // Defense in depth: activatable Select/Invoke without verified activation evidence must not stay ok.
+  if (action === 'click' && isActivatableSelectionItem(element)) {
+    const activatedAfter = parsed.ok && parsed.verify === 'verified'
+    const interpreted = interpretActivatableSelectVerify({ activatedAfter })
+    if (!interpreted.ok) {
+      parsed.ok = false
+      parsed.verify = interpreted.verify
+      parsed.reason = interpreted.reason
+    }
   }
   if (parsed.screenX === 0 && parsed.screenY === 0) {
     parsed.screenX = element.screenX
@@ -1771,9 +1791,15 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
         uiaFallbackReason = 'uia_metadata_not_available'
       }
 
+      // Activatable selection rows: one HID short path (left-single escalates to double). Still no evidence → hard fail.
+      const hidClickType = resolveHidClickTypeForActivatable({
+        isActivatable: activatableItem,
+        button,
+        clickType,
+      })
       let verifyImgPath: string
       try {
-        verifyImgPath = await hidClickAndVerify(clickX, clickY, button, clickType, `[${elemNum}] @(${clickX},${clickY})`)
+        verifyImgPath = await hidClickAndVerify(clickX, clickY, button, hidClickType, `[${elemNum}] @(${clickX},${clickY})`)
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         return { isError: true, content: [{ type: 'text', text: `Click failed: ${msg}${uiaTitleDetail}` }] }
@@ -1792,12 +1818,13 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
           afterTitle: after.windowTitle,
           foregroundTitle: after.foregroundTitle,
         })
-        if (!activated) {
+        const hidVerify = interpretActivatableHidVerify({ activatedAfter: activated })
+        if (!hidVerify.ok) {
           return {
             isError: true,
             content: [{
               type: 'text',
-              text: `Click did not activate: state_not_changed (selected≠activated). target="${element.name}" beforeTitle=${beforeTitles.windowTitle || beforeTitles.foregroundTitle || ''} afterTitle=${after.windowTitle} fgTitle=${after.foregroundTitle} method=hidMouse reason=needs_fallback_click uiaFallback=${uiaFallbackReason}${beforeHint}\nVerification image: ${verifyImgPath}`,
+              text: `Click did not activate: ${hidVerify.verify} (selected≠activated). target="${element.name}" beforeTitle=${beforeTitles.windowTitle || beforeTitles.foregroundTitle || ''} afterTitle=${after.windowTitle} fgTitle=${after.foregroundTitle} method=hidMouse (${button} ${hidClickType}) reason=${hidVerify.reason} uiaFallback=${uiaFallbackReason}${beforeHint}\nVerification image: ${verifyImgPath}`,
             }],
           }
         }
@@ -1805,7 +1832,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
         return {
           content: [{
             type: 'text',
-            text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};fgTitle=${after.foregroundTitle})${beforeHint}\n\nVerification image: ${verifyImgPath}`,
+            text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${hidClickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};fgTitle=${after.foregroundTitle})${beforeHint}\n\nVerification image: ${verifyImgPath}`,
           }],
         }
       }

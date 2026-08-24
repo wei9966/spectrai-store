@@ -25,6 +25,32 @@ export function isActivatableSelectionItem(element: {
   return /^(ListItem|TreeItem|TabItem|MenuItem)$/i.test(ct)
 }
 
+export interface ElementLocalState {
+  toggle?: string
+  expand?: string
+  value?: string
+  selected?: string
+  focus?: string
+  alive?: boolean
+}
+
+/**
+ * Local UIA activation signal for selection-like rows.
+ * Selected-only / Focus-only flips are NOT activation (common Select false positives).
+ * Toggle / Expand / Value change, or element leaving the tree, count.
+ */
+export function localActivationStateChanged(
+  before: ElementLocalState,
+  after: ElementLocalState,
+): boolean {
+  if (after.alive === false) return true
+  return (
+    String(before.toggle || '') !== String(after.toggle || '') ||
+    String(before.expand || '') !== String(after.expand || '') ||
+    String(before.value || '') !== String(after.value || '')
+  )
+}
+
 /**
  * Cheap activation evidence after Select:
  * 1) non-Selected local UIA state change, or
@@ -54,6 +80,7 @@ export function activationEvidenceMatches(input: {
 /**
  * Select/IsSelected alone is not "activated" for selection-like rows.
  * UIA path should force one HID fallback when activation evidence is missing.
+ * Activatable success requires verify==='verified' — uncertain/resnapshot/empty ≠ success.
  */
 export function shouldFallbackClickAfterUia(
   result: { ok: boolean; verify?: string; reason?: string },
@@ -63,6 +90,7 @@ export function shouldFallbackClickAfterUia(
   if (result.reason === 'needs_fallback_click') return true
   if (result.verify === 'needs_fallback_click' || result.verify === 'state_not_changed') return true
   if (!result.ok) return true
+  if (result.verify !== 'verified') return true
   return false
 }
 
@@ -79,6 +107,35 @@ export function interpretActivatableSelectVerify(input: {
     verify: 'state_not_changed',
     reason: 'needs_fallback_click',
   }
+}
+
+/**
+ * Final HID probe for activatable rows: still no evidence → hard fail
+ * (not another needs_fallback_click loop).
+ */
+export function interpretActivatableHidVerify(input: {
+  activatedAfter: boolean
+}): { ok: boolean; verify: string; reason: string } {
+  if (input.activatedAfter) {
+    return { ok: true, verify: 'verified', reason: '' }
+  }
+  return {
+    ok: false,
+    verify: 'state_not_changed',
+    reason: 'activation_unconfirmed',
+  }
+}
+
+/** One short HID path: escalate left-single → double for activatable rows. */
+export function resolveHidClickTypeForActivatable(input: {
+  isActivatable: boolean
+  button: string
+  clickType: string
+}): string {
+  if (input.isActivatable && input.button === 'left' && input.clickType === 'single') {
+    return 'double'
+  }
+  return input.clickType
 }
 
 const SELF_OCCLUDE_RE = /spectrai|claude\s*code|cursor|visual studio code/i
