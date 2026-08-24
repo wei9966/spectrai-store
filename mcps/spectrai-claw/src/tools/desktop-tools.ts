@@ -42,6 +42,11 @@ import {
   isActivatableSelectionItem,
   shouldFallbackClickAfterUia,
 } from './desktop-action-guards.js'
+import {
+  isUiaElementCandidate,
+  parseAnnotatedSource,
+  type AnnotatedSource,
+} from './click-accuracy.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -68,7 +73,7 @@ interface AnnotatedElement {
   rectY?: number
   rectW?: number
   rectH?: number
-  source?: 'UIA' | 'OCR'
+  source?: AnnotatedSource
   isEnabled?: boolean
   isOffscreen?: boolean
   patterns?: string[]
@@ -96,6 +101,9 @@ interface UiaActionResult {
   screenY: number
   rectW: number
   rectH: number
+  /** Preferred HID point from GetClickablePoint (falls back to rect centre). */
+  clickX?: number
+  clickY?: number
   // Post-action verification: '' (not run) | 'verified' | 'state_not_changed' | 'needs_resnapshot' | 'uncertain' | 'needs_fallback_click'
   verify?: string
   detail?: string
@@ -116,17 +124,12 @@ function getMouseClickEvents(flags: string): string {
   return flags.split(';').map(f => `[Win32]::mouse_event(${f}, 0, 0, 0, [UIntPtr]::Zero)`).join('\n')
 }
 
-function isUiaElementCandidate(element: AnnotatedElement): boolean {
-  if (!element || element.controlType.startsWith('OCR') || element.source === 'OCR') return false
-  return Boolean(element.name || element.automationId || element.className)
-}
-
 // Rank an annotated element by how confidently it can be acted on natively.
 // Reuses the computer-use capability inference so the screenshot workflow and the
 // (currently unwired) UIA runtime agree on what "actionable" means.
 function elementActionabilityScore(el: AnnotatedElement): number {
   const cap = inferElementCapability({
-    source: el.source === 'OCR' ? 'ocr' : 'uia',
+    source: el.source === 'OCR' ? 'ocr' : 'uia', // OCR_UIA → uia
     controlType: el.controlType,
     className: el.className,
     patterns: el.patterns,
@@ -205,20 +208,26 @@ function parseUiaActionResult(stdout: string): UiaActionResult {
     .find(l => l.startsWith(marker))
 
   if (!line) {
-    return { ok: false, method: '', reason: 'uia_no_result', screenX: 0, screenY: 0, rectW: 0, rectH: 0 }
+    return { ok: false, method: '', reason: 'uia_no_result', screenX: 0, screenY: 0, rectW: 0, rectH: 0, clickX: 0, clickY: 0 }
   }
 
   const payload = line.slice(marker.length)
   try {
     const parsed = JSON.parse(payload) as Partial<UiaActionResult>
+    const screenX = typeof parsed.screenX === 'number' && Number.isFinite(parsed.screenX) ? parsed.screenX : 0
+    const screenY = typeof parsed.screenY === 'number' && Number.isFinite(parsed.screenY) ? parsed.screenY : 0
+    const clickX = typeof parsed.clickX === 'number' && Number.isFinite(parsed.clickX) ? parsed.clickX : screenX
+    const clickY = typeof parsed.clickY === 'number' && Number.isFinite(parsed.clickY) ? parsed.clickY : screenY
     return {
       ok: parsed.ok === true,
       method: typeof parsed.method === 'string' ? parsed.method : '',
       reason: typeof parsed.reason === 'string' ? parsed.reason : '',
-      screenX: typeof parsed.screenX === 'number' && Number.isFinite(parsed.screenX) ? parsed.screenX : 0,
-      screenY: typeof parsed.screenY === 'number' && Number.isFinite(parsed.screenY) ? parsed.screenY : 0,
+      screenX,
+      screenY,
       rectW: typeof parsed.rectW === 'number' && Number.isFinite(parsed.rectW) ? parsed.rectW : 0,
       rectH: typeof parsed.rectH === 'number' && Number.isFinite(parsed.rectH) ? parsed.rectH : 0,
+      clickX,
+      clickY,
       verify: typeof parsed.verify === 'string' ? parsed.verify : '',
       detail: typeof parsed.detail === 'string' ? parsed.detail : '',
       beforeTitle: typeof parsed.beforeTitle === 'string' ? parsed.beforeTitle : '',
@@ -226,7 +235,7 @@ function parseUiaActionResult(stdout: string): UiaActionResult {
       foregroundTitle: typeof parsed.foregroundTitle === 'string' ? parsed.foregroundTitle : '',
     }
   } catch {
-    return { ok: false, method: '', reason: 'uia_result_parse_failed', screenX: 0, screenY: 0, rectW: 0, rectH: 0 }
+    return { ok: false, method: '', reason: 'uia_result_parse_failed', screenX: 0, screenY: 0, rectW: 0, rectH: 0, clickX: 0, clickY: 0 }
   }
 }
 
@@ -236,7 +245,7 @@ async function tryUiaAction(
   text?: string,
 ): Promise<UiaActionResult> {
   if (!isUiaElementCandidate(element)) {
-    return { ok: false, method: '', reason: 'uia_metadata_not_available', screenX: element.screenX, screenY: element.screenY, rectW: element.rectW ?? 0, rectH: element.rectH ?? 0 }
+    return { ok: false, method: '', reason: 'uia_metadata_not_available', screenX: element.screenX, screenY: element.screenY, rectW: element.rectW ?? 0, rectH: element.rectH ?? 0, clickX: element.screenX, clickY: element.screenY }
   }
 
   const processId = element.processId != null ? sn(element.processId) : 0
@@ -261,7 +270,7 @@ $meta = @{
 }
 $actionKind = '${action}'
 $targetText = '${sp(text || '')}'
-$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH; verify = ''; detail = ''; beforeTitle = ''; afterTitle = ''; foregroundTitle = '' }
+$result = @{ ok = $false; method = ''; reason = ''; screenX = [int]$meta.CenterX; screenY = [int]$meta.CenterY; rectW = [int]$meta.RectW; rectH = [int]$meta.RectH; clickX = [int]$meta.CenterX; clickY = [int]$meta.CenterY; verify = ''; detail = ''; beforeTitle = ''; afterTitle = ''; foregroundTitle = '' }
 $isActivatableItem = $meta.ControlType -match 'ListItem|TreeItem|TabItem|MenuItem'
 
 # Read element-local UIA state for before/after comparison (post-action verification).
@@ -469,6 +478,16 @@ try {
         $result.screenY = [int]($bestRect.Y + ($bestRect.Height / 2))
         $result.rectW = [int]$bestRect.Width
         $result.rectH = [int]$bestRect.Height
+        # Prefer GetClickablePoint for HID fallback; rect centre if unavailable.
+        $result.clickX = $result.screenX
+        $result.clickY = $result.screenY
+        try {
+          $cp = New-Object System.Windows.Point
+          if ($best.GetClickablePoint([ref]$cp)) {
+            $result.clickX = [int]$cp.X
+            $result.clickY = [int]$cp.Y
+          }
+        } catch {}
       } catch {}
 
       $beforeState = Read-ElementState $best
@@ -637,6 +656,8 @@ Write-Output "__SPECTRAI_UIA_JSON__$($result | ConvertTo-Json -Compress)"
       screenY: element.screenY,
       rectW: element.rectW ?? 0,
       rectH: element.rectH ?? 0,
+      clickX: element.screenX,
+      clickY: element.screenY,
     }
   }
 
@@ -647,6 +668,10 @@ Write-Output "__SPECTRAI_UIA_JSON__$($result | ConvertTo-Json -Compress)"
   if (parsed.screenX === 0 && parsed.screenY === 0) {
     parsed.screenX = element.screenX
     parsed.screenY = element.screenY
+  }
+  if ((parsed.clickX == null || (parsed.clickX === 0 && parsed.clickY === 0)) && (parsed.screenX || parsed.screenY)) {
+    parsed.clickX = parsed.screenX
+    parsed.clickY = parsed.screenY
   }
   if (parsed.rectW === 0 && element.rectW != null) parsed.rectW = element.rectW
   if (parsed.rectH === 0 && element.rectH != null) parsed.rectH = element.rectH
@@ -889,7 +914,7 @@ try {
                 $forceResult = [Win32]::ForceAccessibility([Win32]::chromeRenderHwnd)
                 $chromeForced = $forceResult
                 if ($forceResult) {
-                    Start-Sleep -Milliseconds 500  # Give Chrome time to build accessibility tree
+                    Start-Sleep -Milliseconds 150  # Give Chrome time to build accessibility tree
                 }
             }
         }
@@ -960,23 +985,40 @@ try {
         # Accept elements with name, automationId, or actionable control types even without name
         $label = if ($name) { $name } elseif ($aid) { $aid } else { '' }
         $isClickable = ($ct -match 'Button|Hyperlink|MenuItem|TabItem|ListItem|CheckBox|RadioButton|ComboBox|Slider|Image')
+        # Empty name + no pattern + not clickable → skip/de-rank noise
+        if (-not $label -and -not $isClickable -and $pats.Count -eq 0) { continue }
         if (-not $label -and -not $isClickable) { continue }
         # Pure Image with no actionable pattern is decorative — skip to cut noise
         if (-not $name -and -not $aid -and $ct -match 'Image' -and $pats.Count -eq 0) { continue }
         if (-not $label) { $label = $ct -replace 'ControlType\\.', '' }
+        # Dedup same-name same-bounds parent/child: keep the one with patterns
+        $dupKey = "$label|$([int]$rect.X)|$([int]$rect.Y)|$([int]$rect.Width)|$([int]$rect.Height)"
+        $dupIdx = -1
+        for ($di = 0; $di -lt $filtered.Count; $di++) {
+            $prev = $filtered[$di]
+            if ("$($prev.Name)|$($prev.X)|$($prev.Y)|$($prev.W)|$($prev.H)" -eq $dupKey) { $dupIdx = $di; break }
+        }
+        if ($dupIdx -ge 0) {
+            $prevPatCount = if ($filtered[$dupIdx].PAT) { @($filtered[$dupIdx].PAT -split ';' | Where-Object { $_ }).Count } else { 0 }
+            if ($pats.Count -gt $prevPatCount) {
+                $filtered[$dupIdx] = @{N=$filtered[$dupIdx].N; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'; EN=$isEnabled; OFF=$isOffscreen; PAT=$patStr}
+            }
+            continue
+        }
         $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'; EN=$isEnabled; OFF=$isOffscreen; PAT=$patStr}
         $idx++
         if ($idx -gt 80) { break }
     }
-    Write-Output "UIA_STATS:total=$uiaTotal,filtered=$($filtered.Count),chromeForced=$chromeForced"
+    Write-Output "UIA_STATS:total=$uiaTotal,filtered=$($filtered.Count),actionable=$($uiaActionable.Count),chromeForced=$chromeForced"
 } catch {
     Write-Output "UIA_ERROR:$($_.Exception.Message)"
 }
 
-# ====== Phase 2: OCR fallback if UIA found few elements ======
+# ====== Phase 2: OCR fallback if actionable UIA is sparse ======
 # WinRT async requires STA thread. PersistentShell runs MTA (STA blocks ReadLine).
 # Solution: run external ocr-worker.ps1 in a separate powershell.exe -STA process.
-if ($filtered.Count -lt 10) {
+# Threshold: actionable (pattern-bearing) count, not raw filtered.Count.
+if ($uiaActionable.Count -lt 5) {
     try {
         $ocrWorker = '${OCR_WORKER_PS1.replace(/\\/g, '\\\\')}'.Replace('\\\\','\\')
         $ocrImgPath = $imgPath.Replace('\\\\','\\')
@@ -990,7 +1032,7 @@ if ($filtered.Count -lt 10) {
         $psi.RedirectStandardError = $true
         $proc = [System.Diagnostics.Process]::Start($psi)
         $stderr = $proc.StandardError.ReadToEnd()
-        $proc.WaitForExit(20000)
+        $proc.WaitForExit(8000)
         if ($proc.ExitCode -ne 0) { Write-Output "OCR_PROC_ERR:exit=$($proc.ExitCode),stderr=$stderr" }
 
         $ocrExists = Test-Path $ocrOut
@@ -1007,11 +1049,18 @@ if ($filtered.Count -lt 10) {
                     $ocrCy = [int]$parts[2]
                     $ocrX = $ocrCx - [int]($ocrW / 2)
                     $ocrY = $ocrCy - [int]($ocrH / 2)
-                    # Anchor OCR text to an actionable UIA element whose bounds contain its centre,
-                    # so we click a native element (with pattern) instead of a raw OCR coordinate.
+                    # Anchor OCR→UIA: centre-in-bounds OR distance ≤ max(24, min(edge)*0.3)
                     $anchor = $null
+                    $bestDist = [double]::PositiveInfinity
                     foreach ($cand in $uiaActionable) {
-                        if ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H)) { $anchor = $cand; break }
+                        $inside = ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H))
+                        if ($inside) { $anchor = $cand; break }
+                        $nx = [Math]::Max($cand.X, [Math]::Min($ocrCx, $cand.X + $cand.W))
+                        $ny = [Math]::Max($cand.Y, [Math]::Min($ocrCy, $cand.Y + $cand.H))
+                        $dist = [Math]::Sqrt(($ocrCx - $nx) * ($ocrCx - $nx) + ($ocrCy - $ny) * ($ocrCy - $ny))
+                        $edge = [Math]::Min($cand.W, $cand.H)
+                        $thresh = [Math]::Max(24, $edge * 0.3)
+                        if ($dist -le $thresh -and $dist -lt $bestDist) { $bestDist = $dist; $anchor = $cand }
                     }
                     if ($anchor) {
                         $filtered += @{N=$idx; Name=$parts[0]; CT=$anchor.CT; CX=$anchor.CX; CY=$anchor.CY; W=$anchor.W; H=$anchor.H; X=$anchor.X; Y=$anchor.Y; AID=''; CLS=''; PID=0; Src='OCR_UIA'; EN=$anchor.EN; OFF=$false; PAT=$anchor.PAT}
@@ -1118,7 +1167,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                 rectY: parseNum(p[9]),
                 rectW,
                 rectH,
-                source: p[12] === 'OCR' ? 'OCR' : 'UIA',
+                source: parseAnnotatedSource(p[12]),
                 isEnabled: p[13] === undefined || p[13] === '' ? undefined : p[13] === 'True',
                 isOffscreen: p[14] === 'True',
                 patterns: p[15] ? p[15].split(';').filter(Boolean) : [],
@@ -1130,8 +1179,8 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
             screenshotMetaMap.set(filePath, meta)
             lastAnnotatedPath = filePath
           }
-          const uiaCount = elements.filter(e => !e.controlType.startsWith('OCR')).length
-          const ocrCount = elements.filter(e => e.controlType.startsWith('OCR')).length
+          const uiaCount = elements.filter(e => e.source === 'UIA' || e.source === 'OCR_UIA').length
+          const ocrCount = elements.filter(e => e.source === 'OCR').length
           const debugSuffix = debugLines.length > 0 ? `\n[debug: ${debugLines.join('; ')}]` : ''
           elementListText = elements.length > 0
             ? `\n\nDetected ${uiaCount} UI elements + ${ocrCount} OCR texts (use click_element to click by number, most actionable first):\n` +
@@ -1593,8 +1642,8 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
         return { isError: true, content: [{ type: 'text', text: `Element #${elemNum} not found. Available: ${available}` }] }
       }
 
-      const clickX = element.screenX
-      const clickY = element.screenY
+      let clickX = element.screenX
+      let clickY = element.screenY
       const button = (args.button === 'right' || args.button === 'middle') ? args.button as string : 'left'
       const clickType = args.clickType === 'double' ? 'double' : 'single'
       lastActionableElement = element
@@ -1678,10 +1727,18 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
 
       let uiaFallbackReason = ''
       let uiaTitleDetail = ''
-      // Trusted UIA element: stay on UIA→HID path; do not divert to vision first.
+      // Trusted UIA / OCR_UIA element: stay on UIA→HID path; do not divert to vision first.
       if (button === 'left' && clickType === 'single' && isUiaElementCandidate(element)) {
         try {
           const uiaResult = await tryUiaAction(element, 'click')
+          // Prefer GetClickablePoint for any subsequent HID fallback.
+          if (typeof uiaResult.clickX === 'number' && typeof uiaResult.clickY === 'number') {
+            clickX = uiaResult.clickX
+            clickY = uiaResult.clickY
+          } else if (uiaResult.screenX || uiaResult.screenY) {
+            clickX = uiaResult.screenX || clickX
+            clickY = uiaResult.screenY || clickY
+          }
           const needFallback = shouldFallbackClickAfterUia(uiaResult, activatableItem)
           if (!needFallback && uiaResult.ok) {
             lastActionableElement = {
@@ -2510,7 +2567,6 @@ Write-Output "closed window(s)"
       const scale = args.scale != null ? Math.max(1, Math.min(4, sn(args.scale))) : 1
       const grid = args.grid !== false // default ON
       const annotate = args.annotate !== false
-      const imgPathEscaped = sp(OCR_WORKER_PS1.replace(/\\/g, '\\\\'))
 
       const script = `
 $zx = ${zx}; $zy = ${zy}; $zw = ${zw}; $zh = ${zh}; $scale = ${scale}
@@ -2633,7 +2689,7 @@ try {
         $wh = $window.Current.NativeWindowHandle
         if ($wh -ne 0) {
             $found = [Win32]::FindChromeRenderWidget([IntPtr]::new($wh))
-            if ($found) { [Win32]::ForceAccessibility([Win32]::chromeRenderHwnd); Start-Sleep -Milliseconds 300 }
+            if ($found) { [Win32]::ForceAccessibility([Win32]::chromeRenderHwnd); Start-Sleep -Milliseconds 150 }
         }
     }
 } catch {}
@@ -2674,19 +2730,33 @@ try {
         }
         $label = if ($name) { $name } elseif ($aid) { $aid } else { '' }
         $isClickable = ($ct -match 'Button|Hyperlink|MenuItem|TabItem|ListItem|CheckBox|RadioButton|ComboBox|Image')
+        if (-not $label -and -not $isClickable -and $pats.Count -eq 0) { continue }
         if (-not $label -and -not $isClickable) { continue }
         if (-not $name -and -not $aid -and $ct -match 'Image' -and $pats.Count -eq 0) { continue }
         if (-not $label) { $label = $ct -replace 'ControlType\\.', '' }
+        $dupKey = "$label|$([int]$rect.X)|$([int]$rect.Y)|$([int]$rect.Width)|$([int]$rect.Height)"
+        $dupIdx = -1
+        for ($di = 0; $di -lt $filtered.Count; $di++) {
+            $prev = $filtered[$di]
+            if ("$($prev.Name)|$($prev.X)|$($prev.Y)|$($prev.W)|$($prev.H)" -eq $dupKey) { $dupIdx = $di; break }
+        }
+        if ($dupIdx -ge 0) {
+            $prevPatCount = if ($filtered[$dupIdx].PAT) { @($filtered[$dupIdx].PAT -split ';' | Where-Object { $_ }).Count } else { 0 }
+            if ($pats.Count -gt $prevPatCount) {
+                $filtered[$dupIdx] = @{N=$filtered[$dupIdx].N; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'; EN=$isEnabled; OFF=$isOffscreen; PAT=$patStr}
+            }
+            continue
+        }
         $filtered += @{N=$idx; Name=$label; CT=$ct; CX=$elCx; CY=$elCy; W=[int]$rect.Width; H=[int]$rect.Height; X=[int]$rect.X; Y=[int]$rect.Y; AID=$aid; CLS=$el.Current.ClassName; PID=$el.Current.ProcessId; Src='UIA'; EN=$isEnabled; OFF=$isOffscreen; PAT=$patStr}
         $idx++
         if ($idx -gt 60) { break }
     }
 } catch {}
 
-# OCR fallback
-if ($filtered.Count -lt 10) {
+# OCR fallback: only when actionable UIA is sparse (<5 with patterns)
+if ($uiaActionable.Count -lt 5) {
     try {
-        $ocrWorker = '${imgPathEscaped}'.Replace('\\\\','\\')
+        $ocrWorker = '${OCR_WORKER_PS1.replace(/\\/g, '\\\\')}'.Replace('\\\\','\\')
         $ocrImgPath = $imgPath.Replace('\\\\','\\')
         $ocrOut = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "spectrai_ocr_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').txt")
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -2709,8 +2779,16 @@ if ($filtered.Count -lt 10) {
                     $ocrX = $ocrCx - [int]($ocrW / 2)
                     $ocrY = $ocrCy - [int]($ocrH / 2)
                     $anchor = $null
+                    $bestDist = [double]::PositiveInfinity
                     foreach ($cand in $uiaActionable) {
-                        if ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H)) { $anchor = $cand; break }
+                        $inside = ($ocrCx -ge $cand.X -and $ocrCx -le ($cand.X + $cand.W) -and $ocrCy -ge $cand.Y -and $ocrCy -le ($cand.Y + $cand.H))
+                        if ($inside) { $anchor = $cand; break }
+                        $nx = [Math]::Max($cand.X, [Math]::Min($ocrCx, $cand.X + $cand.W))
+                        $ny = [Math]::Max($cand.Y, [Math]::Min($ocrCy, $cand.Y + $cand.H))
+                        $dist = [Math]::Sqrt(($ocrCx - $nx) * ($ocrCx - $nx) + ($ocrCy - $ny) * ($ocrCy - $ny))
+                        $edge = [Math]::Min($cand.W, $cand.H)
+                        $thresh = [Math]::Max(24, $edge * 0.3)
+                        if ($dist -le $thresh -and $dist -lt $bestDist) { $bestDist = $dist; $anchor = $cand }
                     }
                     if ($anchor) {
                         $filtered += @{N=$idx; Name=$parts[0]; CT=$anchor.CT; CX=$anchor.CX; CY=$anchor.CY; W=$anchor.W; H=$anchor.H; X=$anchor.X; Y=$anchor.Y; AID=''; CLS=''; PID=0; Src='OCR_UIA'; EN=$anchor.EN; OFF=$false; PAT=$anchor.PAT}
@@ -2795,7 +2873,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                 rectY: parseNum(p[9]),
                 rectW,
                 rectH,
-                source: p[12] === 'OCR' ? 'OCR' : 'UIA',
+                source: parseAnnotatedSource(p[12]),
                 isEnabled: p[13] === undefined || p[13] === '' ? undefined : p[13] === 'True',
                 isOffscreen: p[14] === 'True',
                 patterns: p[15] ? p[15].split(';').filter(Boolean) : [],
@@ -2807,8 +2885,8 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
             screenshotMetaMap.set(filePath, meta)
             lastAnnotatedPath = filePath
           }
-          const uiaCount = elements.filter(e => !e.controlType.startsWith('OCR')).length
-          const ocrCount = elements.filter(e => e.controlType.startsWith('OCR')).length
+          const uiaCount = elements.filter(e => e.source === 'UIA' || e.source === 'OCR_UIA').length
+          const ocrCount = elements.filter(e => e.source === 'OCR').length
           elementListText = elements.length > 0
             ? `\n\nDetected ${uiaCount} UI elements + ${ocrCount} OCR texts (most actionable first):\n` +
               sortElementsForDisplay(elements).map(formatElementLine).join('\n')

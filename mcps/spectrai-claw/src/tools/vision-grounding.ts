@@ -81,8 +81,8 @@ async function runOcrWorker(
       }
     })
     proc.on('error', reject)
-    // Hard timeout: 25s (same order as desktop-tools.ts ~20s WaitForExit)
-    setTimeout(() => { try { proc.kill() } catch { /* ignore */ }; reject(new Error('ocr-worker timeout')) }, 25000)
+    // Hard timeout: 10s (aligned with desktop-tools annotate WaitForExit 8000)
+    setTimeout(() => { try { proc.kill() } catch { /* ignore */ }; reject(new Error('ocr-worker timeout')) }, 10000)
   })
 
   if (!existsSync(outFile)) {
