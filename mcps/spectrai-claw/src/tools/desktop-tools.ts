@@ -54,8 +54,13 @@ import {
 import {
   isUiaElementCandidate,
   parseAnnotatedSource,
-  type AnnotatedSource,
 } from './click-accuracy.js'
+import {
+  getScreenshotMeta,
+  setScreenshotMeta,
+  type AnnotatedElement,
+  type ScreenshotMeta,
+} from './screenshot-meta.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -67,36 +72,8 @@ import { PolicyEngine } from '../security/PolicyEngine.js'
 const sn = PolicyEngine.sanitizeNumber.bind(PolicyEngine)
 const sp = PolicyEngine.sanitizeForPowerShell.bind(PolicyEngine)
 
-// Screenshot metadata store — maps file path to capture region info
-// Used by screenshot_click to convert image pixel coords → screen coords
-interface AnnotatedElement {
-  number: number
-  name: string
-  controlType: string
-  screenX: number
-  screenY: number
-  automationId?: string
-  className?: string
-  processId?: number
-  rectX?: number
-  rectY?: number
-  rectW?: number
-  rectH?: number
-  source?: AnnotatedSource
-  isEnabled?: boolean
-  isOffscreen?: boolean
-  patterns?: string[]
-}
-
-interface ScreenshotMeta {
-  captureX: number
-  captureY: number
-  captureW: number
-  captureH: number
-  imageW: number
-  imageH: number
-  elements?: AnnotatedElement[]
-}
+// Screenshot metadata store — maps normalized file path to capture region info
+// Used by screenshot_click / click_element; miss path hydrates sibling .meta.json
 const screenshotMetaMap = new Map<string, ScreenshotMeta>()
 let lastScreenshotPath = ''
 let lastAnnotatedPath = ''
@@ -1087,7 +1064,7 @@ $hwndOut = if ($hwndCapture -ne [IntPtr]::Zero) { $hwndCapture.ToInt64() } else 
         captureW: capW || imageW, captureH: capH || imageH,
         imageW, imageH,
       }
-      screenshotMetaMap.set(filePath, meta)
+      setScreenshotMeta(screenshotMetaMap, filePath, meta)
       lastScreenshotPath = filePath
 
       // UIA annotation: detect interactive elements and draw numbered markers
@@ -1390,7 +1367,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
           }
           if (elements.length > 0) {
             meta.elements = elements
-            screenshotMetaMap.set(filePath, meta)
+            setScreenshotMeta(screenshotMetaMap, filePath, meta)
             lastAnnotatedPath = filePath
           }
           const uiaCount = elements.filter(e => e.source === 'UIA' || e.source === 'OCR_UIA').length
@@ -1484,7 +1461,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
       if (!ssPath) {
         return { isError: true, content: [{ type: 'text', text: 'No screenshot taken yet. Take a screenshot first.' }] }
       }
-      const meta = screenshotMetaMap.get(ssPath)
+      const meta = getScreenshotMeta(screenshotMetaMap, ssPath)
       if (!meta) {
         return { isError: true, content: [{ type: 'text', text: `No metadata found for screenshot: ${ssPath}. Take a new screenshot first.` }] }
       }
@@ -1949,11 +1926,23 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
     },
     async (args) => {
       const elemNum = sn(args.number)
-      const ssPath = (args.screenshotPath as string) || lastAnnotatedPath
+      const requestedPath = typeof args.screenshotPath === 'string' ? args.screenshotPath.trim() : ''
+      let ssPath = requestedPath || lastAnnotatedPath
+      let usedLastAnnotated = false
       if (!ssPath) {
         return { isError: true, content: [{ type: 'text', text: 'No annotated screenshot available. Take a screenshot with annotate=true first.' }] }
       }
-      const meta = screenshotMetaMap.get(ssPath)
+      let meta = getScreenshotMeta(screenshotMetaMap, ssPath)
+      // Last resort: requested path miss, but session lastAnnotated still has elements.
+      // Prefer hydrate of the requested path; do not silently click a different image unless noted.
+      if ((!meta || !meta.elements || meta.elements.length === 0) && requestedPath && lastAnnotatedPath) {
+        const lastMeta = getScreenshotMeta(screenshotMetaMap, lastAnnotatedPath)
+        if (lastMeta?.elements && lastMeta.elements.length > 0) {
+          meta = lastMeta
+          ssPath = lastAnnotatedPath
+          usedLastAnnotated = true
+        }
+      }
       if (!meta || !meta.elements || meta.elements.length === 0) {
         // Vision-grounding fallback: UIA element tree is empty for this screenshot
         try {
@@ -1972,6 +1961,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
         } catch { /* vision fallback failed — return original error */ }
         return { isError: true, content: [{ type: 'text', text: `No annotated elements found for: ${ssPath}. Take a new screenshot with annotate=true.` }] }
       }
+      const usedLastAnnotatedNote = usedLastAnnotated ? ' usedLastAnnotated=true' : ''
       const element = meta.elements.find(e => e.number === elemNum)
       if (!element) {
         const available = meta.elements.map(e => `[${e.number}] "${e.name}"`).join(', ')
@@ -2118,7 +2108,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
             return {
               content: [{
                 type: 'text',
-                text: `Clicked [${elemNum}] "${element.name}" via method=${uiaResult.method} (native UIA, cursor unchanged).${verifyText}`,
+                text: `Clicked [${elemNum}] "${element.name}" via method=${uiaResult.method} (native UIA, cursor unchanged).${verifyText}${usedLastAnnotatedNote}`,
               }],
             }
           }
@@ -2182,7 +2172,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
         return {
           content: [{
             type: 'text',
-            text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${hidClickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};fgTitle=${after.foregroundTitle};elementGone=${localProbe.elementGone};outsideName=${localProbe.targetNameOutsideSelection})${beforeHint}\n\nVerification image: ${verifyImgPath}`,
+            text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${hidClickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};fgTitle=${after.foregroundTitle};elementGone=${localProbe.elementGone};outsideName=${localProbe.targetNameOutsideSelection})${beforeHint}${usedLastAnnotatedNote}\n\nVerification image: ${verifyImgPath}`,
           }],
         }
       }
@@ -2191,7 +2181,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
       return {
         content: [{
           type: 'text',
-          text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText})${uiaTitleDetail}\n\nVerification image: ${verifyImgPath}\nShows 300x300 region centered on click with RED crosshair. Use Read tool to confirm it hit the right target.`,
+          text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText})${uiaTitleDetail}${usedLastAnnotatedNote}\n\nVerification image: ${verifyImgPath}\nShows 300x300 region centered on click with RED crosshair. Use Read tool to confirm it hit the right target.`,
         }],
       }
     },
@@ -2259,7 +2249,7 @@ Write-Output $outPath
       }
 
       // Get capture region from meta if available, otherwise full screen
-      const meta = screenshotMetaMap.get(ssPath)
+      const meta = getScreenshotMeta(screenshotMetaMap, ssPath)
       const captureRegion = meta
         ? { x: meta.captureX, y: meta.captureY, w: meta.captureW, h: meta.captureH }
         : undefined
@@ -2497,7 +2487,7 @@ Write-Output "scrolled"
         if (!ssPath) {
           return { isError: true, content: [{ type: 'text', text: 'No annotated screenshot available for keyboard target. Take screenshot(annotate=true) first or click_element before typing.' }] }
         }
-        const meta = screenshotMetaMap.get(ssPath)
+        const meta = getScreenshotMeta(screenshotMetaMap, ssPath)
         if (!meta?.elements || meta.elements.length === 0) {
           return { isError: true, content: [{ type: 'text', text: `No annotated elements found for: ${ssPath}` }] }
         }
@@ -3039,7 +3029,7 @@ Write-Output "$outFile|$imgW|$imgH"
         captureW: zw, captureH: zh,
         imageW, imageH,
       }
-      screenshotMetaMap.set(filePath, meta)
+      setScreenshotMeta(screenshotMetaMap, filePath, meta)
       lastScreenshotPath = filePath
 
       let elementListText = ''
@@ -3259,7 +3249,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
           }
           if (elements.length > 0) {
             meta.elements = elements
-            screenshotMetaMap.set(filePath, meta)
+            setScreenshotMeta(screenshotMetaMap, filePath, meta)
             lastAnnotatedPath = filePath
           }
           const uiaCount = elements.filter(e => e.source === 'UIA' || e.source === 'OCR_UIA').length
@@ -3332,7 +3322,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
         return { isError: true, content: [{ type: 'text', text: `File not found: ${screenshotPath}` }] }
       }
 
-      const meta = screenshotMetaMap.get(screenshotPath)
+      const meta = getScreenshotMeta(screenshotMetaMap, screenshotPath)
       const elements = meta?.elements ?? []
 
       const highlightNumber = args.highlightNumber != null ? sn(args.highlightNumber) : 0
