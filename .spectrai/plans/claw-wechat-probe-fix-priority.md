@@ -17,6 +17,7 @@
 | **P3.7** | **灰/黑屏：跟窗截屏参数 + 少动已可见窗口（去掉二次 ShowWindow(5)）** | ✅ `6aa43bd` |
 | **P3.8** | **整窗灰：restore 后重绘 + 近单色→PrintWindow，仍灰报 capture_blank** | ✅ `033afdf` |
 | **P3.9** | **非点击/托盘隐藏恢复：`!visible` 也 Show+Repaint；follow 近灰→PrintWindow** | ✅ `a8fc624` |
+| **P3.10** | **annotated 缓存：path normalize + miss 时 hydrate `.meta.json`** | ✅ `9090983` |
 | P4 | Swift daemon / 纯视觉主导 | 暂缓 |
 | Sync | store → claudeops builtin-mcps（`npm run sync:builtin-claw`） | ✅ 产物已就位（gitignore，打包前再跑） |
 | Pack | claudeops 打安装包 | ⬅️ 待你确认再打 |
@@ -147,10 +148,19 @@
 1. focus：`iconic || visible===false` → `SW_RESTORE(9)` + `RepaintAfterRestore`
 2. follow 截屏：`isSuspiciousBlankCapture`（near-mono **或** uniq≤256∧var≤200）→ 试 PrintWindow；硬失败仍只认 near-mono
 
+### P3.10 — annotated 缓存 miss ✅ `9090983`
+探活：不传 `screenshotPath` ✅；传 path ❌ `No annotated elements`。
+
+根因：`screenshotMetaMap` 路径精确匹配；已写 `.meta.json` 却从不回填。
+
+已落地：
+1. `normalizeScreenshotMetaKey`（resolve + `/`；Win 再 lower）
+2. miss → sibling `.meta.json` hydrate
+3. click/keyboard/screenshot_click/zoom/hud 统一 lookup；path 仍 miss 可用 `lastAnnotatedPath` 兜底并标注 `usedLastAnnotated=true`
+
 ### 下一刀候选（按阻塞度）
-1. **annotated 缓存** ← 仍阻塞：`screenshotPath` 强绑会 miss；不传 path 可用
-2. **激活后验假阳** ← 搜索面板关闭也会 `elementGone`，会话未切到目标
-3. **可选残留**：默认 `followForeground` / 实机复测 P3.9 非点击拉起
+1. **激活后验假阳** ← 搜索面板关闭也会 `elementGone`，会话未切到目标
+2. **可选残留**：默认 `followForeground` / 实机复测 P3.9 非点击拉起 / P3.10 传 path 复测
 
 ## 非目标
 
