@@ -209,6 +209,16 @@ Contains 搜索 chrome Text 不再假阳。
 - ⏳ P3.12 后假阳实机对照：待微信 UI 稳定后补一次
 - 可选残留：follow* 偏屏；空 selector DEFAULT；搜索结果选错启发式
 
+### 决策备忘：为何「有识图/坐标」仍像点不准
+探活结论：**多数不是像素偏了，而是点错语义目标 / 验成了假成功 / 路径没走 HID 坐标。**
+1. 标注号 ≠ 业务目标：同名「懵逼三人组」可在「最常使用」或「搜索网络结果」；点错进搜一搜
+2. `click_element` 左键单击优先 `uiaInvoke/uiaSelect`，不是总按 `screenX/Y` 物理点；双击才常落 `hidMouse`
+3. 后验假阳（P3.11/12）：`elementGone` / Contains outsideName → 工具报 verified，会话未切
+4. OCR 中心点 ≠ 可点控件中心（已有 OCR→UIA 锚定，但纯 OCR 仍可能偏）
+5. 焦点/遮挡：侧栏搜一搜、灰屏、`focus_failed` 会让“坐标对了也点不到目标窗”
+
+→ 下一刀仍优先 **验准 + 选对项**，不是再堆识图分辨率。
+
 ### 下一刀候选（按阻塞度）
 1. **微信 UI 恢复后补 P3.12 对照冒烟**（网络同名不应 verified；最常使用开群仍 verified）
 2. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9；搜索结果选错（网络 vs 会话）启发式
