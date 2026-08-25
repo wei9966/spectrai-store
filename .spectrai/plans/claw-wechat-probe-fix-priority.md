@@ -18,6 +18,8 @@
 | **P3.8** | **整窗灰：restore 后重绘 + 近单色→PrintWindow，仍灰报 capture_blank** | ✅ `033afdf` |
 | **P3.9** | **非点击/托盘隐藏恢复：`!visible` 也 Show+Repaint；follow 近灰→PrintWindow** | ✅ `a8fc624` |
 | **P3.10** | **annotated 缓存：path normalize + miss 时 hydrate `.meta.json`** | ✅ `9090983` |
+| **P3.13** | **follow\* 截屏跟窗裁剪（GetWindowRect → screen → primary）** | ✅ `a2b1444` |
+| **P3.14** | **浏览器 find/action 空 selector 禁止 DEFAULT 假命中** | ✅ `a2b1444` |
 | P4 | Swift daemon / 纯视觉主导 | 暂缓 |
 | Sync | store → claudeops builtin-mcps（`npm run sync:builtin-claw`） | ✅ 产物已就位（gitignore，打包前再跑） |
 | Pack | claudeops 打安装包 | ⬅️ 待你确认再打 |
@@ -214,7 +216,8 @@ Contains 搜索 chrome Text 不再假阳。
 - ✅ 开群主路径可用（点「最常使用」会话，勿点「搜索网络结果」）
 - ✅ P3.11/P3.12 激活后验假阳代码已合 main，**实机对照已过**
 - ✅ 群消息发送成功（黑色幽默 AI 风格）；`Wanne be`「你好」+ 群内 Token 充满消息均已落地
-- 可选残留：follow* 偏屏；空 selector DEFAULT；搜索结果选错启发式；灰窗时优先托盘/任务栏点击，仍灰再启动同 exe 激活，**勿杀进程**
+- ✅ P3.13/P3.14 已合 main（`a2b1444`）：follow 跟窗裁剪 + 空 selector 禁 DEFAULT
+- 可选残留：搜索结果选错启发式；灰窗时优先托盘/任务栏点击，仍灰再启动同 exe 激活，**勿杀进程**；托盘坐标 × DPI
 
 ### 决策备忘：为何「有识图/坐标」仍像点不准
 探活结论：**多数不是像素偏了，而是点错语义目标 / 验成了假成功 / 路径没走 HID 坐标。**
@@ -244,11 +247,30 @@ Contains 搜索 chrome Text 不再假阳。
 5. 搜「懵逼三人组」→ 双击「最常使用」`懵逼三人组-下一站翻身` → 输入框可用；发送：`Token已经充满，灵魂还差半格。AI值班中，人类请自觉排队被收。` → 消息列表 `12:54` 可见 ✅
 6. 踩坑：托盘坐标漏乘 DPI 会点到 PixPin；「搜索网络结果」同名项仍勿点
 
+### P3.13 — follow* 跟窗裁剪 ✅ `a2b1444`
+探活：`followWindowTitle` / `followHandle` 偏整屏/主屏，区域截才稳。
+
+落地：
+1. `followWindow` 优先 `GetWindowRect` 裁窗体；无效再退该窗 Screen / primary
+2. 纯函数 `resolveFollowTargetCaptureBounds({ windowRect, windowScreen, primaryScreen })`
+3. schema 文案改为 capture the **window**（fallback to its screen）
+
+### P3.14 — 空 selector 禁 DEFAULT ✅ `a2b1444`
+探活：`{}` / `{css:""}` find/action 仍 DEFAULT 命中首页首链。
+
+落地：
+1. find/action：无可用定位字段 → `candidates=[]` + `empty_selector` / `unresolved_locator_intent`
+2. snapshot 仍可 DEFAULT 列可点元素（不误伤读树）
+3. 空白字符串不算 `hasResolvedLocatorFields`
+
+门禁：`desktop-action-guards` + `selector-normalize` **39/39**。
+
 ### 下一刀候选（按阻塞度）
-1. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9；搜索结果选错（网络 vs 会话）启发式
+1. **搜索结果选错启发式**（网络「搜一搜」vs「最常使用」会话）——通用，勿写微信特化 AutomationId
 2. 灰窗运维：优先任务栏/托盘点击；仍灰时可再启动同路径 exe 激活实例，**不要杀进程**；避免死磕 ShowWindow
 3. Electron/SpectrAI：若要稳定点侧栏，优先 OCR/坐标路径，别等 UIA 树
-4. 托盘点击：Win32 逻辑坐标 × DPI（本机 1.5）再喂给 HID
+4. 托盘点击：Win32 逻辑坐标 × DPI（本机 1.5）再喂给 HID；可考虑 HID 坐标统一 DPI 换算
+5. 实机复测 P3.13 follow 跟窗裁剪（微信/SpectrAI）
 
 ## 非目标
 
