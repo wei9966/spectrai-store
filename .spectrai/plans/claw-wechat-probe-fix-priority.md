@@ -193,18 +193,12 @@
 2. `keyboard_type` 写入 `spectrai-claw-smoke-ok` 到聊天输入 ✅
 3. 说明：**主路径可用**；此前“打不开群”有一半是点到了网络搜一搜结果，不只是后验假阳
 
-### P3.12 — outsideName 再收紧（Text/Contains 假阳）← **进行中**
-根因：`activationOutsideNameHit` 对 Text 允许 `Name.Contains(target)`；搜索 chrome「目标 - 搜一搜」恒命中。
-
-修法（最小、通用）：
-1. outsideName：**默认要求 name 精确等于 target**（`===` / `-eq`），禁止靠 Contains 吃搜索标题
-2. 可选放宽：仅 `Window|Pane|Header|TitleBar` 允许 Contains；**Text 必须精确相等**
-3. 同步 `probeActivationLocalEvidence` + UIA 两处脚本
-4. 单测：`Text「Session - Search」` Contains → false；`Text「Session」` exact → true
-5. 门禁 `desktop-action-guards` 全绿
+### P3.12 — outsideName 再收紧（Text/Contains 假阳）✅ `bd2d7e7`
+落地：outsideName **一律 exact**（`===` / `-eq`）；PowerShell 三处对齐；门禁 **30/30**。
+Contains 搜索 chrome Text 不再假阳。
 
 ### 下一刀候选（按阻塞度）
-1. **P3.12 outsideName Text/Contains 假阳** ← 合完再冒烟核对假阳是否消失
+1. **P3.12 后冒烟** ← 本轮：网络搜一搜同名应不再 verified；最常使用开群仍可用
 2. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9；搜索结果选错（网络 vs 会话）可后续做通用启发式
 
 ## 非目标
