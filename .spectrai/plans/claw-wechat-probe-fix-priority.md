@@ -16,6 +16,7 @@
 | **P3.6** | **桌面激活后验：title 不变时认通用局部证据（elementGone / 非 selection 名命中）** | ✅ `be41540` |
 | **P3.7** | **灰/黑屏：跟窗截屏参数 + 少动已可见窗口（去掉二次 ShowWindow(5)）** | ✅ `6aa43bd` |
 | **P3.8** | **整窗灰：restore 后重绘 + 近单色→PrintWindow，仍灰报 capture_blank** | ✅ `033afdf` |
+| **P3.9** | **非点击/托盘隐藏恢复：`!visible` 也 Show+Repaint；follow 近灰→PrintWindow** | ✅ `a8fc624` |
 | P4 | Swift daemon / 纯视觉主导 | 暂缓 |
 | Sync | store → claudeops builtin-mcps（`npm run sync:builtin-claw`） | ✅ 产物已就位（gitignore，打包前再跑） |
 | Pack | claudeops 打安装包 | ⬅️ 待你确认再打 |
@@ -136,11 +137,20 @@
 6. 过程中微信主窗曾变不可见（托盘/隐藏），`window_focus(title)` 一度 `window_not_found`；强制 `ShowWindow` 后恢复，但 region 截图像近灰（uniq≈149）/UIA=0
 7. 另启 `Weixin.exe` 拉起登录窗（未继续乱点发消息）
 
+### P3.9 — 非点击/托盘隐藏恢复后灰屏 ✅ `a8fc624`
+用户观察对齐：点击进前台通常不灰；`Start-Process` / 裸 Show / 托盘隐藏后再 focus 容易灰。
+
+根因：旧策略只在 `IsIconic` 时 Show+Repaint；托盘隐藏常见 `visible=false && iconic=false`。
+次因：PrintWindow 只认 near-mono（uniq≤4）；恢复后近灰 uniq≈149 不触发。
+
+已落地（通用）：
+1. focus：`iconic || visible===false` → `SW_RESTORE(9)` + `RepaintAfterRestore`
+2. follow 截屏：`isSuspiciousBlankCapture`（near-mono **或** uniq≤256∧var≤200）→ 试 PrintWindow；硬失败仍只认 near-mono
+
 ### 下一刀候选（按阻塞度）
 1. **annotated 缓存** ← 仍阻塞：`screenshotPath` 强绑会 miss；不传 path 可用
-2. **激活后验假阳** ← 新证据：`elementGone`/`outsideName` 在搜索面板关闭时也会 true，但会话未切到目标；需更严证据（顶栏非 selection 文本 / 输入框上下文名）
-3. **跟窗/DPI/隐藏窗恢复后截屏** ← 偶发近灰或截到错屏；`follow*` 解析 HWND 后仍要稳定重绘
-4. **可选残留**：默认 `followForeground`
+2. **激活后验假阳** ← 搜索面板关闭也会 `elementGone`，会话未切到目标
+3. **可选残留**：默认 `followForeground` / 实机复测 P3.9 非点击拉起
 
 ## 非目标
 
