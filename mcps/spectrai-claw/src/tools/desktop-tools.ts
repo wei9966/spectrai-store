@@ -602,7 +602,8 @@ try {
                     try {
                       $el = $desc.Item($i)
                       $nm = [string]$el.Current.Name
-                      if (-not $nm -or -not $nm.Contains($targetName)) { continue }
+                      # Keep aligned with activationOutsideNameHit: exact name only (Contains hits search chrome).
+                      if (-not $nm -or ($nm.Trim() -ne $targetName.Trim())) { continue }
                       $ctShort = ([string]$el.Current.ControlType.ProgrammaticName) -replace '^ControlType\\.', ''
                       # Keep aligned with isActivationOutsideNameControl: exclude selection + query containers.
                       if ($ctShort -notmatch '^(ListItem|TreeItem|TabItem|MenuItem|Edit|Document|ComboBox)$') { $outsideName = $true; break }
@@ -651,7 +652,8 @@ try {
                   try {
                     $el = $desc.Item($i)
                     $nm = [string]$el.Current.Name
-                    if (-not $nm -or -not $nm.Contains($targetName)) { continue }
+                    # Keep aligned with activationOutsideNameHit: exact name only (Contains hits search chrome).
+                    if (-not $nm -or ($nm.Trim() -ne $targetName.Trim())) { continue }
                     $ctShort = ([string]$el.Current.ControlType.ProgrammaticName) -replace '^ControlType\\.', ''
                     # Keep aligned with isActivationOutsideNameControl: exclude selection + query containers.
                     if ($ctShort -notmatch '^(ListItem|TreeItem|TabItem|MenuItem|Edit|Document|ComboBox)$') { $outsideName = $true; break }
@@ -1772,7 +1774,8 @@ try {
               if ($dist -le 48 -and $sizeOk) { $foundOriginal = $true }
             }
           }
-          if (-not $outsideHit -and $targetName -and $nm -and $nm.Contains($targetName)) {
+          # Keep aligned with activationOutsideNameHit: exact name only (Contains hits search chrome).
+          if (-not $outsideHit -and $targetName -and $nm -and ($nm.Trim() -eq $targetName.Trim())) {
             # Keep aligned with isActivationOutsideNameControl: exclude selection + query containers (Edit residual ≠ activate).
             if ($ctShort -notmatch '^(ListItem|TreeItem|TabItem|MenuItem|Edit|Document|ComboBox)$') {
               $outsideHit = $true

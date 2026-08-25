@@ -40,11 +40,12 @@ export function isActivationOutsideNameControl(controlType) {
         return false;
     return true;
 }
-/** Pure outsideName hit: name contains target on a non-selection, non-query control. */
+/** Pure outsideName hit: exact name match on a non-selection, non-query control. */
 export function activationOutsideNameHit(input) {
     const target = String(input.targetName || '').trim();
-    const name = String(input.name || '');
-    if (!target || !name.includes(target))
+    const name = String(input.name || '').trim();
+    // ponytail: exact-only; Contains on Text hits search chrome ("X - Search"). Upgrade: Window/Pane includes if real titles are prefixed.
+    if (!target || name !== target)
         return false;
     return isActivationOutsideNameControl(input.controlType);
 }

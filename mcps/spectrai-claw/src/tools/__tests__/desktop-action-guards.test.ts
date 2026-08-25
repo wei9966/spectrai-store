@@ -318,7 +318,7 @@ describe('isActivationOutsideNameControl / activationOutsideNameHit', () => {
     )
   })
 
-  it('Text/Pane/Window name containing target is an outsideName hit', () => {
+  it('exact Text/Pane/Window name is an outsideName hit; Contains search chrome is not', () => {
     assert.equal(
       activationOutsideNameHit({
         controlType: 'Text',
@@ -329,8 +329,24 @@ describe('isActivationOutsideNameControl / activationOutsideNameHit', () => {
     )
     assert.equal(
       activationOutsideNameHit({
+        controlType: 'Text',
+        name: 'Session Row - Search',
+        targetName: 'Session Row',
+      }),
+      false,
+    )
+    assert.equal(
+      activationOutsideNameHit({
         controlType: 'Pane',
         name: 'chat Session Row',
+        targetName: 'Session Row',
+      }),
+      false,
+    )
+    assert.equal(
+      activationOutsideNameHit({
+        controlType: 'Pane',
+        name: 'Session Row',
         targetName: 'Session Row',
       }),
       true,

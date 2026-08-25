@@ -37,7 +37,7 @@ export declare function localActivationStateChanged(before: ElementLocalState, a
  * Excludes selection rows and query containers (Edit residual ≠ activated session).
  */
 export declare function isActivationOutsideNameControl(controlType?: string): boolean;
-/** Pure outsideName hit: name contains target on a non-selection, non-query control. */
+/** Pure outsideName hit: exact name match on a non-selection, non-query control. */
 export declare function activationOutsideNameHit(input: {
     controlType?: string;
     name?: string;
