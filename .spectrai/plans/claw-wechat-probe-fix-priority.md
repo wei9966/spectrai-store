@@ -20,6 +20,7 @@
 | **P3.10** | **annotated 缓存：path normalize + miss 时 hydrate `.meta.json`** | ✅ `9090983` |
 | **P3.13** | **follow\* 截屏跟窗裁剪（GetWindowRect → screen → primary）** | ✅ `a2b1444` |
 | **P3.14** | **浏览器 find/action 空 selector 禁止 DEFAULT 假命中** | ✅ `a2b1444` |
+| **P3.15** | **搜索结果选错启发式：同名本地会话优先于网络搜一搜** | ✅ |
 | P4 | Swift daemon / 纯视觉主导 | 暂缓 |
 | Sync | store → claudeops builtin-mcps（`npm run sync:builtin-claw`） | ✅ 产物已就位（gitignore，打包前再跑） |
 | Pack | claudeops 打安装包 | ⬅️ 待你确认再打 |
@@ -219,7 +220,7 @@ Contains 搜索 chrome Text 不再假阳。
 - ✅ P3.13/P3.14 已合 main（`a2b1444`）：follow 跟窗裁剪 + 空 selector 禁 DEFAULT
 - ✅ **自测验收（2026-08-25 13:14）已过**（见下）
 - ✅ **最新 Claw 已打进软件资源/本机会话**（见「打包集成」）
-- 可选残留：搜索结果选错启发式；灰窗时优先托盘/任务栏点击，仍灰再启动同 exe 激活，**勿杀进程**；托盘坐标 × DPI
+- 可选残留：灰窗时优先托盘/任务栏点击，仍灰再启动同 exe 激活，**勿杀进程**；托盘坐标 × DPI
 
 ### 决策备忘：为何「有识图/坐标」仍像点不准
 探活结论：**多数不是像素偏了，而是点错语义目标 / 验成了假成功 / 路径没走 HID 坐标。**
@@ -279,7 +280,16 @@ Contains 搜索 chrome Text 不再假阳。
 | 开群主路径 | ✅ | `chat_message_page` + 输入框可用，未灰 |
 | 群消息验收 | ✅ `13:14` | `验收通过：有坐标不等于点得准，先选对项再验真开。AI值班结束前再收你们一次灵魂。` |
 
-本轮**未再落搜索选错启发式代码**：主路径已可人工选「最常使用」；该项仍是可选残留，不是验收阻塞。
+### P3.15 — 搜索结果选错启发式 ✅
+探活：同名目标同时出现在本地/最常使用会话与网络「搜一搜」时，Agent 常点错网络项。
+
+落地（通用软信号，无微信 AutomationId 表）：
+1. `scoreSearchAmbiguity` / `preferLocalSessionOverNetworkSearch`（`click-accuracy.ts`）
+2. 降权：name/aid 含「搜索网络 / 搜一搜 / search the web / web results / search_network…」
+3. 加权：class/name/aid 含 Session/Chat/Conversation/Contact/会话/最常使用 等通用片段
+4. 接线：`elementActionabilityScore` + `rankUiaFindResults._score`；`sortElementsForDisplay` 只改排序、不改 badge number
+
+门禁：`click-accuracy` **12/12**（含同名本地>网络、网络 chrome 降权、普通 Button 中性、无微信特化 ID）。
 
 ### 打包集成（2026-08-25）
 1. `mcps/spectrai-claw` `npm run build` → `0.4.1`（含 P3.11–P3.14）
@@ -288,10 +298,9 @@ Contains 搜索 chrome Text 不再假阳。
 4. `npm run dist:fast` 已出可安装包：`release-fast/dist-20260825-132401/SpectrAI-Setup-0.9.23.exe`（内置 claw `0.4.1`，含 P3.11–P3.14）；本机另装 `SpectrAI Claw Local Latest` 可免重装即时用
 
 ### 下一刀候选（按阻塞度）
-1. **搜索结果选错启发式**（网络「搜一搜」vs「最常使用」会话）——通用，勿写微信特化 AutomationId
-2. 灰窗运维：优先任务栏/托盘点击；仍灰时可再启动同路径 exe 激活实例，**不要杀进程**；避免死磕 ShowWindow
+1. 灰窗运维：优先任务栏/托盘点击；仍灰时可再启动同路径 exe 激活实例，**不要杀进程**；避免死磕 ShowWindow
+2. 托盘点击：Win32 逻辑坐标 × DPI（本机 1.5）再喂给 HID；可考虑 HID 坐标统一 DPI 换算（仍可选）
 3. Electron/SpectrAI：若要稳定点侧栏，优先 OCR/坐标路径，别等 UIA 树
-4. 托盘点击：Win32 逻辑坐标 × DPI（本机 1.5）再喂给 HID；可考虑 HID 坐标统一 DPI 换算
 
 ## 非目标
 

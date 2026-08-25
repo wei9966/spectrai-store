@@ -37,7 +37,7 @@ import { visionLocate } from './vision-grounding.js';
 import { renderHud } from './hud-renderer.js';
 import { inferElementCapability } from '../computer-use/providers/windows/uia-mapper.js';
 import { activationEvidenceMatches, classifyForegroundResult, interpretActivatableHidVerify, interpretActivatableSelectVerify, isActivatableSelectionItem, NEAR_MONO_MAX_LUMINANCE_VARIANCE, NEAR_MONO_MAX_UNIQUE, resolveCaptureBlankDecision, resolveHidClickTypeForActivatable, resolveScreenshotCaptureMode, shouldFallbackClickAfterUia, SUSPICIOUS_BLANK_MAX_LUMINANCE_VARIANCE, SUSPICIOUS_BLANK_MAX_UNIQUE, } from './desktop-action-guards.js';
-import { isUiaElementCandidate, parseAnnotatedSource, } from './click-accuracy.js';
+import { isUiaElementCandidate, parseAnnotatedSource, scoreSearchAmbiguity, } from './click-accuracy.js';
 import { getScreenshotMeta, setScreenshotMeta, } from './screenshot-meta.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -85,6 +85,8 @@ function elementActionabilityScore(el) {
         score -= 40;
     if (el.name && el.name.trim())
         score += 5;
+    // P3.15: same-label local session > network "search the web" chrome
+    score += scoreSearchAmbiguity(el);
     return score;
 }
 // Stable sort that surfaces natively-actionable elements first while preserving the
@@ -137,6 +139,13 @@ function rankUiaFindResults(stdout) {
             score -= 50;
         if (it.IsEnabled === false)
             score -= 40;
+        // P3.15: uia_find_element same-name hits prefer local/session over network search
+        score += scoreSearchAmbiguity({
+            name: typeof it.Name === 'string' ? it.Name : undefined,
+            className: typeof it.ClassName === 'string' ? it.ClassName : undefined,
+            automationId: typeof it.AutomationId === 'string' ? it.AutomationId : undefined,
+            controlType: typeof it.ControlType === 'string' ? it.ControlType : undefined,
+        });
         return { ...it, Patterns: patterns, supportedActions: cap.supportedActions, actionable, _score: score };
     });
     annotated.sort((a, b) => b._score - a._score);

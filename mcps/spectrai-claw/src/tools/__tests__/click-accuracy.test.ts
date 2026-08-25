@@ -6,6 +6,8 @@ import {
   ocrUiaNeighborThreshold,
   parseAnnotatedSource,
   preferClickablePoint,
+  preferLocalSessionOverNetworkSearch,
+  scoreSearchAmbiguity,
 } from '../click-accuracy.js'
 
 describe('ocrUiaNeighborThreshold', () => {
@@ -88,5 +90,52 @@ describe('preferClickablePoint', () => {
       preferClickablePoint({ x: 11, y: 22, ok: false }, { x: 100, y: 200 }),
       { x: 100, y: 200 },
     )
+  })
+})
+
+describe('scoreSearchAmbiguity / preferLocalSessionOverNetworkSearch (P3.15)', () => {
+  it('ranks same-name local session above network search chrome', () => {
+    const local = {
+      name: '懵逼三人组',
+      className: 'ChatSessionListItem',
+      automationId: 'session_row_42',
+      controlType: 'ControlType.ListItem',
+    }
+    const network = {
+      name: '懵逼三人组',
+      className: 'SearchResultRow',
+      automationId: 'search_web_hit_1',
+      controlType: 'ControlType.ListItem',
+    }
+    assert.ok(scoreSearchAmbiguity(local) > scoreSearchAmbiguity(network))
+    assert.ok(preferLocalSessionOverNetworkSearch(local, network) < 0)
+  })
+
+  it('demotes labels that are themselves network-search chrome', () => {
+    assert.ok(scoreSearchAmbiguity({ name: '搜索网络结果' }) < 0)
+    assert.ok(scoreSearchAmbiguity({ name: '懵逼三人组 - 搜一搜' }) < 0)
+    assert.ok(scoreSearchAmbiguity({ name: 'Search the web' }) < 0)
+    assert.ok(scoreSearchAmbiguity({ automationId: 'search_network_panel' }) < 0)
+  })
+
+  it('leaves ordinary buttons near neutral', () => {
+    assert.equal(scoreSearchAmbiguity({ name: 'OK', controlType: 'ControlType.Button' }), 0)
+    assert.equal(
+      scoreSearchAmbiguity({
+        name: 'Save',
+        className: 'Button',
+        automationId: 'btnSave',
+        controlType: 'ControlType.Button',
+      }),
+      0,
+    )
+  })
+
+  it('works from generic class/name cues without WeChat-specific AutomationIds', () => {
+    const local = { name: 'Team standup', className: 'ConversationCell' }
+    const network = { name: 'Team standup', automationId: 'web_results_item' }
+    assert.ok(scoreSearchAmbiguity(local) > 0)
+    assert.ok(scoreSearchAmbiguity(network) < 0)
+    assert.ok(scoreSearchAmbiguity(local) > scoreSearchAmbiguity(network))
   })
 })

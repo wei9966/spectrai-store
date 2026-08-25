@@ -54,6 +54,7 @@ import {
 import {
   isUiaElementCandidate,
   parseAnnotatedSource,
+  scoreSearchAmbiguity,
 } from './click-accuracy.js'
 import {
   getScreenshotMeta,
@@ -127,6 +128,8 @@ function elementActionabilityScore(el: AnnotatedElement): number {
   if (cap.backgroundType) score += 10
   if (el.isEnabled === false) score -= 40
   if (el.name && el.name.trim()) score += 5
+  // P3.15: same-label local session > network "search the web" chrome
+  score += scoreSearchAmbiguity(el)
   return score
 }
 
@@ -177,6 +180,13 @@ function rankUiaFindResults(stdout: string): string {
     if (actionable) score += 100
     if (it.IsOffscreen === true) score -= 50
     if (it.IsEnabled === false) score -= 40
+    // P3.15: uia_find_element same-name hits prefer local/session over network search
+    score += scoreSearchAmbiguity({
+      name: typeof it.Name === 'string' ? it.Name : undefined,
+      className: typeof it.ClassName === 'string' ? it.ClassName : undefined,
+      automationId: typeof it.AutomationId === 'string' ? it.AutomationId : undefined,
+      controlType: typeof it.ControlType === 'string' ? it.ControlType : undefined,
+    })
     return { ...it, Patterns: patterns, supportedActions: cap.supportedActions, actionable, _score: score }
   })
   annotated.sort((a, b) => b._score - a._score)
