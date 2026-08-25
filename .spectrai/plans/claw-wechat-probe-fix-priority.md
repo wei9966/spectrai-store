@@ -218,6 +218,7 @@ Contains 搜索 chrome Text 不再假阳。
 - ✅ 群消息发送成功（黑色幽默 AI 风格）；`Wanne be`「你好」+ 群内 Token 充满消息均已落地
 - ✅ P3.13/P3.14 已合 main（`a2b1444`）：follow 跟窗裁剪 + 空 selector 禁 DEFAULT
 - ✅ **自测验收（2026-08-25 13:14）已过**（见下）
+- ✅ **最新 Claw 已打进软件资源/本机会话**（见「打包集成」）
 - 可选残留：搜索结果选错启发式；灰窗时优先托盘/任务栏点击，仍灰再启动同 exe 激活，**勿杀进程**；托盘坐标 × DPI
 
 ### 决策备忘：为何「有识图/坐标」仍像点不准
@@ -279,6 +280,12 @@ Contains 搜索 chrome Text 不再假阳。
 | 群消息验收 | ✅ `13:14` | `验收通过：有坐标不等于点得准，先选对项再验真开。AI值班结束前再收你们一次灵魂。` |
 
 本轮**未再落搜索选错启发式代码**：主路径已可人工选「最常使用」；该项仍是可选残留，不是验收阻塞。
+
+### 打包集成（2026-08-25）
+1. `mcps/spectrai-claw` `npm run build` → `0.4.1`（含 P3.11–P3.14）
+2. `claudeops` `npm run sync:builtin-claw` → `resources/builtin-mcps/spectrai-claw` 已含 `resolveFollowTargetCaptureBounds` / `empty_selector`
+3. 本机会话 `install_mcp`：`SpectrAI Claw Local Latest`（`mcp-installed-1787635153892`）指向源仓 `dist/index.js`，空 selector 探活 `element:null` ✅，**无需重启即可用**
+4. `npm run pack:fast` 后台出包（SpectrAI 运行中会切到 `release-fast/dist-<ts>/win-unpacked`）；内置 claw 走 `extraResources: resources/builtin-mcps → builtin-mcps`
 
 ### 下一刀候选（按阻塞度）
 1. **搜索结果选错启发式**（网络「搜一搜」vs「最常使用」会话）——通用，勿写微信特化 AutomationId
