@@ -158,9 +158,25 @@
 2. miss → sibling `.meta.json` hydrate
 3. click/keyboard/screenshot_click/zoom/hud 统一 lookup；path 仍 miss 可用 `lastAnnotatedPath` 兜底并标注 `usedLastAnnotated=true`
 
+## 冒烟复测（2026-08-25，P3.9/P3.10 后）
+
+### 浏览器
+1. `browser_get_capabilities`：9222 available（2 targets）✅
+2. 空 selector：`{css:"   "}` → `null` ✅；但 `{}` / `{css:""}` 仍 DEFAULT 命中首页首链 ⚠️（边界残留）
+3. `{type:'css', value:"a[href='/blog_list']"}` click → `urlChanged` + `urlIncludes` ✅
+4. `a[href*='qwen']` find 命中正确链接 ✅
+
+### 微信 ⚠️ 半通（P3.10 过，激活假阳仍卡）
+1. `window_focus(handle)` ✅；截屏 **不灰**（follow title uniq≈11k；region 正常）
+2. `followWindowTitle` / `followHandle` 仍偏整屏/主屏，**区域截**才稳跟微信窗 ⚠️
+3. 搜「懵逼三人组」→ ListItem 可见 ✅
+4. **`click_element(number, screenshotPath=…)`**（正斜杠/反斜杠）✅ 不再 `No annotated elements` → **P3.10 实机过**
+5. 工具报 `verify=verified`（`elementGone`/`outsideName`）但会话 **未** 切到「懵逼三人组」→ **激活后验假阳仍在**
+6. 未发消息（群未真正打开）
+
 ### 下一刀候选（按阻塞度）
-1. **激活后验假阳** ← 搜索面板关闭也会 `elementGone`，会话未切到目标
-2. **可选残留**：默认 `followForeground` / 实机复测 P3.9 非点击拉起 / P3.10 传 path 复测
+1. **激活后验假阳** ← **下一刀**：搜索面板关闭也会 `elementGone`，会话未切到目标
+2. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9 非点击拉起
 
 ## 非目标
 
