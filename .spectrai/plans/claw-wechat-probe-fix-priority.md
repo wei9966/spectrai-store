@@ -285,7 +285,7 @@ Contains 搜索 chrome Text 不再假阳。
 1. `mcps/spectrai-claw` `npm run build` → `0.4.1`（含 P3.11–P3.14）
 2. `claudeops` `npm run sync:builtin-claw` → `resources/builtin-mcps/spectrai-claw` 已含 `resolveFollowTargetCaptureBounds` / `empty_selector`
 3. 本机会话 `install_mcp`：`SpectrAI Claw Local Latest`（`mcp-installed-1787635153892`）指向源仓 `dist/index.js`，空 selector 探活 `element:null` ✅，**无需重启即可用**
-4. `npm run pack:fast` 后台出包（SpectrAI 运行中会切到 `release-fast/dist-<ts>/win-unpacked`）；内置 claw 走 `extraResources: resources/builtin-mcps → builtin-mcps`
+4. `npm run dist:fast` 已出可安装包：`release-fast/dist-20260825-132401/SpectrAI-Setup-0.9.23.exe`（内置 claw `0.4.1`，含 P3.11–P3.14）；本机另装 `SpectrAI Claw Local Latest` 可免重装即时用
 
 ### 下一刀候选（按阻塞度）
 1. **搜索结果选错启发式**（网络「搜一搜」vs「最常使用」会话）——通用，勿写微信特化 AutomationId
