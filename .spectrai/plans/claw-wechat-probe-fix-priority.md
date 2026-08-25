@@ -197,9 +197,21 @@
 落地：outsideName **一律 exact**（`===` / `-eq`）；PowerShell 三处对齐；门禁 **30/30**。
 Contains 搜索 chrome Text 不再假阳。
 
+### P3.12 后验复测（同轮）⚠️ 环境中断
+1. 合入后 Local Latest 已指向 `mcps/spectrai-claw/dist/index.js`，并 `update_mcp` 刷新
+2. 试图对照：网络搜一搜同名 / 最常使用开群
+3. **阻塞**：搜一搜侧栏（`weixin-search-input` / `懵逼三人组 - 搜一搜`）抢焦点；随后微信主窗多次截到近灰屏（`elementCount=0`），min/restore/Redraw 后仍灰
+4. **结论暂挂实机对照**；代码侧门禁已绿，开群主路径在 P3.12 前已实机打通（`chat_message_page` + 输入 `spectrai-claw-smoke-ok`）
+
+### 当前状态
+- ✅ 开群主路径可用（点「最常使用」会话，勿点「搜索网络结果」）
+- ✅ P3.11/P3.12 激活后验假阳代码已合 main
+- ⏳ P3.12 后假阳实机对照：待微信 UI 稳定后补一次
+- 可选残留：follow* 偏屏；空 selector DEFAULT；搜索结果选错启发式
+
 ### 下一刀候选（按阻塞度）
-1. **P3.12 后冒烟** ← 本轮：网络搜一搜同名应不再 verified；最常使用开群仍可用
-2. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9；搜索结果选错（网络 vs 会话）可后续做通用启发式
+1. **微信 UI 恢复后补 P3.12 对照冒烟**（网络同名不应 verified；最常使用开群仍 verified）
+2. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9；搜索结果选错（网络 vs 会话）启发式
 
 ## 非目标
 
