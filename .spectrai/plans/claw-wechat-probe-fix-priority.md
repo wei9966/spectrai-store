@@ -119,10 +119,28 @@
 4. `click_element(number, screenshotPath=…)` ❌ 仍报 `No annotated elements`（**annotated 缓存仍是阻塞**）
 5. **未继续开群/发消息**（需手机确认登录；避免乱点）
 
+## 冒烟复测（2026-08-25 登录后，网页+微信）
+
+### 浏览器 ✅（再核一轮）
+1. `browser_get_capabilities`：9222 available（2 targets）
+2. 空 selector → `element=null`
+3. `a[href='/blog_list']` click → `urlChanged` + `urlIncludes` 通过
+4. `a[href*='qwen']` find → 命中正确链接；click → `urlChanged` + `urlIncludes=qwen` 通过
+
+### 微信 ⚠️ 半通（登录后仍未稳定开群）
+1. `window_focus` + `followWindowTitle` 截屏前期 ✅ 非灰（uniq≈1600–1800），UIA 可见主界面/`ai 饲料群`
+2. 搜索框可点；`keyboard_type` 搜到 `懵逼三人组` ListItem ✅
+3. `click_element(number=5, clickType=double)` **不传 screenshotPath** ✅ 返回 `verify=verified`（`elementGone=true; outsideName=true`）
+4. 但随后顶栏仍是 `ai 饲料群` ❌ → **激活后验仍可能假阳**（搜索面板关闭也会 `elementGone`）
+5. `click_element(..., screenshotPath=…)` ❌ 仍 `No annotated elements`
+6. 过程中微信主窗曾变不可见（托盘/隐藏），`window_focus(title)` 一度 `window_not_found`；强制 `ShowWindow` 后恢复，但 region 截图像近灰（uniq≈149）/UIA=0
+7. 另启 `Weixin.exe` 拉起登录窗（未继续乱点发消息）
+
 ### 下一刀候选（按阻塞度）
-1. **annotated 缓存** ← 下一刀：`screenshot annotate=true` 后立刻 `click_element(number, screenshotPath)` 仍 miss；需同次返回缓存/别强绑 savePath
-2. **可选残留**：未显式 monitor/region 时默认 `followForeground`（调用方先传参也可）
-3. （已落地）激活证据 / 跟窗截屏 / 整窗灰重绘+PrintWindow：`be41540` `6aa43bd` `033afdf`
+1. **annotated 缓存** ← 仍阻塞：`screenshotPath` 强绑会 miss；不传 path 可用
+2. **激活后验假阳** ← 新证据：`elementGone`/`outsideName` 在搜索面板关闭时也会 true，但会话未切到目标；需更严证据（顶栏非 selection 文本 / 输入框上下文名）
+3. **跟窗/DPI/隐藏窗恢复后截屏** ← 偶发近灰或截到错屏；`follow*` 解析 HWND 后仍要稳定重绘
+4. **可选残留**：默认 `followForeground`
 
 ## 非目标
 
