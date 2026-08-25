@@ -183,24 +183,29 @@
 3. UIA 路径与 `probeActivationLocalEvidence` 对齐；`element_gone` 单独不再 `verified`
 4. 门禁：`desktop-action-guards` **30/30**
 
-### P3.11 冒烟（2026-08-25）⚠️ 仍半通
+### P3.11 冒烟（2026-08-25）⚠️ 仍半通 → 随后打通开群
 1. 搜到 ListItem「懵逼三人组」✅；带 path 双击 ✅ 不再 No annotated
-2. 工具仍 `verify=verified (elementGone=true;outsideName=true)` ❌
-3. 实况：会话未切；侧栏仍有 `Text「懵逼三人组 - 搜一搜」` → **Contains + Text 仍假阳**（P3.11 已排除 Edit/Document，但 Text 过宽）
+2. 点「搜索网络结果」下的精确名「懵逼三人组」→ 进 **搜一搜**，不是会话（易误判）
+3. 侧栏 `Text「懵逼三人组 - 搜一搜」` → Contains outsideName 假阳仍在（P3.12）
 
-### P3.12 — outsideName 再收紧（Text/Contains 假阳）← **下一刀**
+### 冒烟突破（同轮）✅ 开群+输入可用
+1. 点「最常使用」下的 `懵逼三人组-下一站翻身`（双击+path）→ 出现 `chat_message_page` / 顶栏群名 / 输入框 ✅
+2. `keyboard_type` 写入 `spectrai-claw-smoke-ok` 到聊天输入 ✅
+3. 说明：**主路径可用**；此前“打不开群”有一半是点到了网络搜一搜结果，不只是后验假阳
+
+### P3.12 — outsideName 再收紧（Text/Contains 假阳）← **进行中**
 根因：`activationOutsideNameHit` 对 Text 允许 `Name.Contains(target)`；搜索 chrome「目标 - 搜一搜」恒命中。
 
 修法（最小、通用）：
 1. outsideName：**默认要求 name 精确等于 target**（`===` / `-eq`），禁止靠 Contains 吃搜索标题
 2. 可选放宽：仅 `Window|Pane|Header|TitleBar` 允许 Contains；**Text 必须精确相等**
 3. 同步 `probeActivationLocalEvidence` + UIA 两处脚本
-4. 单测：`Text「Session - Search」` Contains → false；`Text「Session」` exact → true；Window Contains 仍可 true（若保留放宽）
+4. 单测：`Text「Session - Search」` Contains → false；`Text「Session」` exact → true
 5. 门禁 `desktop-action-guards` 全绿
 
 ### 下一刀候选（按阻塞度）
-1. **P3.12 outsideName Text/Contains 假阳** ← **本轮**
-2. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9
+1. **P3.12 outsideName Text/Contains 假阳** ← 合完再冒烟核对假阳是否消失
+2. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9；搜索结果选错（网络 vs 会话）可后续做通用启发式
 
 ## 非目标
 
