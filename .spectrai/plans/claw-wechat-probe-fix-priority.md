@@ -174,22 +174,17 @@
 5. 工具报 `verify=verified`（`elementGone`/`outsideName`）但会话 **未** 切到「懵逼三人组」→ **激活后验假阳仍在**
 6. 未发消息（群未真正打开）
 
-### P3.11 — 激活后验假阳（搜索面板关 ≠ 会话已切）← **下一刀**
+### P3.11 — 激活后验假阳（搜索面板关 ≠ 会话已切）✅ `dea5978`
 探活：双击搜到的 ListItem → 工具 `verify=verified (elementGone=true;outsideName=true)`，但会话未切到目标。
 
-根因（通用，不绑微信）：
-1. **`elementGone` 单独当真** — 弹层/搜索列表关掉，行消失 ≠ 目的地激活
-2. **`outsideName` 过宽** — `Name.Contains(target)` 且非 ListItem/TreeItem/… 即算；**搜索框 Edit 仍留着查询词**也会命中
-
-修法（最小、通用）：
-1. selection-like 行：`elementGone` **alone 不算**激活；须叠加更强证据，或干脆不认 lone gone
-2. `targetNameOutsideSelection`：排除 Edit/Document/ComboBox（及同类查询容器）；优先非 selection 的 Text/Window/Pane/Header 等展示位
-3. 仍认：title/fg 含 target、title 变化、非 Selected 的 localStateChanged
-4. 单测覆盖：gone-only → false；Edit 残留查询词 → outsideName false；真 outside Text → true
-5. 同步 UIA 路径与 HID `probeActivationLocalEvidence` / `activationEvidenceMatches`
+落地：
+1. `activationEvidenceMatches`：**lone `elementGone` 不再算激活**
+2. `isActivationOutsideNameControl` / `activationOutsideNameHit`：排除 `Edit|Document|ComboBox`
+3. UIA 路径与 `probeActivationLocalEvidence` 对齐；`element_gone` 单独不再 `verified`
+4. 门禁：`desktop-action-guards` **30/30**
 
 ### 下一刀候选（按阻塞度）
-1. **P3.11 激活后验假阳** ← **本轮**
+1. **实机冒烟确认开群** ← 本轮（P3.11 后）
 2. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9 非点击拉起
 
 ## 非目标
