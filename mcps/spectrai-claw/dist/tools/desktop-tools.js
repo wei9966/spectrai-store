@@ -36,7 +36,7 @@ import { registerTool } from './registry.js';
 import { visionLocate } from './vision-grounding.js';
 import { renderHud } from './hud-renderer.js';
 import { inferElementCapability } from '../computer-use/providers/windows/uia-mapper.js';
-import { activationEvidenceMatches, classifyForegroundResult, interpretActivatableHidVerify, interpretActivatableSelectVerify, isActivatableSelectionItem, NEAR_MONO_MAX_LUMINANCE_VARIANCE, NEAR_MONO_MAX_UNIQUE, resolveCaptureBlankDecision, resolveHidClickTypeForActivatable, resolveScreenshotCaptureMode, shouldFallbackClickAfterUia, } from './desktop-action-guards.js';
+import { activationEvidenceMatches, classifyForegroundResult, interpretActivatableHidVerify, interpretActivatableSelectVerify, isActivatableSelectionItem, NEAR_MONO_MAX_LUMINANCE_VARIANCE, NEAR_MONO_MAX_UNIQUE, resolveCaptureBlankDecision, resolveHidClickTypeForActivatable, resolveScreenshotCaptureMode, shouldFallbackClickAfterUia, SUSPICIOUS_BLANK_MAX_LUMINANCE_VARIANCE, SUSPICIOUS_BLANK_MAX_UNIQUE, } from './desktop-action-guards.js';
 import { isUiaElementCandidate, parseAnnotatedSource, } from './click-accuracy.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -836,9 +836,13 @@ function Get-CaptureColorStats([System.Drawing.Bitmap]$b) {
 $captureSignal = 'ok'
 $pwTried = 0
 $stats = Get-CaptureColorStats $bmp
+# near-mono OR follow-path suspicious near-gray (uniq≈149 after tray restore).
 $nearBlank = ($stats.uniqueColors -le ${NEAR_MONO_MAX_UNIQUE}) -or ($stats.variance -le ${NEAR_MONO_MAX_LUMINANCE_VARIANCE})
+$suspiciousBlank = $nearBlank -or (
+  ($stats.uniqueColors -le ${SUSPICIOUS_BLANK_MAX_UNIQUE}) -and ($stats.variance -le ${SUSPICIOUS_BLANK_MAX_LUMINANCE_VARIANCE})
+)
 # Only blank-detect / PrintWindow when caller asked to follow a window (avoid false fail on solid wallpapers).
-if ($allowPwFallback -and $nearBlank -and $hwndCapture -ne [IntPtr]::Zero) {
+if ($allowPwFallback -and $suspiciousBlank -and $hwndCapture -ne [IntPtr]::Zero) {
   $rw = [CaptureHwnd38]::TryRect($hwndCapture)
   if ($rw -ne $null -and $rw.Length -ge 4) {
     $pwW = [Math]::Max(1, $rw[2] - $rw[0])
@@ -856,11 +860,15 @@ if ($allowPwFallback -and $nearBlank -and $hwndCapture -ne [IntPtr]::Zero) {
       $captureX = $rw[0]; $captureY = $rw[1]; $captureW = $pwW; $captureH = $pwH
       $stats = Get-CaptureColorStats $bmp
       $nearBlank = ($stats.uniqueColors -le ${NEAR_MONO_MAX_UNIQUE}) -or ($stats.variance -le ${NEAR_MONO_MAX_LUMINANCE_VARIANCE})
+      $suspiciousBlank = $nearBlank -or (
+        ($stats.uniqueColors -le ${SUSPICIOUS_BLANK_MAX_UNIQUE}) -and ($stats.variance -le ${SUSPICIOUS_BLANK_MAX_LUMINANCE_VARIANCE})
+      )
     } else {
       $pwBmp.Dispose()
     }
   }
 }
+# Hard-fail only on true near-mono after optional PrintWindow; suspicious band only triggers PW try.
 if ($allowPwFallback -and $nearBlank) { $captureSignal = 'capture_blank' }
 elseif ($pwTried -eq 1 -and -not $nearBlank) { $captureSignal = 'printwindow' }
 `;
@@ -1738,9 +1746,9 @@ public class FocusProbe38 {
   }
   public static bool ForceForeground(IntPtr hWnd) {
     if (hWnd == IntPtr.Zero) return false;
-    // Restore minimized only; do not SW_SHOW(5) already-visible windows (avoids gray/black flicker).
+    // Restore minimized OR tray/hidden (visible=false, often non-iconic); never SW_SHOW(5) on already-visible.
     bool didRestore = false;
-    if (IsIconic(hWnd)) { ShowWindow(hWnd, 9); didRestore = true; }
+    if (IsIconic(hWnd) || !IsWindowVisible(hWnd)) { ShowWindow(hWnd, 9); didRestore = true; }
     if (didRestore) RepaintAfterRestore(hWnd);
     IntPtr fg = GetForegroundWindow();
     if (fg == hWnd) return true;
@@ -1914,7 +1922,11 @@ public class FocusProbePid38 {
 "@
 }
 $didRestorePid = $false
-if ([FocusProbePid38]::IsIconic($hwnd)) { [FocusProbePid38]::ShowWindow($hwnd, 9) | Out-Null; $didRestorePid = $true }
+# Restore iconic OR tray/hidden (!IsWindowVisible); do not SW_SHOW(5) already-visible windows.
+if ([FocusProbePid38]::IsIconic($hwnd) -or -not [FocusProbePid38]::IsWindowVisible($hwnd)) {
+  [FocusProbePid38]::ShowWindow($hwnd, 9) | Out-Null
+  $didRestorePid = $true
+}
 if ($didRestorePid) { [FocusProbePid38]::RepaintAfterRestore($hwnd) }
 [FocusProbePid38]::SetForegroundWindow($hwnd) | Out-Null
 Start-Sleep -Milliseconds 40

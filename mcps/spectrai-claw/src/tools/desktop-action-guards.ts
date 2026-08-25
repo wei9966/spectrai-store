@@ -171,14 +171,18 @@ export function classifyForegroundResult(probe: ForegroundProbe): {
 }
 
 /**
- * Focus ShowWindow policy: restore minimized only.
+ * Focus ShowWindow policy: restore minimized OR tray/hidden (visible=false, often non-iconic).
  * Already-visible non-iconic windows must not get unconditional SW_SHOW(5).
- * ponytail: ceiling = iconic-only restore; upgrade to SW_SHOWNA only if a real app needs it.
+ * ponytail: ceiling = restore+repaint for hidden; upgrade to SW_SHOWNA only if a real app needs it.
  */
 export type FocusShowAction = 'none' | 'restore'
 
-export function resolveFocusShowAction(input: { iconic: boolean }): FocusShowAction {
-  return input.iconic ? 'restore' : 'none'
+export function resolveFocusShowAction(input: {
+  iconic: boolean
+  visible?: boolean
+}): FocusShowAction {
+  if (input.iconic || input.visible === false) return 'restore'
+  return 'none'
 }
 
 export type ScreenshotCaptureMode =
@@ -261,6 +265,12 @@ export function shouldRepaintAfterFocusShow(action: FocusShowAction): boolean {
 export const NEAR_MONO_MAX_UNIQUE = 4
 /** Luma variance ceiling (0–255 scale); solid gray ≈ 0. */
 export const NEAR_MONO_MAX_LUMINANCE_VARIANCE = 8
+/**
+ * Follow-path "near gray" after tray/hide restore: uniq still above near-mono
+ * (smoke ≈149) but palette+variance stay suspiciously low.
+ */
+export const SUSPICIOUS_BLANK_MAX_UNIQUE = 256
+export const SUSPICIOUS_BLANK_MAX_LUMINANCE_VARIANCE = 200
 
 export interface CaptureColorStats {
   /** Distinct packed RGB after cheap downsample / grid sample. */
@@ -289,6 +299,24 @@ export function isNearMonochromeCapture(
     return true
   }
   return false
+}
+
+/**
+ * Follow* only: near-mono OR (low uniq ∧ low variance) → try PrintWindow.
+ * Keeps solid wallpapers on non-follow paths out of scope (caller gates allowPwFallback).
+ * ponytail: ceiling = one extra band for post-restore gray; tighten if UI false-triggers.
+ */
+export function isSuspiciousBlankCapture(stats: CaptureColorStats): boolean {
+  if (isNearMonochromeCapture(stats)) return true
+  if (!Number.isFinite(stats.uniqueColors) || stats.uniqueColors < 0) return false
+  if (stats.uniqueColors > SUSPICIOUS_BLANK_MAX_UNIQUE) return false
+  if (
+    stats.luminanceVariance == null ||
+    !Number.isFinite(stats.luminanceVariance)
+  ) {
+    return false
+  }
+  return stats.luminanceVariance <= SUSPICIOUS_BLANK_MAX_LUMINANCE_VARIANCE
 }
 
 export function hasResolvableCaptureHwnd(hwnd?: number | null): boolean {

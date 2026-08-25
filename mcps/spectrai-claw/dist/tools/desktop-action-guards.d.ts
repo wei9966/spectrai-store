@@ -90,13 +90,14 @@ export declare function classifyForegroundResult(probe: ForegroundProbe): {
     reason: string;
 };
 /**
- * Focus ShowWindow policy: restore minimized only.
+ * Focus ShowWindow policy: restore minimized OR tray/hidden (visible=false, often non-iconic).
  * Already-visible non-iconic windows must not get unconditional SW_SHOW(5).
- * ponytail: ceiling = iconic-only restore; upgrade to SW_SHOWNA only if a real app needs it.
+ * ponytail: ceiling = restore+repaint for hidden; upgrade to SW_SHOWNA only if a real app needs it.
  */
 export type FocusShowAction = 'none' | 'restore';
 export declare function resolveFocusShowAction(input: {
     iconic: boolean;
+    visible?: boolean;
 }): FocusShowAction;
 export type ScreenshotCaptureMode = 'explicit' | 'allScreens' | 'monitor' | 'followWindow' | 'primary';
 /**
@@ -136,6 +137,12 @@ export declare function shouldRepaintAfterFocusShow(action: FocusShowAction): bo
 export declare const NEAR_MONO_MAX_UNIQUE = 4;
 /** Luma variance ceiling (0–255 scale); solid gray ≈ 0. */
 export declare const NEAR_MONO_MAX_LUMINANCE_VARIANCE = 8;
+/**
+ * Follow-path "near gray" after tray/hide restore: uniq still above near-mono
+ * (smoke ≈149) but palette+variance stay suspiciously low.
+ */
+export declare const SUSPICIOUS_BLANK_MAX_UNIQUE = 256;
+export declare const SUSPICIOUS_BLANK_MAX_LUMINANCE_VARIANCE = 200;
 export interface CaptureColorStats {
     /** Distinct packed RGB after cheap downsample / grid sample. */
     uniqueColors: number;
@@ -150,6 +157,12 @@ export declare function isNearMonochromeCapture(stats: CaptureColorStats, opts?:
     maxUnique?: number;
     maxLuminanceVariance?: number;
 }): boolean;
+/**
+ * Follow* only: near-mono OR (low uniq ∧ low variance) → try PrintWindow.
+ * Keeps solid wallpapers on non-follow paths out of scope (caller gates allowPwFallback).
+ * ponytail: ceiling = one extra band for post-restore gray; tighten if UI false-triggers.
+ */
+export declare function isSuspiciousBlankCapture(stats: CaptureColorStats): boolean;
 export declare function hasResolvableCaptureHwnd(hwnd?: number | null): boolean;
 /**
  * PrintWindow(PW_RENDERFULLCONTENT) only when the GDI screen grab looks blank
