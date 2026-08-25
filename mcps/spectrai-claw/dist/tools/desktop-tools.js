@@ -536,10 +536,47 @@ try {
         Start-Sleep -Milliseconds 40
         $afterState = Read-ElementState $best
         if (-not $afterState.Alive) {
-          # Activatable rows leaving the tree usually means open/navigate succeeded.
           if ($isActivatableItem) {
-            $result.verify = 'verified'
-            $result.detail = 'element_gone'
+            # Gone-alone ≠ activated (search/popup close). Still probe titles/outsideName.
+            $afterTitles = Read-ActivationTitles $best
+            $result.afterTitle = [string]$afterTitles.WindowTitle
+            $result.foregroundTitle = [string]$afterTitles.ForegroundTitle
+            if (-not $result.afterTitle) { $result.afterTitle = $result.foregroundTitle }
+            $targetName = [string]$meta.Name
+            $outsideName = $false
+            if ($targetName -and $roots.Count -gt 0) {
+              try {
+                foreach ($root in $roots) {
+                  $desc = $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+                  $limit = [Math]::Min($desc.Count, 500)
+                  for ($i = 0; $i -lt $limit; $i++) {
+                    try {
+                      $el = $desc.Item($i)
+                      $nm = [string]$el.Current.Name
+                      if (-not $nm -or -not $nm.Contains($targetName)) { continue }
+                      $ctShort = ([string]$el.Current.ControlType.ProgrammaticName) -replace '^ControlType\\.', ''
+                      # Keep aligned with isActivationOutsideNameControl: exclude selection + query containers.
+                      if ($ctShort -notmatch '^(ListItem|TreeItem|TabItem|MenuItem|Edit|Document|ComboBox)$') { $outsideName = $true; break }
+                    } catch {}
+                  }
+                  if ($outsideName) { break }
+                }
+              } catch {}
+            }
+            $activated = $false
+            if ($outsideName) { $activated = $true }
+            elseif ($targetName -and (($result.afterTitle -and $result.afterTitle.Contains($targetName)) -or ($result.foregroundTitle -and $result.foregroundTitle.Contains($targetName)))) { $activated = $true }
+            elseif ($result.beforeTitle -and $result.afterTitle -and ($result.beforeTitle -ne $result.afterTitle)) { $activated = $true }
+            elseif ($result.beforeTitle -and $result.foregroundTitle -and ($result.beforeTitle -ne $result.foregroundTitle)) { $activated = $true }
+            if ($activated) {
+              $result.verify = 'verified'
+              $result.detail = "elementGone=true;beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle);outsideName=$outsideName"
+            } else {
+              $result.ok = $false
+              $result.verify = 'state_not_changed'
+              $result.reason = 'needs_fallback_click'
+              $result.detail = "elementGone=true;beforeTitle=$($result.beforeTitle);afterTitle=$($result.afterTitle);fgTitle=$($result.foregroundTitle);target=$targetName;outsideName=$outsideName"
+            }
           } else {
             $result.verify = 'needs_resnapshot'
           }
@@ -547,7 +584,7 @@ try {
           if ($afterState.Value -eq $targetText) { $result.verify = 'verified' } else { $result.verify = 'state_not_changed' }
           $result.detail = "value=$($afterState.Value);focus=$($afterState.Focus)"
         } elseif ($isActivatableItem) {
-          # selected/focus-only ≠ activated. Cheap evidence: Toggle/Expand/Value, title, or non-selection Name hit.
+          # selected/focus-only ≠ activated. Cheap evidence: Toggle/Expand/Value, title, or non-selection/non-query Name hit.
           $afterTitles = Read-ActivationTitles $best
           $result.afterTitle = [string]$afterTitles.WindowTitle
           $result.foregroundTitle = [string]$afterTitles.ForegroundTitle
@@ -567,7 +604,8 @@ try {
                     $nm = [string]$el.Current.Name
                     if (-not $nm -or -not $nm.Contains($targetName)) { continue }
                     $ctShort = ([string]$el.Current.ControlType.ProgrammaticName) -replace '^ControlType\\.', ''
-                    if ($ctShort -notmatch '^(ListItem|TreeItem|TabItem|MenuItem)$') { $outsideName = $true; break }
+                    # Keep aligned with isActivationOutsideNameControl: exclude selection + query containers.
+                    if ($ctShort -notmatch '^(ListItem|TreeItem|TabItem|MenuItem|Edit|Document|ComboBox)$') { $outsideName = $true; break }
                   } catch {}
                 }
                 if ($outsideName) { break }
@@ -1661,7 +1699,8 @@ try {
             }
           }
           if (-not $outsideHit -and $targetName -and $nm -and $nm.Contains($targetName)) {
-            if ($ctShort -notmatch '^(ListItem|TreeItem|TabItem|MenuItem)$') {
+            # Keep aligned with isActivationOutsideNameControl: exclude selection + query containers (Edit residual ≠ activate).
+            if ($ctShort -notmatch '^(ListItem|TreeItem|TabItem|MenuItem|Edit|Document|ComboBox)$') {
               $outsideHit = $true
             }
           }

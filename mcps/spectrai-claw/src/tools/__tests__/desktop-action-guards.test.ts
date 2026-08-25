@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   activationEvidenceMatches,
+  activationOutsideNameHit,
   classifyForegroundResult,
   interpretActivatableHidVerify,
   interpretActivatableSelectVerify,
   isActivatableSelectionItem,
+  isActivationOutsideNameControl,
   isNearMonochromeCapture,
   isSuspiciousBlankCapture,
   localActivationStateChanged,
@@ -226,7 +228,7 @@ describe('activationEvidenceMatches', () => {
     )
   })
 
-  it('title unchanged + elementGone → activated', () => {
+  it('title unchanged + elementGone only → NOT activated (search/popup close)', () => {
     assert.equal(
       activationEvidenceMatches({
         targetName: 'Session Row',
@@ -235,7 +237,7 @@ describe('activationEvidenceMatches', () => {
         foregroundTitle: 'App',
         elementGone: true,
       }),
-      true,
+      false,
     )
   })
 
@@ -252,6 +254,20 @@ describe('activationEvidenceMatches', () => {
     )
   })
 
+  it('elementGone + outsideName still activated via outsideName', () => {
+    assert.equal(
+      activationEvidenceMatches({
+        targetName: 'Session Row',
+        beforeTitle: 'App',
+        afterTitle: 'App',
+        foregroundTitle: 'App',
+        elementGone: true,
+        targetNameOutsideSelection: true,
+      }),
+      true,
+    )
+  })
+
   it('title unchanged + only ListItem still present / no outside hit → not activated', () => {
     assert.equal(
       activationEvidenceMatches({
@@ -261,6 +277,77 @@ describe('activationEvidenceMatches', () => {
         foregroundTitle: 'App',
         elementGone: false,
         targetNameOutsideSelection: false,
+      }),
+      false,
+    )
+  })
+})
+
+describe('isActivationOutsideNameControl / activationOutsideNameHit', () => {
+  it('excludes selection rows and query containers (Edit residual)', () => {
+    assert.equal(isActivationOutsideNameControl('ListItem'), false)
+    assert.equal(isActivationOutsideNameControl('ControlType.TreeItem'), false)
+    assert.equal(isActivationOutsideNameControl('Edit'), false)
+    assert.equal(isActivationOutsideNameControl('Document'), false)
+    assert.equal(isActivationOutsideNameControl('ComboBox'), false)
+  })
+
+  it('accepts real display surfaces Text/Pane/Window', () => {
+    assert.equal(isActivationOutsideNameControl('Text'), true)
+    assert.equal(isActivationOutsideNameControl('Pane'), true)
+    assert.equal(isActivationOutsideNameControl('Window'), true)
+    assert.equal(isActivationOutsideNameControl('ControlType.Text'), true)
+  })
+
+  it('Edit residual query text is not an outsideName hit', () => {
+    assert.equal(
+      activationOutsideNameHit({
+        controlType: 'Edit',
+        name: 'Session Row',
+        targetName: 'Session Row',
+      }),
+      false,
+    )
+    assert.equal(
+      activationOutsideNameHit({
+        controlType: 'Document',
+        name: 'query Session Row',
+        targetName: 'Session Row',
+      }),
+      false,
+    )
+  })
+
+  it('Text/Pane/Window name containing target is an outsideName hit', () => {
+    assert.equal(
+      activationOutsideNameHit({
+        controlType: 'Text',
+        name: 'Session Row',
+        targetName: 'Session Row',
+      }),
+      true,
+    )
+    assert.equal(
+      activationOutsideNameHit({
+        controlType: 'Pane',
+        name: 'chat Session Row',
+        targetName: 'Session Row',
+      }),
+      true,
+    )
+    assert.equal(
+      activationOutsideNameHit({
+        controlType: 'Window',
+        name: 'Session Row',
+        targetName: 'Session Row',
+      }),
+      true,
+    )
+    assert.equal(
+      activationOutsideNameHit({
+        controlType: 'ListItem',
+        name: 'Session Row',
+        targetName: 'Session Row',
       }),
       false,
     )

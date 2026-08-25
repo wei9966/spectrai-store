@@ -33,13 +33,24 @@ export interface ElementLocalState {
  */
 export declare function localActivationStateChanged(before: ElementLocalState, after: ElementLocalState): boolean;
 /**
+ * Whether a UIA control type can count as targetNameOutsideSelection evidence.
+ * Excludes selection rows and query containers (Edit residual ≠ activated session).
+ */
+export declare function isActivationOutsideNameControl(controlType?: string): boolean;
+/** Pure outsideName hit: name contains target on a non-selection, non-query control. */
+export declare function activationOutsideNameHit(input: {
+    controlType?: string;
+    name?: string;
+    targetName?: string;
+}): boolean;
+/**
  * Cheap activation evidence after Select / HID:
  * 1) non-Selected local UIA state change, or
- * 2) clicked selection row left the tree, or
- * 3) target name appears on a non-selection control in-process, or
- * 4) owning/fg window title contains target name, or
- * 5) window/fg title changed vs before.
+ * 2) target name appears on a non-selection / non-query control in-process, or
+ * 3) owning/fg window title contains target name, or
+ * 4) window/fg title changed vs before.
  * Selected/Focus-only flips alone are never evidence.
+ * Lone elementGone is NOT evidence (search/popup list close ≠ activate).
  */
 export declare function activationEvidenceMatches(input: {
     targetName?: string;

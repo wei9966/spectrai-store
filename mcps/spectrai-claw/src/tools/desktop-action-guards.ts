@@ -51,14 +51,47 @@ export function localActivationStateChanged(
   )
 }
 
+/** Selection rows themselves are never an "outside" activation display surface. */
+const ACTIVATION_SELECTION_CONTROL = /^(ListItem|TreeItem|TabItem|MenuItem)$/i
+
+/**
+ * Query/input containers often still hold the typed search string after a popup closes.
+ * Keep in sync with UIA PowerShell exclusions in desktop-tools.ts.
+ */
+const ACTIVATION_QUERY_CONTROL = /^(Edit|Document|ComboBox)$/i
+
+/**
+ * Whether a UIA control type can count as targetNameOutsideSelection evidence.
+ * Excludes selection rows and query containers (Edit residual ≠ activated session).
+ */
+export function isActivationOutsideNameControl(controlType?: string): boolean {
+  const ct = String(controlType || '').replace(/^ControlType\./i, '')
+  if (!ct) return false
+  if (ACTIVATION_SELECTION_CONTROL.test(ct)) return false
+  if (ACTIVATION_QUERY_CONTROL.test(ct)) return false
+  return true
+}
+
+/** Pure outsideName hit: name contains target on a non-selection, non-query control. */
+export function activationOutsideNameHit(input: {
+  controlType?: string
+  name?: string
+  targetName?: string
+}): boolean {
+  const target = String(input.targetName || '').trim()
+  const name = String(input.name || '')
+  if (!target || !name.includes(target)) return false
+  return isActivationOutsideNameControl(input.controlType)
+}
+
 /**
  * Cheap activation evidence after Select / HID:
  * 1) non-Selected local UIA state change, or
- * 2) clicked selection row left the tree, or
- * 3) target name appears on a non-selection control in-process, or
- * 4) owning/fg window title contains target name, or
- * 5) window/fg title changed vs before.
+ * 2) target name appears on a non-selection / non-query control in-process, or
+ * 3) owning/fg window title contains target name, or
+ * 4) window/fg title changed vs before.
  * Selected/Focus-only flips alone are never evidence.
+ * Lone elementGone is NOT evidence (search/popup list close ≠ activate).
  */
 export function activationEvidenceMatches(input: {
   targetName?: string
@@ -70,8 +103,9 @@ export function activationEvidenceMatches(input: {
   targetNameOutsideSelection?: boolean
 }): boolean {
   if (input.localStateChanged) return true
-  if (input.elementGone) return true
+  // ponytail: gone-alone false; popup/search close looks like elementGone. Upgrade: require outsideName co-evidence if needed.
   if (input.targetNameOutsideSelection) return true
+  void input.elementGone
   const target = String(input.targetName || '').trim()
   const after = String(input.afterTitle || '')
   const fg = String(input.foregroundTitle || '')
