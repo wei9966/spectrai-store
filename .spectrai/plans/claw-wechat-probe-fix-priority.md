@@ -291,6 +291,11 @@ Contains 搜索 chrome Text 不再假阳。
 
 门禁：`click-accuracy` **12/12**（含同名本地>网络、网络 chrome 降权、普通 Button 中性、无微信特化 ID）。
 
+实机（2026-08-25，Local Latest `mcp-installed-1787649091219`，源码 dist 含 P3.15）：
+1. 搜「懵逼三人组」后 annotate 排序：本地会话 `懵逼三人组-下一站翻身` ListItem 排在 `[4]`，`搜索网络结果` 落到 `[5]`，网络搜一搜 chrome 明显靠后 ✅
+2. 双击本地项 → `chat_message_page` + 顶栏群名可见 ✅
+3. 发送验收消息 **未完**：随后旧主窗隐入托盘/`visible=false`，同 exe 再启弹出扫码登录窗；托盘溢出区 DPI 点击仍不稳 → **属下一刀灰窗/托盘 DPI，不阻塞 P3.15 选对项结论**
+
 ### 打包集成（2026-08-25）
 1. `mcps/spectrai-claw` `npm run build` → `0.4.1`（含 P3.11–P3.14）
 2. `claudeops` `npm run sync:builtin-claw` → `resources/builtin-mcps/spectrai-claw` 已含 `resolveFollowTargetCaptureBounds` / `empty_selector`
