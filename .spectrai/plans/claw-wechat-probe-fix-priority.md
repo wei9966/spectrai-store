@@ -226,9 +226,19 @@ Contains 搜索 chrome Text 不再假阳。
 
 → 下一刀仍优先 **验准 + 选对项**，不是再堆识图分辨率。
 
+### 跨应用冒烟（2026-08-25，SpectrAI + 浏览器）
+不再只盯微信，补测宿主软件与 Chrome：
+1. **SpectrAI 主窗**：最小化恢复 + `window_focus` ✅；`followHandle` 截屏可跟窗
+2. **Electron UIA 几乎空**：仅 `Chrome Legacy Window`，`annotate` 基本不可用 → 必须 OCR/坐标/HID
+3. **侧栏坐标点击**：OCR 见「工作/自动化/团队」；点「自动化」「团队」后画面有明显变化（中心区 diff 升高，出现「进入团队」等文案）✅
+4. **浏览器 DOM**：`find a[href*='qwen']` ✅；`browser_execute_action` 须用 `action.type=click`（`kind` 会 unsupported）；带 `verify.urlIncludes=qwen` 导航后验 ✅
+
+→ 跨应用结论与微信一致：**有通道就能点，但 Electron 不能指望 UIA 标注号；浏览器用 DOM 语义点击更稳。**
+
 ### 下一刀候选（按阻塞度）
 1. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9；搜索结果选错（网络 vs 会话）启发式
 2. 灰窗运维：持续近单色且 UIA=0 时，优先重启微信/点击拉起，避免死磕 ShowWindow
+3. Electron/SpectrAI：若要稳定点侧栏，优先 OCR/坐标路径，别等 UIA 树
 
 ## 非目标
 
