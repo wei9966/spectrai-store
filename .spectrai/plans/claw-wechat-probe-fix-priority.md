@@ -101,12 +101,28 @@
 3. 后续窗口被挪/最大化后：UIA 树变空、主屏截图像黑/空，未能完成发「今日热点速览」
 4. **未向其他会话发消息**；本轮停在开群前，避免乱点
 
+## 冒烟复测（2026-08-25，Local Latest / P3.6–P3.8 后）
+
+### 浏览器 ✅
+1. `browser_get_capabilities`：9222 available（2 targets）
+2. 空 selector → `element=null`（无 DEFAULT 假命中）
+3. `{type:'css', value:"a[href='/blog_list']"}` click → `urlChanged` + `urlIncludes` 通过
+4. 列表页 `{type:'css', value:"a[href*='qwen']"}` find → 命中正确链接
+5. 列表页 `{type:'css', value:"a[href*='deepseek-harness…']"}` click → `urlChanged` 通过  
+   （中间一次 text 点击因视口/未导航落成 mutation 失败，属页面滚动态，不是 selector 归一化回退）
+
+### 微信 ⚠️ 半通（卡在手机确认登录）
+1. `window_focus(title=微信)` ✅ `visible=true;iconic=false`
+2. `screenshot(followForeground/followWindowTitle)` ✅ **不再整窗灰**  
+   - `wechat-smoke2-follow/main/region/after-enter` uniq≈1800–2200（对比旧 `m0/main4` uniq=1）
+3. UIA 找到「进入微信」Button；`mouse_click` 后进入「需在手机上完成登录」
+4. `click_element(number, screenshotPath=…)` ❌ 仍报 `No annotated elements`（**annotated 缓存仍是阻塞**）
+5. **未继续开群/发消息**（需手机确认登录；避免乱点）
+
 ### 下一刀候选（按阻塞度）
-1. **桌面激活证据** ✅ `be41540`：title 不变时认 `elementGone` / 非 selection 名命中
-2. **灰/黑屏（截错屏/二次 Show）** ✅ `6aa43bd`：去掉已可见窗二次 `ShowWindow(5)`；跟窗截屏可选参数
-3. **整窗灰** ✅ `033afdf`：restore 后 `InvalidateRect`+`RedrawWindow`；follow* 可解析 HWND 时近单色（uniq≤4 或亮度方差≤8）→ `PrintWindow(PW_RENDERFULLCONTENT)`；仍灰 → 明确 `capture_blank`（不静默 annotate）
-4. **annotated 缓存**：`screenshot annotate=true` 后立刻 `click_element(number, screenshotPath=…)` 偶发 “No annotated elements”
-5. **可选残留**：未显式 monitor/region 时默认 `followForeground`（P3.8 未做，改动面偏大；调用方先传参）
+1. **annotated 缓存** ← 下一刀：`screenshot annotate=true` 后立刻 `click_element(number, screenshotPath)` 仍 miss；需同次返回缓存/别强绑 savePath
+2. **可选残留**：未显式 monitor/region 时默认 `followForeground`（调用方先传参也可）
+3. （已落地）激活证据 / 跟窗截屏 / 整窗灰重绘+PrintWindow：`be41540` `6aa43bd` `033afdf`
 
 ## 非目标
 
