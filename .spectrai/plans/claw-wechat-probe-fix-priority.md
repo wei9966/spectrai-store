@@ -217,6 +217,7 @@ Contains 搜索 chrome Text 不再假阳。
 - ✅ P3.11/P3.12 激活后验假阳代码已合 main，**实机对照已过**
 - ✅ 群消息发送成功（黑色幽默 AI 风格）；`Wanne be`「你好」+ 群内 Token 充满消息均已落地
 - ✅ P3.13/P3.14 已合 main（`a2b1444`）：follow 跟窗裁剪 + 空 selector 禁 DEFAULT
+- ✅ **自测验收（2026-08-25 13:14）已过**（见下）
 - 可选残留：搜索结果选错启发式；灰窗时优先托盘/任务栏点击，仍灰再启动同 exe 激活，**勿杀进程**；托盘坐标 × DPI
 
 ### 决策备忘：为何「有识图/坐标」仍像点不准
@@ -265,12 +266,25 @@ Contains 搜索 chrome Text 不再假阳。
 
 门禁：`desktop-action-guards` + `selector-normalize` **39/39**。
 
+### 自测验收（2026-08-25 13:14）✅
+| 项 | 结果 | 证据 |
+|---|---|---|
+| 单测门禁 | ✅ 39/39 | dist `desktop-action-guards` + `selector-normalize` |
+| P3.13 follow 微信 | ✅ 跟窗裁剪 | `capture=(504,0,658,1000)` = 逻辑窗 `(336,0,439,667)×DPI1.5` |
+| P3.13 follow SpectrAI | ✅ 跟窗 | `capture=(0,0,1280,680)` |
+| P3.14 空 selector find | ✅ `element:null` | `{}` / `{css:""}` 不再 DEFAULT |
+| P3.14 空 selector action | ✅ fail + `empty_selector` | `browser_execute_action click {}` → `element_not_found` |
+| 有效 selector 对照 | ✅ | `a[href*='qwen']` 仍可命中 |
+| 开群主路径 | ✅ | `chat_message_page` + 输入框可用，未灰 |
+| 群消息验收 | ✅ `13:14` | `验收通过：有坐标不等于点得准，先选对项再验真开。AI值班结束前再收你们一次灵魂。` |
+
+本轮**未再落搜索选错启发式代码**：主路径已可人工选「最常使用」；该项仍是可选残留，不是验收阻塞。
+
 ### 下一刀候选（按阻塞度）
 1. **搜索结果选错启发式**（网络「搜一搜」vs「最常使用」会话）——通用，勿写微信特化 AutomationId
 2. 灰窗运维：优先任务栏/托盘点击；仍灰时可再启动同路径 exe 激活实例，**不要杀进程**；避免死磕 ShowWindow
 3. Electron/SpectrAI：若要稳定点侧栏，优先 OCR/坐标路径，别等 UIA 树
 4. 托盘点击：Win32 逻辑坐标 × DPI（本机 1.5）再喂给 HID；可考虑 HID 坐标统一 DPI 换算
-5. 实机复测 P3.13 follow 跟窗裁剪（微信/SpectrAI）
 
 ## 非目标
 
