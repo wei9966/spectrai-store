@@ -265,27 +265,44 @@ export interface ScreenBounds {
   height: number
 }
 
+function isValidScreenBounds(s?: ScreenBounds | null): s is ScreenBounds {
+  return Boolean(
+    s &&
+      Number.isFinite(s.x) &&
+      Number.isFinite(s.y) &&
+      Number.isFinite(s.width) &&
+      Number.isFinite(s.height) &&
+      s.width > 0 &&
+      s.height > 0,
+  )
+}
+
 /**
- * Choose capture bounds from a followed window's screen, else primary.
- * Pure: PS/Screen.FromHandle result is injected by caller.
+ * Choose follow* capture bounds: windowRect → windowScreen → primary.
+ * Pure: GetWindowRect / Screen.FromHandle results are injected by caller.
+ * ponytail: ceiling = rect-first crop; upgrade to DWM thumb only if rect stays blank.
  */
 export function resolveFollowWindowCaptureBounds(input: {
+  windowRect?: ScreenBounds | null
   windowScreen?: ScreenBounds | null
   primaryScreen: ScreenBounds
 }): ScreenBounds {
-  const s = input.windowScreen
-  if (
-    s &&
-    Number.isFinite(s.x) &&
-    Number.isFinite(s.y) &&
-    Number.isFinite(s.width) &&
-    Number.isFinite(s.height) &&
-    s.width > 0 &&
-    s.height > 0
-  ) {
-    return { x: s.x, y: s.y, width: s.width, height: s.height }
+  if (isValidScreenBounds(input.windowRect)) {
+    return { x: input.windowRect.x, y: input.windowRect.y, width: input.windowRect.width, height: input.windowRect.height }
+  }
+  if (isValidScreenBounds(input.windowScreen)) {
+    return { x: input.windowScreen.x, y: input.windowScreen.y, width: input.windowScreen.width, height: input.windowScreen.height }
   }
   return { ...input.primaryScreen }
+}
+
+/** Alias: same priority as resolveFollowWindowCaptureBounds (window → screen → primary). */
+export function resolveFollowTargetCaptureBounds(input: {
+  windowRect?: ScreenBounds | null
+  windowScreen?: ScreenBounds | null
+  primaryScreen: ScreenBounds
+}): ScreenBounds {
+  return resolveFollowWindowCaptureBounds(input)
 }
 
 /**

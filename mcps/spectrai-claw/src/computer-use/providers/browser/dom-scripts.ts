@@ -246,18 +246,22 @@ function wrapBrowserExpression(task: 'snapshot' | 'find' | 'action' | 'state', p
       return true;
     }
 
+    function nonEmptyString(value) {
+      return typeof value === 'string' && value.trim().length > 0;
+    }
+
     function hasResolvedLocatorFields(selector) {
       if (!selector || typeof selector !== 'object') return false;
       return Boolean(
-        (typeof selector.css === 'string' && selector.css) ||
-          (typeof selector.xpath === 'string' && selector.xpath) ||
-          (typeof selector.text === 'string' && selector.text) ||
-          (typeof selector.role === 'string' && selector.role) ||
-          (typeof selector.ariaLabel === 'string' && selector.ariaLabel) ||
-          (typeof selector['aria-label'] === 'string' && selector['aria-label']) ||
-          (typeof selector.testId === 'string' && selector.testId) ||
-          (typeof selector.elementId === 'string' && selector.elementId) ||
-          (typeof selector.spectraiId === 'string' && selector.spectraiId) ||
+        nonEmptyString(selector.css) ||
+          nonEmptyString(selector.xpath) ||
+          nonEmptyString(selector.text) ||
+          nonEmptyString(selector.role) ||
+          nonEmptyString(selector.ariaLabel) ||
+          nonEmptyString(selector['aria-label']) ||
+          nonEmptyString(selector.testId) ||
+          nonEmptyString(selector.elementId) ||
+          nonEmptyString(selector.spectraiId) ||
           (selector.bounds && typeof selector.bounds === 'object')
       );
     }
@@ -265,9 +269,14 @@ function wrapBrowserExpression(task: 'snapshot' | 'find' | 'action' | 'state', p
     function hasSpecificLocatorIntent(selector) {
       if (!selector || typeof selector !== 'object') return false;
       if (hasResolvedLocatorFields(selector)) return true;
+      // Key present but empty/whitespace = specific-but-unresolved (find/action must not DEFAULT).
+      const locatorKeys = ['css', 'xpath', 'text', 'role', 'ariaLabel', 'aria-label', 'testId', 'elementId', 'spectraiId', 'bounds'];
+      for (const key of locatorKeys) {
+        if (Object.prototype.hasOwnProperty.call(selector, key)) return true;
+      }
       const kind = selector.kind ?? selector.type;
       if (typeof kind === 'string' && kind.trim()) return true;
-      if (selector.value != null && String(selector.value).length > 0) return true;
+      if (selector.value != null && String(selector.value).trim().length > 0) return true;
       return false;
     }
 
@@ -299,22 +308,26 @@ function wrapBrowserExpression(task: 'snapshot' | 'find' | 'action' | 'state', p
       const doc = resolved.doc;
       let candidates = [];
       try {
-        if (selector?.elementId || selector?.spectraiId) {
-          const id = selector.elementId || selector.spectraiId;
+        if (nonEmptyString(selector?.elementId) || nonEmptyString(selector?.spectraiId)) {
+          const id = nonEmptyString(selector.elementId) ? selector.elementId : selector.spectraiId;
           candidates = Array.from(doc.querySelectorAll('[' + SPECTRAI_ID_ATTR + '="' + cssEscape(id) + '"]'));
-        } else if (selector?.css) {
-          candidates = Array.from(doc.querySelectorAll(selector.css));
-        } else if (selector?.xpath) {
-          candidates = byXPath(doc, selector.xpath);
+        } else if (nonEmptyString(selector?.css)) {
+          candidates = Array.from(doc.querySelectorAll(selector.css.trim()));
+        } else if (nonEmptyString(selector?.xpath)) {
+          candidates = byXPath(doc, selector.xpath.trim());
         } else if (hasSpecificLocatorIntent(selector) && !hasResolvedLocatorFields(selector)) {
           // Specific intent but no usable locator field → empty, never DEFAULT_SELECTOR fake hit.
           candidates = [];
           warnings.push('unresolved_locator_intent');
+        } else if (__spectraiTask !== 'snapshot' && !hasResolvedLocatorFields(selector)) {
+          // find/action/state: {} / blank locator must not DEFAULT to first link.
+          candidates = [];
+          warnings.push('empty_selector');
         } else if (selector?.text || selector?.role || selector?.ariaLabel || selector?.testId || selector?.bounds) {
           candidates = Array.from(doc.querySelectorAll(DEFAULT_SELECTOR));
           candidates = candidates.concat(Array.from(doc.body?.querySelectorAll('*') || []));
         } else {
-          // Only {} / {visible} / urlIncludes/titleIncludes/framePath/index listing semantics.
+          // snapshot listing: {} / {visible} / urlIncludes/titleIncludes/framePath/index.
           candidates = Array.from(doc.querySelectorAll(DEFAULT_SELECTOR));
         }
       } catch (error) {

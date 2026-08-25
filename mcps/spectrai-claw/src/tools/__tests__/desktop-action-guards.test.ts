@@ -13,6 +13,7 @@ import {
   localActivationStateChanged,
   resolveCaptureBlankDecision,
   resolveFocusShowAction,
+  resolveFollowTargetCaptureBounds,
   resolveFollowWindowCaptureBounds,
   resolveHidClickTypeForActivatable,
   resolveScreenshotCaptureMode,
@@ -453,14 +454,33 @@ describe('resolveScreenshotCaptureMode / resolveFollowWindowCaptureBounds', () =
     assert.equal(resolveScreenshotCaptureMode({ followHandle: 0, followProcessId: 0 }), 'primary')
   })
 
-  it('falls back to primary when window screen missing / invalid', () => {
+  it('prefers windowRect, then windowScreen, then primary', () => {
     const primary = { x: 0, y: 0, width: 1920, height: 1080 }
+    const screen = { x: 1920, y: 0, width: 2560, height: 1440 }
+    const rect = { x: 100, y: 80, width: 800, height: 600 }
+
     assert.deepEqual(
       resolveFollowWindowCaptureBounds({
-        windowScreen: { x: 1920, y: 0, width: 2560, height: 1440 },
+        windowRect: rect,
+        windowScreen: screen,
         primaryScreen: primary,
       }),
-      { x: 1920, y: 0, width: 2560, height: 1440 },
+      rect,
+    )
+    assert.deepEqual(
+      resolveFollowTargetCaptureBounds({
+        windowRect: rect,
+        windowScreen: screen,
+        primaryScreen: primary,
+      }),
+      rect,
+    )
+    assert.deepEqual(
+      resolveFollowWindowCaptureBounds({
+        windowScreen: screen,
+        primaryScreen: primary,
+      }),
+      screen,
     )
     assert.deepEqual(
       resolveFollowWindowCaptureBounds({ windowScreen: null, primaryScreen: primary }),
@@ -468,10 +488,19 @@ describe('resolveScreenshotCaptureMode / resolveFollowWindowCaptureBounds', () =
     )
     assert.deepEqual(
       resolveFollowWindowCaptureBounds({
+        windowRect: { x: 0, y: 0, width: 0, height: 0 },
         windowScreen: { x: 0, y: 0, width: 0, height: 0 },
         primaryScreen: primary,
       }),
       primary,
+    )
+    assert.deepEqual(
+      resolveFollowWindowCaptureBounds({
+        windowRect: { x: 0, y: 0, width: 0, height: 0 },
+        windowScreen: screen,
+        primaryScreen: primary,
+      }),
+      screen,
     )
   })
 })

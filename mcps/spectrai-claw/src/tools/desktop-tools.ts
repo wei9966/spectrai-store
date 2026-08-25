@@ -772,10 +772,10 @@ export async function registerDesktopTools(): Promise<void> {
         savePath: { type: 'string', description: 'File path to save screenshot. Default: auto-generated temp file (.png)' },
         allScreens: { type: 'boolean', description: 'Capture all monitors as one image (virtual screen). Default: false' },
         monitor: { type: 'number', description: 'Monitor index (0-based). Default: 0 (primary). Ignored if allScreens=true. When set, disables follow* window screen capture.' },
-        followForeground: { type: 'boolean', description: 'When no x/y/width/height, allScreens, or monitor is set: capture the screen that contains the current foreground window. Falls back to primary if unresolved.' },
-        followHandle: { type: 'number', description: 'Capture the screen containing this HWND. Only used when region/allScreens/monitor are unset.' },
-        followWindowTitle: { type: 'string', description: 'Capture the screen containing the first top-level window whose title contains this text. Only used when region/allScreens/monitor are unset.' },
-        followProcessId: { type: 'number', description: 'Capture the screen containing the main window of this process id. Only used when region/allScreens/monitor are unset.' },
+        followForeground: { type: 'boolean', description: 'When no x/y/width/height, allScreens, or monitor is set: capture the foreground window (fallback to its screen, then primary if unresolved).' },
+        followHandle: { type: 'number', description: 'Capture this HWND window (fallback to its screen). Only used when region/allScreens/monitor are unset.' },
+        followWindowTitle: { type: 'string', description: 'Capture the first top-level window whose title contains this text (fallback to its screen). Only used when region/allScreens/monitor are unset.' },
+        followProcessId: { type: 'number', description: 'Capture the main window of this process id (fallback to its screen). Only used when region/allScreens/monitor are unset.' },
         grid: { type: 'boolean', description: 'Overlay coordinate grid. Default: false' },
         annotate: { type: 'boolean', description: 'Auto-detect interactive elements via UIA and draw numbered markers. Use click_element(number) to click. Default: true' },
       },
@@ -886,13 +886,26 @@ $captureW = [System.Windows.Forms.SystemInformation]::VirtualScreen.Width
 $captureH = [System.Windows.Forms.SystemInformation]::VirtualScreen.Height
 `
       } else if (captureMode === 'followWindow') {
+        // Prefer GetWindowRect crop; invalid HWND/rect → that window's Screen; else primary.
         captureRegion = `
 $primary = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $captureX = $primary.X; $captureY = $primary.Y; $captureW = $primary.Width; $captureH = $primary.Height
 if ($hwndCapture -ne [IntPtr]::Zero) {
-  $mon = [System.Windows.Forms.Screen]::FromHandle($hwndCapture)
-  if ($mon -and $mon.Bounds.Width -gt 0 -and $mon.Bounds.Height -gt 0) {
-    $captureX = $mon.Bounds.X; $captureY = $mon.Bounds.Y; $captureW = $mon.Bounds.Width; $captureH = $mon.Bounds.Height
+  $rw = [CaptureHwnd38]::TryRect($hwndCapture)
+  $usedWindowRect = $false
+  if ($rw -ne $null -and $rw.Length -ge 4) {
+    $ww = [Math]::Max(0, $rw[2] - $rw[0])
+    $wh = [Math]::Max(0, $rw[3] - $rw[1])
+    if ($ww -gt 0 -and $wh -gt 0) {
+      $captureX = $rw[0]; $captureY = $rw[1]; $captureW = $ww; $captureH = $wh
+      $usedWindowRect = $true
+    }
+  }
+  if (-not $usedWindowRect) {
+    $mon = [System.Windows.Forms.Screen]::FromHandle($hwndCapture)
+    if ($mon -and $mon.Bounds.Width -gt 0 -and $mon.Bounds.Height -gt 0) {
+      $captureX = $mon.Bounds.X; $captureY = $mon.Bounds.Y; $captureW = $mon.Bounds.Width; $captureH = $mon.Bounds.Height
+    }
   }
 }
 `

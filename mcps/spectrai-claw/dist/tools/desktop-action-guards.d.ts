@@ -132,10 +132,18 @@ export interface ScreenBounds {
     height: number;
 }
 /**
- * Choose capture bounds from a followed window's screen, else primary.
- * Pure: PS/Screen.FromHandle result is injected by caller.
+ * Choose follow* capture bounds: windowRect → windowScreen → primary.
+ * Pure: GetWindowRect / Screen.FromHandle results are injected by caller.
+ * ponytail: ceiling = rect-first crop; upgrade to DWM thumb only if rect stays blank.
  */
 export declare function resolveFollowWindowCaptureBounds(input: {
+    windowRect?: ScreenBounds | null;
+    windowScreen?: ScreenBounds | null;
+    primaryScreen: ScreenBounds;
+}): ScreenBounds;
+/** Alias: same priority as resolveFollowWindowCaptureBounds (window → screen → primary). */
+export declare function resolveFollowTargetCaptureBounds(input: {
+    windowRect?: ScreenBounds | null;
     windowScreen?: ScreenBounds | null;
     primaryScreen: ScreenBounds;
 }): ScreenBounds;

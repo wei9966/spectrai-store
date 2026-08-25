@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildFindElementExpression } from '../dom-scripts.js'
+import { buildDomSnapshotExpression, buildFindElementExpression } from '../dom-scripts.js'
 import {
   hasResolvedLocatorFields,
   hasSpecificLocatorIntent,
@@ -53,6 +53,15 @@ test('hasSpecificLocatorIntent detects unresolved type-only selectors', () => {
   assert.equal(hasResolvedLocatorFields({ css: 'a' }), true)
 })
 
+test('blank css/xpath/text are unresolved, not resolved', () => {
+  assert.equal(hasResolvedLocatorFields({ css: '' }), false)
+  assert.equal(hasResolvedLocatorFields({ css: '   ' }), false)
+  assert.equal(hasResolvedLocatorFields({ xpath: '\t' }), false)
+  assert.equal(hasSpecificLocatorIntent({ css: '' }), true)
+  assert.equal(hasSpecificLocatorIntent({ css: '   ' }), true)
+  assert.equal(hasSpecificLocatorIntent({}), false)
+})
+
 test('dom-scripts defensive path: type/value css embeds as css, not DEFAULT_SELECTOR', () => {
   const expression = buildFindElementExpression({ type: 'css', value: "a[href*='datalearner']" } as never)
   assert.match(expression, /a\[href\*='datalearner'\]/)
@@ -67,5 +76,29 @@ test('dom-scripts defensive path: unresolved type-only intent does not fall back
   assert.match(
     expression,
     /hasSpecificLocatorIntent\(selector\) && !hasResolvedLocatorFields\(selector\)[\s\S]*candidates = \[\];/,
+  )
+})
+
+test('find empty/blank selector refuses DEFAULT listing', () => {
+  for (const selector of [{}, { css: '' }, { css: '   ' }] as never[]) {
+    const expression = buildFindElementExpression(selector)
+    assert.match(expression, /empty_selector|unresolved_locator_intent/)
+    assert.match(
+      expression,
+      /__spectraiTask !== 'snapshot' && !hasResolvedLocatorFields\(selector\)[\s\S]*candidates = \[\];|hasSpecificLocatorIntent\(selector\) && !hasResolvedLocatorFields\(selector\)[\s\S]*candidates = \[\];/,
+    )
+    // Must not treat blank css as a querySelectorAll argument path before empty/unresolved.
+    assert.doesNotMatch(expression, /else if \(selector\?\.css\) \{\s*candidates = Array\.from\(doc\.querySelectorAll\(selector\.css\)\)/)
+  }
+})
+
+test('snapshot without selector still allows DEFAULT listing', () => {
+  const expression = buildDomSnapshotExpression(undefined, 20)
+  assert.match(expression, /__spectraiTask === 'snapshot'/)
+  assert.match(expression, /doc\.querySelectorAll\(DEFAULT_SELECTOR\)/)
+  // snapshot path must not force empty_selector for listing semantics.
+  assert.match(
+    expression,
+    /__spectraiTask !== 'snapshot' && !hasResolvedLocatorFields\(selector\)[\s\S]*warnings\.push\('empty_selector'\)/,
   )
 })

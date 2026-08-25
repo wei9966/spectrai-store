@@ -178,22 +178,32 @@ export function resolveScreenshotCaptureMode(input) {
     }
     return 'primary';
 }
-/**
- * Choose capture bounds from a followed window's screen, else primary.
- * Pure: PS/Screen.FromHandle result is injected by caller.
- */
-export function resolveFollowWindowCaptureBounds(input) {
-    const s = input.windowScreen;
-    if (s &&
+function isValidScreenBounds(s) {
+    return Boolean(s &&
         Number.isFinite(s.x) &&
         Number.isFinite(s.y) &&
         Number.isFinite(s.width) &&
         Number.isFinite(s.height) &&
         s.width > 0 &&
-        s.height > 0) {
-        return { x: s.x, y: s.y, width: s.width, height: s.height };
+        s.height > 0);
+}
+/**
+ * Choose follow* capture bounds: windowRect → windowScreen → primary.
+ * Pure: GetWindowRect / Screen.FromHandle results are injected by caller.
+ * ponytail: ceiling = rect-first crop; upgrade to DWM thumb only if rect stays blank.
+ */
+export function resolveFollowWindowCaptureBounds(input) {
+    if (isValidScreenBounds(input.windowRect)) {
+        return { x: input.windowRect.x, y: input.windowRect.y, width: input.windowRect.width, height: input.windowRect.height };
+    }
+    if (isValidScreenBounds(input.windowScreen)) {
+        return { x: input.windowScreen.x, y: input.windowScreen.y, width: input.windowScreen.width, height: input.windowScreen.height };
     }
     return { ...input.primaryScreen };
+}
+/** Alias: same priority as resolveFollowWindowCaptureBounds (window → screen → primary). */
+export function resolveFollowTargetCaptureBounds(input) {
+    return resolveFollowWindowCaptureBounds(input);
 }
 /**
  * After iconic SW_RESTORE, force a cheap client/frame repaint before SetForeground.

@@ -1,4 +1,19 @@
 const LOCATOR_KINDS = new Set(['css', 'xpath', 'text', 'role', 'aria-label', 'ariaLabel', 'testId', 'bounds', 'elementId']);
+const LOCATOR_FIELD_KEYS = [
+    'css',
+    'xpath',
+    'text',
+    'role',
+    'ariaLabel',
+    'aria-label',
+    'testId',
+    'elementId',
+    'spectraiId',
+    'bounds',
+];
+function nonEmptyString(value) {
+    return typeof value === 'string' && value.trim().length > 0;
+}
 /** Agent 常传 {type,value}/{kind,value}；内部只认扁平 css|xpath|text|... */
 export function normalizeBrowserSelector(input) {
     if (input == null || typeof input !== 'object' || Array.isArray(input))
@@ -9,7 +24,7 @@ export function normalizeBrowserSelector(input) {
     }
     const kindRaw = raw.kind ?? raw.type;
     const kind = typeof kindRaw === 'string' ? kindRaw.trim() : '';
-    if (kind && raw.value != null && String(raw.value).length > 0) {
+    if (kind && raw.value != null && String(raw.value).trim().length > 0) {
         applyKindValue(raw, kind, raw.value);
     }
     else if (kind && LOCATOR_KINDS.has(kind)) {
@@ -58,10 +73,15 @@ export function hasSpecificLocatorIntent(input) {
     const raw = input;
     if (hasResolvedLocatorFields(raw))
         return true;
+    // Key present but empty/whitespace still counts as specific-but-unresolved (find must not DEFAULT).
+    for (const key of LOCATOR_FIELD_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(raw, key))
+            return true;
+    }
     const kind = raw.kind ?? raw.type;
     if (typeof kind === 'string' && kind.trim())
         return true;
-    if (raw.value != null && String(raw.value).length > 0)
+    if (raw.value != null && String(raw.value).trim().length > 0)
         return true;
     return false;
 }
@@ -69,15 +89,15 @@ export function hasResolvedLocatorFields(selector) {
     if (!selector || typeof selector !== 'object')
         return false;
     const s = selector;
-    return Boolean((typeof s.css === 'string' && s.css) ||
-        (typeof s.xpath === 'string' && s.xpath) ||
-        (typeof s.text === 'string' && s.text) ||
-        (typeof s.role === 'string' && s.role) ||
-        (typeof s.ariaLabel === 'string' && s.ariaLabel) ||
-        (typeof s['aria-label'] === 'string' && s['aria-label']) ||
-        (typeof s.testId === 'string' && s.testId) ||
-        (typeof s.elementId === 'string' && s.elementId) ||
-        (typeof s.spectraiId === 'string' && s.spectraiId) ||
+    return Boolean(nonEmptyString(s.css) ||
+        nonEmptyString(s.xpath) ||
+        nonEmptyString(s.text) ||
+        nonEmptyString(s.role) ||
+        nonEmptyString(s.ariaLabel) ||
+        nonEmptyString(s['aria-label']) ||
+        nonEmptyString(s.testId) ||
+        nonEmptyString(s.elementId) ||
+        nonEmptyString(s.spectraiId) ||
         (s.bounds && typeof s.bounds === 'object'));
 }
 function applyKindValue(raw, kind, value) {
