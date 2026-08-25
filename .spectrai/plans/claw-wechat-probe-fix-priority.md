@@ -183,9 +183,24 @@
 3. UIA 路径与 `probeActivationLocalEvidence` 对齐；`element_gone` 单独不再 `verified`
 4. 门禁：`desktop-action-guards` **30/30**
 
+### P3.11 冒烟（2026-08-25）⚠️ 仍半通
+1. 搜到 ListItem「懵逼三人组」✅；带 path 双击 ✅ 不再 No annotated
+2. 工具仍 `verify=verified (elementGone=true;outsideName=true)` ❌
+3. 实况：会话未切；侧栏仍有 `Text「懵逼三人组 - 搜一搜」` → **Contains + Text 仍假阳**（P3.11 已排除 Edit/Document，但 Text 过宽）
+
+### P3.12 — outsideName 再收紧（Text/Contains 假阳）← **下一刀**
+根因：`activationOutsideNameHit` 对 Text 允许 `Name.Contains(target)`；搜索 chrome「目标 - 搜一搜」恒命中。
+
+修法（最小、通用）：
+1. outsideName：**默认要求 name 精确等于 target**（`===` / `-eq`），禁止靠 Contains 吃搜索标题
+2. 可选放宽：仅 `Window|Pane|Header|TitleBar` 允许 Contains；**Text 必须精确相等**
+3. 同步 `probeActivationLocalEvidence` + UIA 两处脚本
+4. 单测：`Text「Session - Search」` Contains → false；`Text「Session」` exact → true；Window Contains 仍可 true（若保留放宽）
+5. 门禁 `desktop-action-guards` 全绿
+
 ### 下一刀候选（按阻塞度）
-1. **实机冒烟确认开群** ← 本轮（P3.11 后）
-2. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9 非点击拉起
+1. **P3.12 outsideName Text/Contains 假阳** ← **本轮**
+2. **可选残留**：follow* 偏屏；空 selector `{}`/`{css:""}` DEFAULT；实机复测 P3.9
 
 ## 非目标
 
