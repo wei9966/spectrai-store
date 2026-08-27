@@ -1,4 +1,4 @@
-import type { BrowserAction, BrowserActionResult, BrowserCapabilityReport, BrowserComputerUseProvider, BrowserConnectionOptions, BrowserDomSnapshot, BrowserElement, BrowserSelector, BrowserTarget, BrowserTargetQuery, BrowserWindow } from './types.js';
+import type { BrowserAction, BrowserActionResult, BrowserCapabilityReport, BrowserCloseTabResult, BrowserComputerUseProvider, BrowserConnectionOptions, BrowserDomSnapshot, BrowserElement, BrowserOpenTabResult, BrowserPageTextResult, BrowserScreenshotOptions, BrowserScreenshotResult, BrowserSelector, BrowserTarget, BrowserTargetQuery, BrowserWaitForPageOptions, BrowserWaitForPageResult, BrowserWindow } from './types.js';
 export declare class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     private readonly http;
     private readonly defaultTimeoutMs;
@@ -9,20 +9,29 @@ export declare class BrowserDomCdpProvider implements BrowserComputerUseProvider
     readDomSnapshot(selector?: BrowserSelector, maxElements?: number, target?: BrowserTargetQuery): Promise<BrowserDomSnapshot>;
     findElement(selector: BrowserSelector, target?: BrowserTargetQuery): Promise<BrowserElement | null>;
     executeAction(action: BrowserAction, target?: BrowserTargetQuery): Promise<BrowserActionResult>;
+    captureScreenshot(options?: BrowserScreenshotOptions, target?: BrowserTargetQuery): Promise<BrowserScreenshotResult>;
     getCapabilityReport(): Promise<BrowserCapabilityReport>;
     getAppState(target?: BrowserTargetQuery): Promise<BrowserDomSnapshot>;
     getAppTree(target?: BrowserTargetQuery): Promise<BrowserDomSnapshot>;
     invokeElement(selectorOrElement: BrowserSelector | BrowserElement, action?: Partial<BrowserAction>, target?: BrowserTargetQuery): Promise<BrowserActionResult>;
     setValue(selectorOrElement: BrowserSelector | BrowserElement, value: string, target?: BrowserTargetQuery): Promise<BrowserActionResult>;
     getCapabilities(): Promise<BrowserCapabilityReport>;
+    waitForPage(options?: BrowserWaitForPageOptions, target?: BrowserTargetQuery): Promise<BrowserWaitForPageResult>;
+    getPageText(target?: BrowserTargetQuery, maxChars?: number): Promise<BrowserPageTextResult>;
+    openTab(url?: string): Promise<BrowserOpenTabResult>;
+    closeTab(target?: BrowserTargetQuery): Promise<BrowserCloseTabResult>;
     private navigateUrl;
     private pageNavigate;
+    private reloadPage;
+    private navigateHistory;
     private waitForTargetLoad;
     private safeReadyState;
+    private safePageText;
     private ensureReady;
     private waitForPageTargets;
     private normalizeAction;
     private resolveTarget;
+    private pageUrlTitle;
     private evaluate;
     private withTargetMetadata;
     private safeElementState;

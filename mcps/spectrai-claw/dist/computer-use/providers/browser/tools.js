@@ -81,8 +81,35 @@ const actionSchema = {
     properties: {
         type: {
             type: 'string',
-            enum: ['click', 'type', 'setValue', 'pressKey', 'hotkey', 'select', 'scroll', 'hover', 'menu', 'contextMenu', 'upload', 'navigate', 'goto', 'open', 'load'],
-            description: 'Use navigate (aliases: goto/open/load) with action.url to open a page. Do not click the address bar.',
+            enum: [
+                'click',
+                'type',
+                'setValue',
+                'pressKey',
+                'hotkey',
+                'select',
+                'scroll',
+                'hover',
+                'menu',
+                'contextMenu',
+                'upload',
+                'navigate',
+                'goto',
+                'open',
+                'load',
+                'Page.navigate',
+                'cdp_navigate',
+                'reload',
+                'refresh',
+                'Page.reload',
+                'back',
+                'goBack',
+                'Page.goBack',
+                'forward',
+                'goForward',
+                'Page.goForward',
+            ],
+            description: 'Use navigate (aliases: goto/open/load) with action.url to open a page. reload/back/forward are page-level CDP actions (not DOM click). Do not click the address bar.',
         },
         selector: selectorSchema,
         url: { type: 'string', description: 'Absolute or host/path URL for navigate. example.com is normalized to https://example.com.' },
@@ -164,7 +191,7 @@ export function registerBrowserComputerUseTools() {
         const element = await provider.findElement(normalizeBrowserSelector(readObject(args.selector)) ?? {}, readObject(args.target));
         return json({ element });
     }, { title: 'Browser find element', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_execute_action', 'Browser Computer Use: execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover, contextMenu and navigate. To open a page, use action.type=navigate (aliases: goto/open/load) with action.url — do not click the address bar or type into omnibox. Click verification prefers page URL/title changes before element mutation. Visual/HID is only a fallback when there is no navigation evidence.', {
+    registerTool('browser_execute_action', 'Browser Computer Use: execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover, contextMenu, navigate, reload, back and forward. Page-level reload/back/forward use background CDP (Page.reload / Page.getNavigationHistory), not DOM click or HID. To open a page, use action.type=navigate (aliases: goto/open/load) with action.url — do not click the address bar or type into omnibox. Do not use desktop screenshot, followForeground or HID.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -195,6 +222,139 @@ export function registerBrowserComputerUseTools() {
         const result = await provider.executeAction(action, readObject(args.target));
         return json(result);
     }, { title: 'Browser navigate', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+    registerTool('browser_screenshot', 'Browser Computer Use: capture a background page screenshot via CDP Page.captureScreenshot. Do not use the desktop screenshot tool, followForeground, window_focus, ShowWindow, or HID — this stays on the CDP page target even when the browser is in the background.', {
+        type: 'object',
+        properties: {
+            connection: connectionSchema,
+            target: targetSchema,
+            format: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format. Defaults to png.' },
+            quality: { type: 'number', minimum: 1, maximum: 100, description: 'JPEG quality 1-100. Ignored unless format=jpeg.' },
+            fullPage: { type: 'boolean', description: 'When true, Page.captureScreenshot uses captureBeyondViewport: true.' },
+        },
+        additionalProperties: false,
+    }, async (args) => {
+        const provider = await createProvider(args);
+        const result = await provider.captureScreenshot({
+            format: args.format === 'jpeg' ? 'jpeg' : 'png',
+            quality: typeof args.quality === 'number' ? args.quality : undefined,
+            fullPage: args.fullPage === true,
+        }, readObject(args.target));
+        const meta = {
+            ok: result.ok,
+            provider: result.provider,
+            method: result.method,
+            url: result.url,
+            title: result.title,
+            targetId: result.targetId,
+            mimeType: result.mimeType,
+            byteLength: result.byteLength,
+            requiresForeground: result.requiresForeground,
+        };
+        return {
+            content: [
+                { type: 'text', text: JSON.stringify(meta, null, 2) },
+                { type: 'image', data: result.data, mimeType: result.mimeType },
+            ],
+            structuredContent: meta,
+        };
+    }, { title: 'Browser page screenshot', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
+    registerTool('browser_reload', 'Browser Computer Use: reload the current CDP page with Page.reload (background, no desktop screenshot / followForeground / HID / json/activate).', {
+        type: 'object',
+        properties: {
+            connection: connectionSchema,
+            target: targetSchema,
+            timeoutMs: { type: 'number' },
+        },
+        additionalProperties: false,
+    }, async (args) => {
+        const provider = await createProvider(args);
+        const result = await provider.executeAction({ type: 'reload', timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined }, readObject(args.target));
+        return json(result);
+    }, { title: 'Browser reload', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+    registerTool('browser_back', 'Browser Computer Use: go back via CDP Page.getNavigationHistory + Page.navigateToHistoryEntry. Background CDP only — do not use history.back(), desktop screenshot, followForeground, HID or /json/activate.', {
+        type: 'object',
+        properties: {
+            connection: connectionSchema,
+            target: targetSchema,
+            timeoutMs: { type: 'number' },
+        },
+        additionalProperties: false,
+    }, async (args) => {
+        const provider = await createProvider(args);
+        const result = await provider.executeAction({ type: 'back', timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined }, readObject(args.target));
+        return json(result);
+    }, { title: 'Browser back', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+    registerTool('browser_forward', 'Browser Computer Use: go forward via CDP Page.getNavigationHistory + Page.navigateToHistoryEntry. Background CDP only — do not use history.forward(), desktop screenshot, followForeground, HID or /json/activate.', {
+        type: 'object',
+        properties: {
+            connection: connectionSchema,
+            target: targetSchema,
+            timeoutMs: { type: 'number' },
+        },
+        additionalProperties: false,
+    }, async (args) => {
+        const provider = await createProvider(args);
+        const result = await provider.executeAction({ type: 'forward', timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined }, readObject(args.target));
+        return json(result);
+    }, { title: 'Browser forward', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+    registerTool('browser_wait', 'Browser Computer Use: poll /json URL/title plus document.readyState (and optional body text) until a condition matches. Does not subscribe to CDP events. Background CDP — no desktop screenshot / followForeground / HID.', {
+        type: 'object',
+        properties: {
+            connection: connectionSchema,
+            target: targetSchema,
+            urlIncludes: { type: 'string' },
+            titleIncludes: { type: 'string' },
+            textIncludes: { type: 'string' },
+            timeoutMs: { type: 'number', description: 'Defaults to 15000.' },
+        },
+        additionalProperties: false,
+    }, async (args) => {
+        const provider = await createProvider(args);
+        const result = await provider.waitForPage({
+            urlIncludes: typeof args.urlIncludes === 'string' ? args.urlIncludes : undefined,
+            titleIncludes: typeof args.titleIncludes === 'string' ? args.titleIncludes : undefined,
+            textIncludes: typeof args.textIncludes === 'string' ? args.textIncludes : undefined,
+            timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
+        }, readObject(args.target));
+        return json(result);
+    }, { title: 'Browser wait for page', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
+    registerTool('browser_get_page_text', 'Browser Computer Use: read location.href / document.title / document.body.innerText via Runtime.evaluate. Background CDP — no desktop screenshot / followForeground / HID.', {
+        type: 'object',
+        properties: {
+            connection: connectionSchema,
+            target: targetSchema,
+            maxChars: { type: 'number', description: 'Truncate innerText to this many characters. Defaults to 50000.' },
+        },
+        additionalProperties: false,
+    }, async (args) => {
+        const provider = await createProvider(args);
+        const result = await provider.getPageText(readObject(args.target), typeof args.maxChars === 'number' ? args.maxChars : undefined);
+        return json(result);
+    }, { title: 'Browser get page text', readOnlyHint: true, destructiveHint: false, idempotentHint: true });
+    registerTool('browser_new_tab', 'Browser Computer Use: open a new tab via HTTP /json/new (default about:blank). Background CDP — do not use /json/activate, window_focus, desktop screenshot, followForeground or HID.', {
+        type: 'object',
+        properties: {
+            connection: connectionSchema,
+            url: { type: 'string', description: 'Optional URL. Defaults to about:blank.' },
+        },
+        additionalProperties: false,
+    }, async (args) => {
+        const provider = await createProvider(args);
+        const result = await provider.openTab(typeof args.url === 'string' ? args.url : undefined);
+        return json(result);
+    }, { title: 'Browser new tab', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+    registerTool('browser_close_tab', 'Browser Computer Use: close a tab via HTTP GET /json/close/<targetId>. Background CDP — do not use /json/activate, desktop screenshot, followForeground or HID.', {
+        type: 'object',
+        properties: {
+            connection: connectionSchema,
+            target: targetSchema,
+        },
+        additionalProperties: false,
+    }, async (args) => {
+        const provider = await createProvider(args);
+        const result = await provider.closeTab(readObject(args.target));
+        return json(result);
+    }, { title: 'Browser close tab', readOnlyHint: false, destructiveHint: true, idempotentHint: false });
     registerTool('browser_get_capabilities', 'Browser Computer Use: report DOM/CDP background read/invoke/type capability, limitations, frame/permission/userGesture constraints and fallback order.', {
         type: 'object',
         properties: {
@@ -219,6 +379,9 @@ function readObject(value) {
     return undefined;
 }
 const NAVIGATE_ALIASES = new Set(['navigate', 'goto', 'open', 'load', 'page.navigate', 'cdp_navigate']);
+const RELOAD_ALIASES = new Set(['reload', 'refresh', 'page.reload']);
+const BACK_ALIASES = new Set(['back', 'goback', 'page.goback']);
+const FORWARD_ALIASES = new Set(['forward', 'goforward', 'page.goforward']);
 function looksLikeUrl(value) {
     const trimmed = value.trim();
     if (!trimmed)
@@ -242,7 +405,14 @@ function pickUrl(...candidates) {
 }
 function normalizeActionType(raw, hasUrl) {
     const type = typeof raw === 'string' ? raw.trim() : '';
-    if (type && NAVIGATE_ALIASES.has(type.toLowerCase()))
+    const typeKey = type.toLowerCase();
+    if (type && RELOAD_ALIASES.has(typeKey))
+        return 'reload';
+    if (type && BACK_ALIASES.has(typeKey))
+        return 'back';
+    if (type && FORWARD_ALIASES.has(typeKey))
+        return 'forward';
+    if (type && NAVIGATE_ALIASES.has(typeKey))
         return 'navigate';
     if (!type && hasUrl)
         return 'navigate';

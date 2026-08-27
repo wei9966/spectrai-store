@@ -108,7 +108,70 @@ export interface BrowserDomSnapshot {
     warnings: string[];
     capabilityHints: Pick<BrowserCapabilityReport, 'backgroundRead' | 'backgroundInvoke' | 'backgroundType' | 'requiresForeground' | 'visionFallbackNeeded'>;
 }
-export type BrowserActionType = 'click' | 'type' | 'setValue' | 'pressKey' | 'hotkey' | 'select' | 'scroll' | 'hover' | 'menu' | 'contextMenu' | 'upload' | 'navigate';
+export type BrowserActionType = 'click' | 'type' | 'setValue' | 'pressKey' | 'hotkey' | 'select' | 'scroll' | 'hover' | 'menu' | 'contextMenu' | 'upload' | 'navigate' | 'reload' | 'back' | 'forward';
+export type BrowserScreenshotFormat = 'png' | 'jpeg';
+export interface BrowserScreenshotOptions {
+    format?: BrowserScreenshotFormat;
+    /** JPEG quality 1-100. Ignored unless format=jpeg. */
+    quality?: number;
+    /** When true, CDP Page.captureScreenshot gets captureBeyondViewport: true. */
+    fullPage?: boolean;
+}
+export interface BrowserScreenshotResult {
+    ok: boolean;
+    provider: 'browser';
+    method: 'cdp-page';
+    url: string;
+    title: string;
+    targetId: string;
+    mimeType: 'image/png' | 'image/jpeg';
+    byteLength: number;
+    requiresForeground: false;
+    data: string;
+}
+export interface BrowserWaitForPageOptions {
+    urlIncludes?: string;
+    titleIncludes?: string;
+    textIncludes?: string;
+    timeoutMs?: number;
+}
+export interface BrowserWaitForPageResult {
+    ok: boolean;
+    provider: 'browser';
+    method: 'cdp-dom';
+    url: string;
+    title: string;
+    targetId: string;
+    readyState?: string;
+    matched: boolean;
+    elapsedMs: number;
+    failure?: BrowserActionFailure;
+    warnings: string[];
+}
+export interface BrowserPageTextResult {
+    ok: boolean;
+    provider: 'browser';
+    url: string;
+    title: string;
+    targetId: string;
+    text: string;
+    truncated: boolean;
+    charCount: number;
+    failure?: BrowserActionFailure;
+}
+export interface BrowserOpenTabResult extends BrowserTarget {
+    ok: boolean;
+    method: 'cdp-dom';
+    requiresForeground: false;
+}
+export interface BrowserCloseTabResult {
+    ok: boolean;
+    provider: 'browser';
+    method: 'cdp-http';
+    targetId: string;
+    closed: boolean;
+    failure?: BrowserActionFailure;
+}
 export type BrowserKeyModifier = 'Alt' | 'Control' | 'Meta' | 'Shift';
 export interface BrowserActionVerification {
     value?: string;
@@ -207,7 +270,7 @@ export interface BrowserCapabilityReport {
     requiresForeground: boolean;
     visionFallbackNeeded: boolean;
     selectorSupport: Array<'css' | 'xpath' | 'text' | 'role' | 'aria-label' | 'testId' | 'framePath' | 'url/title' | 'bounds'>;
-    actions: Record<BrowserActionType, 'native' | 'thin' | 'fallback' | 'unsupported'>;
+    actions: Record<BrowserActionType | 'screenshot' | 'wait' | 'newTab' | 'closeTab', 'native' | 'thin' | 'fallback' | 'unsupported'>;
     limitations: {
         frames: string[];
         permissions: string[];
@@ -223,6 +286,11 @@ export interface BrowserComputerUseProvider {
     readDomSnapshot(selector?: BrowserSelector, maxElements?: number, target?: BrowserTargetQuery): Promise<BrowserDomSnapshot>;
     findElement(selector: BrowserSelector, target?: BrowserTargetQuery): Promise<BrowserElement | null>;
     executeAction(action: BrowserAction, target?: BrowserTargetQuery): Promise<BrowserActionResult>;
+    captureScreenshot(options?: BrowserScreenshotOptions, target?: BrowserTargetQuery): Promise<BrowserScreenshotResult>;
+    waitForPage(options?: BrowserWaitForPageOptions, target?: BrowserTargetQuery): Promise<BrowserWaitForPageResult>;
+    getPageText(target?: BrowserTargetQuery, maxChars?: number): Promise<BrowserPageTextResult>;
+    openTab(url?: string): Promise<BrowserOpenTabResult>;
+    closeTab(target?: BrowserTargetQuery): Promise<BrowserCloseTabResult>;
     getCapabilityReport(): Promise<BrowserCapabilityReport>;
     getAppState(target?: BrowserTargetQuery): Promise<BrowserDomSnapshot>;
     getAppTree(target?: BrowserTargetQuery): Promise<BrowserDomSnapshot>;
