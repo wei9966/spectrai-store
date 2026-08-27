@@ -246,6 +246,52 @@ export function registerBrowserComputerUseTools(): void {
   )
 
   registerTool(
+    'browser_screenshot',
+    'Browser Computer Use: capture a background page screenshot via CDP Page.captureScreenshot. Do not use the desktop screenshot tool, followForeground, window_focus, ShowWindow, or HID — this stays on the CDP page target even when the browser is in the background.',
+    {
+      type: 'object',
+      properties: {
+        connection: connectionSchema,
+        target: targetSchema,
+        format: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format. Defaults to png.' },
+        quality: { type: 'number', minimum: 1, maximum: 100, description: 'JPEG quality 1-100. Ignored unless format=jpeg.' },
+        fullPage: { type: 'boolean', description: 'When true, Page.captureScreenshot uses captureBeyondViewport: true.' },
+      },
+      additionalProperties: false,
+    },
+    async (args) => {
+      const provider = await createProvider(args)
+      const result = await provider.captureScreenshot(
+        {
+          format: args.format === 'jpeg' ? 'jpeg' : 'png',
+          quality: typeof args.quality === 'number' ? args.quality : undefined,
+          fullPage: args.fullPage === true,
+        },
+        readObject<BrowserTargetQuery>(args.target),
+      )
+      const meta = {
+        ok: result.ok,
+        provider: result.provider,
+        method: result.method,
+        url: result.url,
+        title: result.title,
+        targetId: result.targetId,
+        mimeType: result.mimeType,
+        byteLength: result.byteLength,
+        requiresForeground: result.requiresForeground,
+      }
+      return {
+        content: [
+          { type: 'text', text: JSON.stringify(meta, null, 2) },
+          { type: 'image', data: result.data, mimeType: result.mimeType },
+        ],
+        structuredContent: meta,
+      }
+    },
+    { title: 'Browser page screenshot', readOnlyHint: true, destructiveHint: false, idempotentHint: false },
+  )
+
+  registerTool(
     'browser_get_capabilities',
     'Browser Computer Use: report DOM/CDP background read/invoke/type capability, limitations, frame/permission/userGesture constraints and fallback order.',
     {

@@ -11,6 +11,9 @@ interface FakeCdpServer {
   close: () => Promise<void>
 }
 
+const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+const JPEG_1X1 = '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJoA/9k='
+
 test('BrowserDomCdpProvider smoke: find selector and setValue verifies DOM value', async () => {
   const fake = await startFakeCdpServer()
   try {
@@ -52,6 +55,7 @@ test('BrowserDomCdpProvider smoke: capability report marks debug endpoint availa
     assert.ok(report.selectorSupport.includes('css'))
     assert.equal(report.actions.upload, 'fallback')
     assert.equal(report.actions.navigate, 'native')
+    assert.equal(report.actions.screenshot, 'native')
   } finally {
     await fake.close()
   }
@@ -169,6 +173,33 @@ test('BrowserDomCdpProvider capability report marks navigate as native', async (
   }
 })
 
+test('BrowserDomCdpProvider captureScreenshot: Page.captureScreenshot returns background page image', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.captureScreenshot()
+
+    assert.equal(result.ok, true)
+    assert.equal(result.provider, 'browser')
+    assert.equal(result.method, 'cdp-page')
+    assert.equal(result.mimeType, 'image/png')
+    assert.equal(result.requiresForeground, false)
+    assert.equal(result.url, 'https://fixture.local/form')
+    assert.equal(result.title, 'Fixture Form')
+    assert.equal(result.targetId, 'page_1')
+    assert.equal(result.data, PNG_1X1)
+    assert.equal(result.byteLength, Buffer.from(PNG_1X1, 'base64').byteLength)
+
+    const jpeg = await provider.captureScreenshot({ format: 'jpeg', quality: 80, fullPage: true })
+    assert.equal(jpeg.method, 'cdp-page')
+    assert.equal(jpeg.mimeType, 'image/jpeg')
+    assert.equal(jpeg.data, JPEG_1X1)
+    assert.equal(jpeg.requiresForeground, false)
+  } finally {
+    await fake.close()
+  }
+})
+
 interface FakeCdpServerOptions {
   mode?: 'form' | 'link-navigation' | 'same-page-toggle'
   emptyTargets?: boolean
@@ -269,7 +300,7 @@ async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<F
         const command = JSON.parse(frame.payload.toString('utf8')) as {
           id: number
           method: string
-          params?: { expression?: string; url?: string }
+          params?: { expression?: string; url?: string; format?: string; quality?: number; captureBeyondViewport?: boolean }
         }
         socket.write(encodeServerFrame(JSON.stringify(fakeCdpResult(command, mode, page))))
       }
@@ -290,7 +321,7 @@ async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<F
 }
 
 function fakeCdpResult(
-  command: { id: number; method: string; params?: { expression?: string; url?: string } },
+  command: { id: number; method: string; params?: { expression?: string; url?: string; format?: string; quality?: number; captureBeyondViewport?: boolean } },
   mode: NonNullable<FakeCdpServerOptions['mode']>,
   page: { url: string; title: string; value: string; mutationHash: string; navigated: boolean },
 ): Record<string, unknown> {
@@ -304,6 +335,10 @@ function fakeCdpResult(
     page.mutationHash = url
     page.navigated = true
     return { id: command.id, result: { frameId: 'f1' } }
+  }
+  if (command.method === 'Page.captureScreenshot') {
+    const format = command.params?.format === 'jpeg' ? 'jpeg' : 'png'
+    return { id: command.id, result: { data: format === 'jpeg' ? JPEG_1X1 : PNG_1X1 } }
   }
   if (command.method === 'Runtime.evaluate') {
     const expression = command.params?.expression ?? ''
@@ -320,6 +355,10 @@ function fakeRuntimeEvaluate(
   mode: NonNullable<FakeCdpServerOptions['mode']>,
   page: { url: string; title: string; value: string; mutationHash: string; navigated: boolean },
 ): Record<string, unknown> {
+  if (expression === '({url: location.href, title: document.title})') {
+    return { result: { type: 'object', value: { url: page.url, title: page.title } } }
+  }
+
   if (expression.includes('const __spectraiTask = "find"')) {
     return {
       result: {

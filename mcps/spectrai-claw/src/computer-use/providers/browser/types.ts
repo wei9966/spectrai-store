@@ -133,6 +133,30 @@ export type BrowserActionType =
   | 'upload'
   | 'navigate'
 
+// ponytail: screenshot is a native CDP capture, not an executeAction click/type alias.
+export type BrowserScreenshotFormat = 'png' | 'jpeg'
+
+export interface BrowserScreenshotOptions {
+  format?: BrowserScreenshotFormat
+  /** JPEG quality 1-100. Ignored unless format=jpeg. */
+  quality?: number
+  /** When true, CDP Page.captureScreenshot gets captureBeyondViewport: true. */
+  fullPage?: boolean
+}
+
+export interface BrowserScreenshotResult {
+  ok: boolean
+  provider: 'browser'
+  method: 'cdp-page'
+  url: string
+  title: string
+  targetId: string
+  mimeType: 'image/png' | 'image/jpeg'
+  byteLength: number
+  requiresForeground: false
+  data: string
+}
+
 export type BrowserKeyModifier = 'Alt' | 'Control' | 'Meta' | 'Shift'
 
 export interface BrowserActionVerification {
@@ -234,7 +258,7 @@ export interface BrowserCapabilityReport {
   requiresForeground: boolean
   visionFallbackNeeded: boolean
   selectorSupport: Array<'css' | 'xpath' | 'text' | 'role' | 'aria-label' | 'testId' | 'framePath' | 'url/title' | 'bounds'>
-  actions: Record<BrowserActionType, 'native' | 'thin' | 'fallback' | 'unsupported'>
+  actions: Record<BrowserActionType | 'screenshot', 'native' | 'thin' | 'fallback' | 'unsupported'>
   limitations: {
     frames: string[]
     permissions: string[]
@@ -251,6 +275,7 @@ export interface BrowserComputerUseProvider {
   readDomSnapshot(selector?: BrowserSelector, maxElements?: number, target?: BrowserTargetQuery): Promise<BrowserDomSnapshot>
   findElement(selector: BrowserSelector, target?: BrowserTargetQuery): Promise<BrowserElement | null>
   executeAction(action: BrowserAction, target?: BrowserTargetQuery): Promise<BrowserActionResult>
+  captureScreenshot(options?: BrowserScreenshotOptions, target?: BrowserTargetQuery): Promise<BrowserScreenshotResult>
   getCapabilityReport(): Promise<BrowserCapabilityReport>
 
   getAppState(target?: BrowserTargetQuery): Promise<BrowserDomSnapshot>

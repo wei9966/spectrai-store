@@ -14,6 +14,8 @@ import type {
   BrowserElement,
   BrowserElementState,
   BrowserFallbackSuggestion,
+  BrowserScreenshotOptions,
+  BrowserScreenshotResult,
   BrowserSelector,
   BrowserTarget,
   BrowserTargetQuery,
@@ -146,6 +148,46 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     }
   }
 
+  async captureScreenshot(options: BrowserScreenshotOptions = {}, target?: BrowserTargetQuery): Promise<BrowserScreenshotResult> {
+    const resolvedTarget = await this.resolveTarget(target)
+    if (!resolvedTarget.webSocketDebuggerUrl) {
+      throw new CdpError('target_not_found', 'Target has no webSocketDebuggerUrl', { target: resolvedTarget })
+    }
+
+    const format = options.format === 'jpeg' ? 'jpeg' : 'png'
+    const params: Record<string, unknown> = { format }
+    if (format === 'jpeg' && options.quality != null && Number.isFinite(options.quality)) {
+      params.quality = Math.min(100, Math.max(1, Math.round(options.quality)))
+    }
+    if (options.fullPage) params.captureBeyondViewport = true
+
+    const session = new CdpSession(resolvedTarget.webSocketDebuggerUrl, this.defaultTimeoutMs)
+    try {
+      await session.send('Page.enable', {}, this.defaultTimeoutMs)
+      const captured = await session.send<{ data?: string }>('Page.captureScreenshot', params, this.defaultTimeoutMs)
+      const data = typeof captured?.data === 'string' ? captured.data : ''
+      if (!data) {
+        throw new CdpError('cdp_command_failed', 'Page.captureScreenshot returned no image data')
+      }
+      const meta = await this.pageUrlTitle(session, resolvedTarget)
+      const mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png'
+      return {
+        ok: true,
+        provider: 'browser',
+        method: 'cdp-page',
+        url: meta.url,
+        title: meta.title,
+        targetId: resolvedTarget.targetId,
+        mimeType,
+        byteLength: Buffer.from(data, 'base64').byteLength,
+        requiresForeground: false,
+        data,
+      }
+    } finally {
+      session.close()
+    }
+  }
+
   async getCapabilityReport(): Promise<BrowserCapabilityReport> {
     let targets: BrowserTarget[] = []
     let status: BrowserCapabilityReport['status'] = 'available'
@@ -190,6 +232,7 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
         contextMenu: 'thin',
         upload: 'fallback',
         navigate: 'native',
+        screenshot: 'native',
       },
       limitations: {
         frames: [
@@ -437,6 +480,26 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
       throw new CdpError('target_not_found', 'No attachable CDP page target matched the browser query.', { query })
     }
     return selected
+  }
+
+  private async pageUrlTitle(session: CdpSession, target: BrowserTarget): Promise<{ url: string; title: string }> {
+    try {
+      const payload = await session.send<RuntimeEvaluateResult>(
+        'Runtime.evaluate',
+        {
+          expression: '({url: location.href, title: document.title})',
+          returnByValue: true,
+        },
+        this.defaultTimeoutMs,
+      )
+      const value = extractRuntimeValue<{ url?: unknown; title?: unknown }>(payload)
+      return {
+        url: typeof value?.url === 'string' && value.url ? value.url : target.url,
+        title: typeof value?.title === 'string' ? value.title : target.title,
+      }
+    } catch {
+      return { url: target.url, title: target.title }
+    }
   }
 
   private async evaluate<T>(target: BrowserTarget, expression: string): Promise<T> {

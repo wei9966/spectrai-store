@@ -1,6 +1,6 @@
 # Browser DOM/CDP Computer Use Provider
 
-Browser provider 将浏览器内容区作为一等 Computer Use target 处理：优先通过 Chrome DevTools Protocol (CDP) 和 DOM selector 读取网页状态、定位元素、执行语义动作与动作后验证；截图、OCR、坐标/HID 只作为失败后的 fallback 建议。
+Browser provider 将浏览器内容区作为一等 Computer Use target 处理：优先通过 Chrome DevTools Protocol (CDP) 和 DOM selector 读取网页状态、定位元素、执行语义动作与动作后验证。页面截图走 CDP `Page.captureScreenshot`（后台、不抢前台）；桌面 `screenshot` / OCR / 坐标 HID 只作为失败后的 fallback，不要拿来代替浏览器页面截图。
 
 ## 代码位置
 
@@ -24,6 +24,7 @@ await provider.readDomSnapshot({ css: 'input[name=q]' }, 200)
 await provider.findElement({ role: 'button', text: '百度一下' })
 await provider.executeAction({ type: 'navigate', url: 'https://www.baidu.com' })
 await provider.executeAction({ type: 'click', selector: { text: '百度一下' }, verify: { urlIncludes: 'baidu.com' } })
+await provider.captureScreenshot({ format: 'png', fullPage: true })
 await provider.getCapabilityReport()
 
 // Core compatibility aliases:
@@ -42,6 +43,7 @@ MCP tool names:
 - `browser_find_element`
 - `browser_execute_action`
 - `browser_navigate`
+- `browser_screenshot`
 - `browser_get_capabilities`
 
 ## CDP / Playwright 接入策略
@@ -106,6 +108,7 @@ open -a "Google Chrome" --args --remote-debugging-port=9222
 | `hover` | MouseEvent `mouseover` 薄实现 | 显式 `verify` 推荐 |
 | `menu` / `contextMenu` | MouseEvent `contextmenu` 薄实现 | 显式 `verify` 推荐 |
 | `navigate`（别名 `goto`/`open`/`load`） | CDP `Page.enable` + `Page.navigate({url})`；失败或无 page target 时 fallback `/json/new?<url>` | 默认 `urlIncludes` hostname/path；超时 `max(action.timeoutMs, 15000)` |
+| `screenshot`（独立 API，不走 `executeAction`） | CDP `Page.enable` + `Page.captureScreenshot`；`fullPage` 时 `captureBeyondViewport: true` | 返回页面 PNG/JPEG，`requiresForeground=false` |
 | `upload` | 接口已建模，当前返回 permission-aware fallback | 建议 Playwright/CDP `DOM.setFileInputFiles` 路径 |
 
 ## 动作后验证
@@ -162,7 +165,8 @@ open -a "Google Chrome" --args --remote-debugging-port=9222
     "menu": "thin",
     "contextMenu": "thin",
     "upload": "fallback",
-    "navigate": "native"
+    "navigate": "native",
+    "screenshot": "native"
   }
 }
 ```
@@ -189,6 +193,31 @@ await provider.executeAction({ type: 'navigate', url: 'https://www.baidu.com' })
 ```
 
 或 `browser_execute_action`：`action.type=navigate` + `action.url`。别名 `goto`/`open`/`load` 以及顶层 `url` / `action.value`（像 URL 时）也会归一成 navigate。`example.com` 会补 `https://`。
+
+## 后台页面截图
+
+不要用桌面 `screenshot`、`followForeground`、任务栏激活或 HID 去拍浏览器。静默操作时前台窗口不是当前 tab，桌面截图会瞎。`browser_screenshot` 对已 attach 的 CDP page target 发 `Page.captureScreenshot`，浏览器可以在后台。
+
+```ts
+await provider.captureScreenshot({ format: 'png' })
+await provider.captureScreenshot({ format: 'jpeg', quality: 80, fullPage: true })
+```
+
+等价 MCP：
+
+```json
+{
+  "tool": "browser_screenshot",
+  "arguments": {
+    "connection": { "browserURL": "http://127.0.0.1:9222" },
+    "target": { "urlIncludes": "baidu.com" },
+    "format": "png",
+    "fullPage": true
+  }
+}
+```
+
+返回 MCP content：一段 JSON 文本（`ok/provider/method=cdp-page/url/title/targetId/mimeType/byteLength/requiresForeground=false`）+ 一张 `{ type: "image", data, mimeType }` 方便会话直接看图。
 
 ## 百度搜索示例
 
@@ -257,5 +286,5 @@ node --test dist/computer-use/providers/browser/__tests__/browser-provider.test.
 
 1. 启动 Chrome：`chrome --remote-debugging-port=9222`；
 2. 打开测试页面或百度；
-3. 调用 `browser_get_capabilities`，确认 `status=available`；
-4. 调用 `browser_find_element` 和 `browser_execute_action`。
+3. 调用 `browser_get_capabilities`，确认 `status=available` 且 `actions.screenshot=native`；
+4. 调用 `browser_find_element`、`browser_execute_action` 和 `browser_screenshot`（不要用桌面 screenshot）。
