@@ -1,8 +1,18 @@
+import { mkdir, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+
 import { registerTool } from '../../../tools/registry.js'
 import { ensureDebugBrowser } from './ensure-debug-browser.js'
 import { BrowserDomCdpProvider } from './provider.js'
 import { normalizeBrowserSelector } from './selector-normalize.js'
-import type { BrowserAction, BrowserConnectionOptions, BrowserSelector, BrowserTargetQuery } from './types.js'
+import type {
+  BrowserAction,
+  BrowserConnectionOptions,
+  BrowserScreenshotResult,
+  BrowserSelector,
+  BrowserTargetQuery,
+} from './types.js'
 
 const connectionSchema = {
   type: 'object',
@@ -274,7 +284,7 @@ export function registerBrowserComputerUseTools(): void {
 
   registerTool(
     'browser_screenshot',
-    'Browser Computer Use: capture a background page screenshot via CDP Page.captureScreenshot. Do not use the desktop screenshot tool, followForeground, window_focus, ShowWindow, or HID — this stays on the CDP page target even when the browser is in the background.',
+    'Browser Computer Use: capture a background page screenshot via CDP Page.captureScreenshot. The response includes a saved file path — Read that PNG first, then operate. Do not use desktop screenshot, window_focus, or HID — this stays on the CDP page target even when the browser is in the background.',
     {
       type: 'object',
       properties: {
@@ -283,6 +293,7 @@ export function registerBrowserComputerUseTools(): void {
         format: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format. Defaults to png.' },
         quality: { type: 'number', minimum: 1, maximum: 100, description: 'JPEG quality 1-100. Ignored unless format=jpeg.' },
         fullPage: { type: 'boolean', description: 'When true, Page.captureScreenshot uses captureBeyondViewport: true.' },
+        savePath: { type: 'string', description: 'File path to save screenshot. Default: temp spectrai_browser_ss_yyyyMMdd_HHmmss_fff.png|.jpg.' },
       },
       additionalProperties: false,
     },
@@ -296,23 +307,16 @@ export function registerBrowserComputerUseTools(): void {
         },
         readObject<BrowserTargetQuery>(args.target),
       )
-      const meta = {
-        ok: result.ok,
-        provider: result.provider,
-        method: result.method,
-        url: result.url,
-        title: result.title,
-        targetId: result.targetId,
-        mimeType: result.mimeType,
-        byteLength: result.byteLength,
-        requiresForeground: result.requiresForeground,
-      }
+      const persisted = await persistBrowserScreenshot(
+        result,
+        typeof args.savePath === 'string' ? args.savePath : undefined,
+      )
       return {
         content: [
-          { type: 'text', text: JSON.stringify(meta, null, 2) },
+          { type: 'text', text: persisted.text },
           { type: 'image', data: result.data, mimeType: result.mimeType },
         ],
-        structuredContent: meta,
+        structuredContent: persisted.meta,
       }
     },
     { title: 'Browser page screenshot', readOnlyHint: true, destructiveHint: false, idempotentHint: false },
@@ -496,6 +500,44 @@ export function registerBrowserComputerUseTools(): void {
     },
     { title: 'Browser capability report', readOnlyHint: true, destructiveHint: false, idempotentHint: false },
   )
+}
+
+export async function persistBrowserScreenshot(
+  result: Pick<BrowserScreenshotResult, 'ok' | 'provider' | 'method' | 'url' | 'title' | 'targetId' | 'mimeType' | 'byteLength' | 'requiresForeground' | 'data'>,
+  savePath?: string,
+  now: Date = new Date(),
+): Promise<{ path: string; text: string; meta: Record<string, unknown> }> {
+  const ext = result.mimeType === 'image/jpeg' ? '.jpg' : '.png'
+  const absolutePath = savePath?.trim()
+    ? resolve(savePath.trim())
+    : join(tmpdir(), `spectrai_browser_ss_${formatBrowserScreenshotStamp(now)}${ext}`)
+  await mkdir(dirname(absolutePath), { recursive: true })
+  await writeFile(absolutePath, Buffer.from(result.data, 'base64'))
+  const meta = {
+    ok: result.ok,
+    provider: result.provider,
+    method: result.method,
+    url: result.url,
+    title: result.title,
+    targetId: result.targetId,
+    mimeType: result.mimeType,
+    byteLength: result.byteLength,
+    requiresForeground: result.requiresForeground,
+    path: absolutePath,
+    savePath: absolutePath,
+  }
+  const text = [
+    `Screenshot saved: ${absolutePath}`,
+    `Capture: url=${result.url} title=${result.title} method=${result.method} byteLength=${result.byteLength} requiresForeground=${result.requiresForeground}`,
+    'NEXT: Use the Read tool to VIEW this image first. Understand the page before clicking.',
+    JSON.stringify(meta, null, 2),
+  ].join('\n')
+  return { path: absolutePath, text, meta }
+}
+
+function formatBrowserScreenshotStamp(now: Date): string {
+  const pad = (value: number, size = 2) => String(value).padStart(size, '0')
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}_${pad(now.getMilliseconds(), 3)}`
 }
 
 async function createProvider(args: Record<string, unknown>): Promise<BrowserDomCdpProvider> {
