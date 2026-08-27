@@ -5,7 +5,7 @@
       "name": "spectrai-claw",
       "displayName": "SpectrAI Claw",
       "description": "跨平台桌面自动化 MCP Server。macOS 端常驻 Swift daemon（Unix socket + AXorcist + ScreenCaptureKit），三路检测：AX 主路 + Vision OCR 兵底 + CDP 浏览器专路；Windows 端仍走 UIA + PowerShell。支持截图、鼠标键盘、元素识别、窗口管理、应用激活。",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "path": "mcps/spectrai-claw",
       "command": "node",
       "args": ["dist/index.js"],

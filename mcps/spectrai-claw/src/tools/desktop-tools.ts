@@ -69,6 +69,7 @@ const __dirname = dirname(__filename)
 const OCR_WORKER_PS1 = join(__dirname, '..', 'scripts', 'ocr-worker.ps1')
 import { shell } from '../helpers/PersistentShell.js'
 import { PolicyEngine } from '../security/PolicyEngine.js'
+import { presenceHide, presenceMark } from '../helpers/presence-overlay.js'
 
 const sn = PolicyEngine.sanitizeNumber.bind(PolicyEngine)
 const sp = PolicyEngine.sanitizeForPowerShell.bind(PolicyEngine)
@@ -249,6 +250,8 @@ async function tryUiaAction(
   const rectY = element.rectY != null ? sn(element.rectY) : sn(element.screenY)
   const rectW = element.rectW != null ? sn(element.rectW) : 0
   const rectH = element.rectH != null ? sn(element.rectH) : 0
+
+  try { presenceMark(action === 'setValue' ? 'type' : 'click', element.screenX, element.screenY) } catch { /* overlay must never fail UIA */ }
 
   const script = `
 $meta = @{
@@ -813,6 +816,8 @@ export async function registerDesktopTools(): Promise<void> {
       } else {
         outPath = '' // Will be set by PowerShell
       }
+      try { presenceHide() } catch { /* overlay must never fail screenshot */ }
+
       const saveLine = outPath
         ? `$outFile = '${sp(outPath.replace(/\\/g, '\\\\'))}'`
         : `$outFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "spectrai_ss_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').png")`
@@ -1557,6 +1562,8 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
       }
       const events = clickFlags.split(';').map(f => `[Win32]::mouse_event(${f}, 0, 0, 0, [UIntPtr]::Zero)`).join('\n')
 
+      try { presenceMark('click', screenX, screenY) } catch { /* overlay must never fail click */ }
+
       const script = `
 [Win32]::SetCursorPos(${screenX}, ${screenY})
 Start-Sleep -Milliseconds 30
@@ -1623,6 +1630,7 @@ Write-Output "clicked|$vPath"
   ): Promise<string> {
     const clickFlags = getMouseClickFlags(button, clickType)
     const events = getMouseClickEvents(clickFlags)
+    try { presenceMark('click', cx, cy) } catch { /* overlay must never fail HID click */ }
     const script = `
 [Win32]::SetCursorPos(${cx}, ${cy})
 Start-Sleep -Milliseconds 20
@@ -2291,6 +2299,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
       if (!ssPath) {
         // Take a fresh screenshot
         try {
+          try { presenceHide() } catch { /* overlay must never fail screenshot */ }
           const freshScript = `
 $outPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "spectrai_vclick_ss_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').png")
 $screen = [System.Windows.Forms.Screen]::PrimaryScreen
@@ -2417,6 +2426,8 @@ $g.Dispose()
 
       const events = flags.split(';').map(f => `[Win32]::mouse_event(${f}, 0, 0, 0, [UIntPtr]::Zero)`).join('\n')
 
+      try { presenceMark('click', px, py) } catch { /* overlay must never fail click */ }
+
       const script = `
 [Win32]::SetCursorPos(${px}, ${py})
 Start-Sleep -Milliseconds 30
@@ -2481,6 +2492,7 @@ Write-Output "clicked|$vPath"
     async (args) => {
       const px = sn(args.x)
       const py = sn(args.y)
+      try { presenceMark('move', px, py) } catch { /* overlay must never fail move */ }
       const script = `
 [Win32]::SetCursorPos(${px}, ${py})
 Write-Output "moved to ${px},${py}"
@@ -2512,7 +2524,10 @@ Write-Output "moved to ${px},${py}"
       const delta = sn(args.delta) * 120
       let moveCmd = ''
       if (args.x != null && args.y != null) {
+        try { presenceMark('scroll', sn(args.x), sn(args.y)) } catch { /* overlay must never fail scroll */ }
         moveCmd = `[Win32]::SetCursorPos(${sn(args.x)}, ${sn(args.y)})\nStart-Sleep -Milliseconds 30`
+      } else {
+        try { presenceMark('scroll') } catch { /* overlay must never fail scroll */ }
       }
       const script = `
 ${moveCmd}
@@ -2598,6 +2613,10 @@ Write-Output "scrolled"
       // Fallback: focus known target via center click (cheap) + SendKeys.
       const sanitized = sp(text)
       const sendKeySafe = sanitized.replace(/[+^%~(){}[\]]/g, '{$&}')
+      try {
+        if (targetElement) presenceMark('type', targetElement.screenX, targetElement.screenY)
+        else presenceMark('type')
+      } catch { /* overlay must never fail type */ }
       const focusClick = targetElement
         ? `[Win32]::SetCursorPos(${sn(targetElement.screenX)}, ${sn(targetElement.screenY)}); Start-Sleep -Milliseconds 20; [Win32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); [Win32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 30\n`
         : ''
@@ -2651,6 +2670,7 @@ Write-Output "typed"
       if (!sendKey) {
         return { isError: true, content: [{ type: 'text', text: `Unknown key: ${key}` }] }
       }
+      try { presenceMark(`key ${key}`) } catch { /* overlay must never fail key */ }
       const script = `
 $wsh = New-Object -ComObject WScript.Shell
 $wsh.SendKeys('${sendKey}')
@@ -2710,6 +2730,7 @@ Write-Output "pressed"
       }
 
       const combo = `${prefix}${mainKey}`
+      try { presenceMark(`hotkey ${keys.join('+')}`) } catch { /* overlay must never fail hotkey */ }
       const script = `
 $wsh = New-Object -ComObject WScript.Shell
 $wsh.SendKeys('${sp(combo)}')
@@ -2999,6 +3020,8 @@ Write-Output "closed window(s)"
       const scale = args.scale != null ? Math.max(1, Math.min(4, sn(args.scale))) : 1
       const grid = args.grid !== false // default ON
       const annotate = args.annotate !== false
+
+      try { presenceHide() } catch { /* overlay must never fail screenshot */ }
 
       const script = `
 $zx = ${zx}; $zy = ${zy}; $zw = ${zw}; $zh = ${zh}; $scale = ${scale}
