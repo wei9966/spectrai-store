@@ -24,6 +24,12 @@ await provider.readDomSnapshot({ css: 'input[name=q]' }, 200)
 await provider.findElement({ role: 'button', text: '百度一下' })
 await provider.executeAction({ type: 'navigate', url: 'https://www.baidu.com' })
 await provider.executeAction({ type: 'click', selector: { text: '百度一下' }, verify: { urlIncludes: 'baidu.com' } })
+await provider.executeAction({ type: 'reload' })
+await provider.executeAction({ type: 'back' })
+await provider.waitForPage({ urlIncludes: 'baidu.com' })
+await provider.getPageText()
+await provider.openTab('https://www.baidu.com')
+await provider.closeTab()
 await provider.captureScreenshot({ format: 'png', fullPage: true })
 await provider.getCapabilityReport()
 
@@ -44,6 +50,13 @@ MCP tool names:
 - `browser_execute_action`
 - `browser_navigate`
 - `browser_screenshot`
+- `browser_reload`
+- `browser_back`
+- `browser_forward`
+- `browser_wait`
+- `browser_get_page_text`
+- `browser_new_tab`
+- `browser_close_tab`
 - `browser_get_capabilities`
 
 ## CDP / Playwright 接入策略
@@ -108,7 +121,13 @@ open -a "Google Chrome" --args --remote-debugging-port=9222
 | `hover` | MouseEvent `mouseover` 薄实现 | 显式 `verify` 推荐 |
 | `menu` / `contextMenu` | MouseEvent `contextmenu` 薄实现 | 显式 `verify` 推荐 |
 | `navigate`（别名 `goto`/`open`/`load`） | CDP `Page.enable` + `Page.navigate({url})`；失败或无 page target 时 fallback `/json/new?<url>` | 默认 `urlIncludes` hostname/path；超时 `max(action.timeoutMs, 15000)` |
+| `reload`（别名 `refresh`/`Page.reload`） | CDP `Page.enable` + `Page.reload`，再轮询 `/json` + `document.readyState`（URL 可不变） | 后台 CDP，不走 DOM click / HID |
+| `back` / `forward`（别名 `goBack`/`Page.goBack`、`goForward`/`Page.goForward`） | CDP **没有** `Page.goBack`。必须 `Page.getNavigationHistory` + `Page.navigateToHistoryEntry({entryId})`。越界返回 `unsupported_action`。禁止 `history.back()` / `history.forward()` | 后台 CDP history API |
 | `screenshot`（独立 API，不走 `executeAction`） | CDP `Page.enable` + `Page.captureScreenshot`；`fullPage` 时 `captureBeyondViewport: true` | 返回页面 PNG/JPEG，`requiresForeground=false` |
+| `wait`（独立 `waitForPage`） | 轮询 `/json` 的 URL/title + `document.readyState` + 可选 `document.body.innerText`。**不要订阅 CDP 事件**（`CdpSession` 会丢） | 超时 `ok=false` + failure，不抛崩 MCP |
+| `newTab`（独立 `openTab`） | 复用 HTTP `/json/new?<url>`（缺省 `about:blank`），再 `waitForTargetLoad`。禁止 `/json/activate` / `window_focus` | `requiresForeground=false` |
+| `closeTab`（独立 `closeTab`） | HTTP `GET /json/close/<targetId>`。Chrome 可能返回 `"Target is closing"` 或空 body；2xx 即成功。禁止 `/json/activate` | `method=cdp-http` |
+| `getPageText`（独立） | `Runtime.evaluate` 精确表达式 `({url: location.href, title: document.title, text: document.body ? document.body.innerText : ""})`，截断约 50k | 不要宽匹配 DOM snapshot |
 | `upload` | 接口已建模，当前返回 permission-aware fallback | 建议 Playwright/CDP `DOM.setFileInputFiles` 路径 |
 
 ## 动作后验证
@@ -166,7 +185,13 @@ open -a "Google Chrome" --args --remote-debugging-port=9222
     "contextMenu": "thin",
     "upload": "fallback",
     "navigate": "native",
-    "screenshot": "native"
+    "reload": "native",
+    "back": "native",
+    "forward": "native",
+    "screenshot": "native",
+    "wait": "native",
+    "newTab": "native",
+    "closeTab": "native"
   }
 }
 ```
@@ -218,6 +243,66 @@ await provider.captureScreenshot({ format: 'jpeg', quality: 80, fullPage: true }
 ```
 
 返回 MCP content：一段 JSON 文本（`ok/provider/method=cdp-page/url/title/targetId/mimeType/byteLength/requiresForeground=false`）+ 一张 `{ type: "image", data, mimeType }` 方便会话直接看图。
+
+## 后台页级动作（reload / back / wait / 读正文 / tab）
+
+全部走后台 CDP，**不要**桌面 screenshot、`followForeground`、HID、`/json/activate`。
+
+- **reload**：`Page.enable` + `Page.reload`，再轮询 `/json` + `document.readyState`（URL 可不变）。
+- **back / forward**：CDP 没有 `Page.goBack`。必须 `Page.getNavigationHistory` + `Page.navigateToHistoryEntry({entryId})`。历史到头返回 `failure.code=unsupported_action`。禁止赌 `history.back()` / `history.forward()`。
+- **wait**：轮询 `/json` URL/title + `document.readyState` + 可选 `document.body.innerText`。**不要订阅 CDP 事件**（`CdpSession` 会丢事件）。
+- **get_page_text**：`Runtime.evaluate` 精确表达式读 `location.href` / `document.title` / `document.body.innerText`。
+- **new_tab**：HTTP `/json/new?<url>`（缺省 `about:blank`）。禁止 `/json/activate` / `window_focus`。
+- **close_tab**：HTTP `GET /json/close/<targetId>`。Chrome 可能返回 `"Target is closing"` 或空 body；2xx 即成功。禁止 `/json/activate`。
+
+```ts
+await provider.executeAction({ type: 'reload' })
+await provider.executeAction({ type: 'back' })
+await provider.executeAction({ type: 'forward' })
+await provider.waitForPage({ urlIncludes: 'baidu.com', timeoutMs: 15_000 })
+await provider.getPageText(undefined, 50_000)
+await provider.openTab('https://www.baidu.com')
+await provider.closeTab({ urlIncludes: 'baidu.com' })
+```
+
+等价 MCP：
+
+```json
+{ "tool": "browser_reload", "arguments": { "connection": { "browserURL": "http://127.0.0.1:9222" } } }
+```
+
+```json
+{ "tool": "browser_back", "arguments": { "target": { "urlIncludes": "baidu.com" } } }
+```
+
+```json
+{ "tool": "browser_forward", "arguments": {} }
+```
+
+```json
+{
+  "tool": "browser_wait",
+  "arguments": {
+    "urlIncludes": "baidu.com",
+    "titleIncludes": "百度",
+    "timeoutMs": 15000
+  }
+}
+```
+
+```json
+{ "tool": "browser_get_page_text", "arguments": { "maxChars": 50000 } }
+```
+
+```json
+{ "tool": "browser_new_tab", "arguments": { "url": "https://www.baidu.com" } }
+```
+
+```json
+{ "tool": "browser_close_tab", "arguments": { "target": { "targetId": "page_1" } } }
+```
+
+`browser_execute_action` 也接受 `reload`/`refresh`/`back`/`goBack`/`forward`/`goForward`（不要把这些当成 navigate）。
 
 ## 百度搜索示例
 

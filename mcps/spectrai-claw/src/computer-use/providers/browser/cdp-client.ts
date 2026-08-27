@@ -53,12 +53,20 @@ export class CdpHttpClient {
   }
 
   async requestJson<T>(method: 'GET' | 'PUT' | 'POST', path: string, timeoutMs = this.defaultTimeoutMs): Promise<T> {
-    // ponytail: never `new URL('/json/new?'+url, base)` — it parses the target URL as the query and mangles it.
+    const { body } = await this.requestText(method, path, timeoutMs)
+    try {
+      return JSON.parse(body) as T
+    } catch (error) {
+      throw new CdpError('invalid_json', `Failed to decode CDP JSON from ${path}`, { body, error })
+    }
+  }
+
+  async requestText(method: 'GET' | 'PUT' | 'POST', path: string, timeoutMs = this.defaultTimeoutMs): Promise<{ statusCode: number; body: string }> {
     const href = path.startsWith('http://') || path.startsWith('https://')
       ? path
       : `${this.browserURL.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`
     const url = new URL(href)
-    return await new Promise<T>((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       const request = http.request(
         url,
         {
@@ -73,15 +81,12 @@ export class CdpHttpClient {
           response.on('data', (chunk: Buffer) => chunks.push(chunk))
           response.on('end', () => {
             const body = Buffer.concat(chunks).toString('utf8')
-            if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
-              reject(new CdpError('http_error', `CDP HTTP ${method} ${url.pathname} returned ${response.statusCode}`, { body }))
+            const statusCode = response.statusCode ?? 0
+            if (!statusCode || statusCode < 200 || statusCode >= 300) {
+              reject(new CdpError('http_error', `CDP HTTP ${method} ${url.pathname} returned ${statusCode}`, { body }))
               return
             }
-            try {
-              resolve(JSON.parse(body) as T)
-            } catch (error) {
-              reject(new CdpError('invalid_json', `Failed to decode CDP JSON from ${url.pathname}`, { body, error }))
-            }
+            resolve({ statusCode, body })
           })
         },
       )
@@ -119,6 +124,19 @@ export class CdpHttpClient {
       throw new CdpError('http_error', 'CDP /json/new did not return a page target', { payload })
     }
     return target
+  }
+
+  /** Close a tab via Chrome's HTTP `/json/close/<id>`. Body may be empty or a JSON string. */
+  async closeTarget(targetId: string, timeoutMs = this.defaultTimeoutMs): Promise<void> {
+    const { body } = await this.requestText('GET', `/json/close/${encodeURIComponent(targetId)}`, timeoutMs)
+    const trimmed = body.trim()
+    // ponytail: Chrome may return `"Target is closing"`, empty body, or non-JSON text. 2xx is enough.
+    if (!trimmed) return
+    try {
+      JSON.parse(trimmed)
+    } catch {
+      // non-JSON 2xx still counts as closed
+    }
   }
 
   private toPageTargets(payload: Array<Record<string, unknown>>): BrowserTarget[] {

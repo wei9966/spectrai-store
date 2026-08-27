@@ -8,17 +8,22 @@ import type {
   BrowserActionVerification,
   BrowserActionVerificationResult,
   BrowserCapabilityReport,
+  BrowserCloseTabResult,
   BrowserComputerUseProvider,
   BrowserConnectionOptions,
   BrowserDomSnapshot,
   BrowserElement,
   BrowserElementState,
   BrowserFallbackSuggestion,
+  BrowserOpenTabResult,
+  BrowserPageTextResult,
   BrowserScreenshotOptions,
   BrowserScreenshotResult,
   BrowserSelector,
   BrowserTarget,
   BrowserTargetQuery,
+  BrowserWaitForPageOptions,
+  BrowserWaitForPageResult,
   BrowserWindow,
 } from './types.js'
 
@@ -119,6 +124,12 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     const normalizedInput = coerceBrowserAction(action)
     if (normalizedInput.type === 'navigate') {
       return await this.navigateUrl(normalizedInput, target)
+    }
+    if (normalizedInput.type === 'reload') {
+      return await this.reloadPage(normalizedInput, target)
+    }
+    if (normalizedInput.type === 'back' || normalizedInput.type === 'forward') {
+      return await this.navigateHistory(normalizedInput, target)
     }
     const resolvedTarget = await this.resolveTarget(target ?? normalizedInput.selector)
     const actionWithSelector = await this.normalizeAction(normalizedInput, resolvedTarget)
@@ -232,7 +243,13 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
         contextMenu: 'thin',
         upload: 'fallback',
         navigate: 'native',
+        reload: 'native',
+        back: 'native',
+        forward: 'native',
         screenshot: 'native',
+        wait: 'native',
+        newTab: 'native',
+        closeTab: 'native',
       },
       limitations: {
         frames: [
@@ -286,6 +303,169 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
 
   async getCapabilities(): Promise<BrowserCapabilityReport> {
     return await this.getCapabilityReport()
+  }
+
+  async waitForPage(options: BrowserWaitForPageOptions = {}, target?: BrowserTargetQuery): Promise<BrowserWaitForPageResult> {
+    const timeoutMs = options.timeoutMs ?? WAIT_PAGE_DEFAULT_MS
+    const started = Date.now()
+    const warnings: string[] = []
+    try {
+      await this.ensureReady()
+      let resolved = await this.resolveTarget(target)
+      while (Date.now() < started + timeoutMs) {
+        try {
+          const listed = await this.http.listTargets()
+          resolved =
+            listed.find((item) => item.targetId === resolved.targetId) ??
+            listed.find((item) => Boolean(item.webSocketDebuggerUrl)) ??
+            resolved
+        } catch (error) {
+          warnings.push(error instanceof Error ? error.message : String(error))
+        }
+
+        const readyState = await this.safeReadyState(resolved)
+        let title = resolved.title
+        let url = resolved.url
+        let text = ''
+        if (options.textIncludes) {
+          const page = await this.safePageText(resolved)
+          if (page) {
+            url = page.url || url
+            title = page.title || title
+            text = page.text
+          }
+        }
+
+        const matched = matchesWaitOptions({ url, title, text, readyState }, options)
+        if (matched) {
+          return {
+            ok: true,
+            provider: 'browser',
+            method: 'cdp-dom',
+            url,
+            title,
+            targetId: resolved.targetId,
+            readyState,
+            matched: true,
+            elapsedMs: Date.now() - started,
+            warnings,
+          }
+        }
+        await sleep(200)
+      }
+
+      const readyState = await this.safeReadyState(resolved)
+      return {
+        ok: false,
+        provider: 'browser',
+        method: 'cdp-dom',
+        url: resolved.url,
+        title: resolved.title,
+        targetId: resolved.targetId,
+        readyState,
+        matched: false,
+        elapsedMs: Date.now() - started,
+        failure: {
+          code: 'verification_failed',
+          message: 'Timed out waiting for page condition (urlIncludes/titleIncludes/textIncludes/readyState).',
+          details: { ...options, url: resolved.url, title: resolved.title, readyState },
+        },
+        warnings,
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        provider: 'browser',
+        method: 'cdp-dom',
+        url: '',
+        title: '',
+        targetId: '',
+        matched: false,
+        elapsedMs: Date.now() - started,
+        failure: {
+          code: error instanceof CdpError && error.code === 'target_not_found' ? 'target_not_found' : 'cdp_unavailable',
+          message: error instanceof Error ? error.message : String(error),
+        },
+        warnings,
+      }
+    }
+  }
+
+  async getPageText(target?: BrowserTargetQuery, maxChars = PAGE_TEXT_MAX_CHARS): Promise<BrowserPageTextResult> {
+    try {
+      const resolved = await this.resolveTarget(target)
+      const payload = await this.evaluate<{ url?: unknown; title?: unknown; text?: unknown }>(resolved, PAGE_TEXT_EXPRESSION)
+      const text = typeof payload?.text === 'string' ? payload.text : ''
+      const limit = Number.isFinite(maxChars) && maxChars > 0 ? Math.floor(maxChars) : PAGE_TEXT_MAX_CHARS
+      const truncated = text.length > limit
+      return {
+        ok: true,
+        provider: 'browser',
+        url: typeof payload?.url === 'string' && payload.url ? payload.url : resolved.url,
+        title: typeof payload?.title === 'string' ? payload.title : resolved.title,
+        targetId: resolved.targetId,
+        text: truncated ? text.slice(0, limit) : text,
+        truncated,
+        charCount: text.length,
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        provider: 'browser',
+        url: '',
+        title: '',
+        targetId: '',
+        text: '',
+        truncated: false,
+        charCount: 0,
+        failure: {
+          code: error instanceof CdpError && error.code === 'target_not_found' ? 'target_not_found' : 'cdp_unavailable',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }
+    }
+  }
+
+  async openTab(url?: string): Promise<BrowserOpenTabResult> {
+    const parsed = normalizeNavigateUrl(url || 'about:blank')
+    if (!parsed.ok) {
+      throw new CdpError('unsupported_action', parsed.message)
+    }
+    await this.ensureReady()
+    let opened = await this.http.openUrl(parsed.url)
+    opened = await this.waitForTargetLoad(opened, parsed.url, this.defaultTimeoutMs)
+    return {
+      ...opened,
+      ok: true,
+      method: 'cdp-dom',
+      requiresForeground: false,
+    }
+  }
+
+  async closeTab(target?: BrowserTargetQuery): Promise<BrowserCloseTabResult> {
+    try {
+      const resolved = await this.resolveTarget(target)
+      await this.http.closeTarget(resolved.targetId)
+      return {
+        ok: true,
+        provider: 'browser',
+        method: 'cdp-http',
+        targetId: resolved.targetId,
+        closed: true,
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        provider: 'browser',
+        method: 'cdp-http',
+        targetId: target && 'targetId' in target && target.targetId ? target.targetId : '',
+        closed: false,
+        failure: {
+          code: error instanceof CdpError && error.code === 'target_not_found' ? 'target_not_found' : 'cdp_unavailable',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }
+    }
   }
 
   private async navigateUrl(action: BrowserAction, targetQuery?: BrowserTargetQuery): Promise<BrowserActionResult> {
@@ -384,6 +564,129 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     return await this.waitForTargetLoad(target, url, timeoutMs)
   }
 
+  private async reloadPage(action: BrowserAction, targetQuery?: BrowserTargetQuery): Promise<BrowserActionResult> {
+    const timeoutMs = Math.max(action.timeoutMs ?? 0, this.defaultTimeoutMs)
+    try {
+      const target = await this.resolveTarget(targetQuery ?? action.selector)
+      if (!target.webSocketDebuggerUrl) {
+        throw new CdpError('target_not_found', 'Target has no webSocketDebuggerUrl', { target })
+      }
+      const session = new CdpSession(target.webSocketDebuggerUrl, timeoutMs)
+      try {
+        await session.send('Page.enable', {}, timeoutMs)
+        await session.send('Page.reload', {}, timeoutMs)
+      } finally {
+        session.close()
+      }
+      const loaded = await this.waitForTargetLoad(target, target.url, timeoutMs)
+      const after = (await this.safeElementState(loaded)) ?? {
+        url: loaded.url,
+        title: loaded.title,
+        text: '',
+        focused: false,
+        enabled: true,
+        visible: true,
+        mutationHash: loaded.url,
+      }
+      return {
+        ok: true,
+        provider: 'browser',
+        action: 'reload',
+        method: 'cdp-dom',
+        after,
+        warnings: [],
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        provider: 'browser',
+        action: 'reload',
+        method: 'cdp-dom',
+        warnings: [],
+        failure: {
+          code: error instanceof CdpError && error.code === 'target_not_found' ? 'target_not_found' : 'cdp_unavailable',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }
+    }
+  }
+
+  private async navigateHistory(action: BrowserAction, targetQuery?: BrowserTargetQuery): Promise<BrowserActionResult> {
+    const direction = action.type === 'back' ? 'back' : 'forward'
+    const timeoutMs = Math.max(action.timeoutMs ?? 0, this.defaultTimeoutMs)
+    try {
+      const target = await this.resolveTarget(targetQuery ?? action.selector)
+      if (!target.webSocketDebuggerUrl) {
+        throw new CdpError('target_not_found', 'Target has no webSocketDebuggerUrl', { target })
+      }
+      const session = new CdpSession(target.webSocketDebuggerUrl, timeoutMs)
+      let nextUrl = target.url
+      try {
+        await session.send('Page.enable', {}, timeoutMs)
+        const history = await session.send<{ currentIndex?: number; entries?: Array<{ id?: number; url?: string; title?: string }> }>(
+          'Page.getNavigationHistory',
+          {},
+          timeoutMs,
+        )
+        const entries = Array.isArray(history?.entries) ? history.entries : []
+        const currentIndex = typeof history?.currentIndex === 'number' ? history.currentIndex : -1
+        const nextIndex = direction === 'back' ? currentIndex - 1 : currentIndex + 1
+        const entry = entries[nextIndex]
+        if (!entry || typeof entry.id !== 'number') {
+          return {
+            ok: false,
+            provider: 'browser',
+            action: direction,
+            method: 'cdp-dom',
+            warnings: [],
+            failure: {
+              code: 'unsupported_action',
+              message:
+                direction === 'back'
+                  ? 'No previous history entry (already at the start of Page.getNavigationHistory).'
+                  : 'No next history entry (already at the end of Page.getNavigationHistory).',
+              details: { currentIndex, entryCount: entries.length },
+            },
+          }
+        }
+        nextUrl = typeof entry.url === 'string' && entry.url ? entry.url : target.url
+        await session.send('Page.navigateToHistoryEntry', { entryId: entry.id }, timeoutMs)
+      } finally {
+        session.close()
+      }
+      const loaded = await this.waitForTargetLoad(target, nextUrl, timeoutMs)
+      const after = (await this.safeElementState(loaded)) ?? {
+        url: loaded.url,
+        title: loaded.title,
+        text: '',
+        focused: false,
+        enabled: true,
+        visible: true,
+        mutationHash: loaded.url,
+      }
+      return {
+        ok: true,
+        provider: 'browser',
+        action: direction,
+        method: 'cdp-dom',
+        after,
+        warnings: [],
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        provider: 'browser',
+        action: direction,
+        method: 'cdp-dom',
+        warnings: [],
+        failure: {
+          code: error instanceof CdpError && error.code === 'target_not_found' ? 'target_not_found' : 'cdp_unavailable',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }
+    }
+  }
+
   private async waitForTargetLoad(target: BrowserTarget, expectedUrl: string, timeoutMs: number): Promise<BrowserTarget> {
     const needle = urlIncludesToken(expectedUrl) ?? expectedUrl
     const deadline = Date.now() + timeoutMs
@@ -412,6 +715,19 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
   private async safeReadyState(target: BrowserTarget): Promise<string | undefined> {
     try {
       return await this.evaluate<string>(target, 'document.readyState')
+    } catch {
+      return undefined
+    }
+  }
+
+  private async safePageText(target: BrowserTarget): Promise<{ url: string; title: string; text: string } | undefined> {
+    try {
+      const payload = await this.evaluate<{ url?: unknown; title?: unknown; text?: unknown }>(target, PAGE_TEXT_EXPRESSION)
+      return {
+        url: typeof payload?.url === 'string' ? payload.url : target.url,
+        title: typeof payload?.title === 'string' ? payload.title : target.title,
+        text: typeof payload?.text === 'string' ? payload.text : '',
+      }
     } catch {
       return undefined
     }
@@ -448,7 +764,15 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     if (action.selector || action.element) {
       return action
     }
-    if (action.type === 'pressKey' || action.type === 'hotkey' || action.type === 'scroll' || action.type === 'navigate') {
+    if (
+      action.type === 'pressKey' ||
+      action.type === 'hotkey' ||
+      action.type === 'scroll' ||
+      action.type === 'navigate' ||
+      action.type === 'reload' ||
+      action.type === 'back' ||
+      action.type === 'forward'
+    ) {
       return action
     }
     const element = await this.findElement({ visible: true, urlIncludes: target.url }, { targetId: target.targetId })
@@ -722,6 +1046,13 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
 }
 
 const NAVIGATE_ALIASES = new Set(['navigate', 'goto', 'open', 'load', 'page.navigate', 'cdp_navigate'])
+const RELOAD_ALIASES = new Set(['reload', 'refresh', 'page.reload'])
+const BACK_ALIASES = new Set(['back', 'goback', 'page.goback'])
+const FORWARD_ALIASES = new Set(['forward', 'goforward', 'page.goforward'])
+
+const PAGE_TEXT_EXPRESSION = '({url: location.href, title: document.title, text: document.body ? document.body.innerText : ""})'
+const PAGE_TEXT_MAX_CHARS = 50_000
+const WAIT_PAGE_DEFAULT_MS = 15_000
 
 function looksLikeUrl(value: string): boolean {
   const trimmed = value.trim()
@@ -743,7 +1074,17 @@ function coerceBrowserAction(action: BrowserAction): BrowserAction {
   const raw = action as BrowserAction & Record<string, unknown>
   const url = pickUrl(raw.url, raw.value, raw.text, raw.selector?.url)
   const typeRaw = typeof raw.type === 'string' ? raw.type.trim() : ''
-  if (typeRaw && NAVIGATE_ALIASES.has(typeRaw.toLowerCase())) {
+  const typeKey = typeRaw.toLowerCase()
+  if (typeRaw && RELOAD_ALIASES.has(typeKey)) {
+    return { ...action, type: 'reload' }
+  }
+  if (typeRaw && BACK_ALIASES.has(typeKey)) {
+    return { ...action, type: 'back' }
+  }
+  if (typeRaw && FORWARD_ALIASES.has(typeKey)) {
+    return { ...action, type: 'forward' }
+  }
+  if (typeRaw && NAVIGATE_ALIASES.has(typeKey)) {
     return { ...action, type: 'navigate', ...(url ? { url } : {}) }
   }
   if (!typeRaw && url) {
@@ -773,6 +1114,16 @@ function normalizeNavigateUrl(raw?: string): { ok: true; url: string } | { ok: f
     return { ok: true, url: `https://${trimmed}` }
   }
   return { ok: false, message: `Not a URL: ${trimmed}` }
+}
+
+function matchesWaitOptions(
+  page: { url: string; title: string; text: string; readyState?: string },
+  options: BrowserWaitForPageOptions,
+): boolean {
+  if (options.urlIncludes && !page.url.includes(options.urlIncludes)) return false
+  if (options.titleIncludes && !page.title.includes(options.titleIncludes)) return false
+  if (options.textIncludes && !page.text.includes(options.textIncludes)) return false
+  return page.readyState !== 'loading'
 }
 
 function urlIncludesToken(url?: string): string | undefined {

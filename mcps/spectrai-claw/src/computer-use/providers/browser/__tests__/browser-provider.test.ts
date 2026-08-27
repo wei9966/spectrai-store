@@ -200,6 +200,131 @@ test('BrowserDomCdpProvider captureScreenshot: Page.captureScreenshot returns ba
   }
 })
 
+test('BrowserDomCdpProvider reload: Page.reload stays on URL and uses cdp-dom', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.executeAction({ type: 'reload', timeoutMs: 1_500 })
+    assert.equal(result.ok, true)
+    assert.equal(result.action, 'reload')
+    assert.equal(result.method, 'cdp-dom')
+    assert.equal(result.after?.url, 'https://fixture.local/form')
+    assert.equal(result.after?.title, 'Fixture Form (reloaded)')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider back/forward: history API changes URL; back at start is unsupported_action', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+
+    const startBack = await provider.executeAction({ type: 'back', timeoutMs: 1_500 })
+    assert.equal(startBack.ok, false)
+    assert.equal(startBack.failure?.code, 'unsupported_action')
+
+    const forward = await provider.executeAction({ type: 'forward', timeoutMs: 1_500 })
+    assert.equal(forward.ok, true)
+    assert.equal(forward.method, 'cdp-dom')
+    assert.equal(forward.after?.url, 'https://fixture.local/guide')
+    assert.equal(forward.after?.title, 'Guide')
+
+    const back = await provider.executeAction({ type: 'back', timeoutMs: 1_500 })
+    assert.equal(back.ok, true)
+    assert.equal(back.method, 'cdp-dom')
+    assert.equal(back.after?.url, 'https://fixture.local/form')
+
+    const pastStart = await provider.executeAction({ type: 'goBack', timeoutMs: 1_500 } as never)
+    assert.equal(pastStart.ok, false)
+    assert.equal(pastStart.action, 'back')
+    assert.equal(pastStart.failure?.code, 'unsupported_action')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider waitForPage: urlIncludes hits current fixture immediately', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.waitForPage({ urlIncludes: 'fixture.local/form', timeoutMs: 1_500 })
+    assert.equal(result.ok, true)
+    assert.equal(result.method, 'cdp-dom')
+    assert.equal(result.matched, true)
+    assert.equal(result.url, 'https://fixture.local/form')
+    assert.equal(result.readyState, 'complete')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider getPageText: returns fixture body text', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.getPageText()
+    assert.equal(result.ok, true)
+    assert.equal(result.text, 'Fixture body text')
+    assert.equal(result.truncated, false)
+    assert.equal(result.url, 'https://fixture.local/form')
+    assert.equal(result.title, 'Fixture Form')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider openTab: /json/new returns a new targetId', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const opened = await provider.openTab('https://fixture.local/guide')
+    assert.equal(opened.ok, true)
+    assert.equal(opened.method, 'cdp-dom')
+    assert.equal(opened.requiresForeground, false)
+    assert.equal(opened.targetId, 'page_new_1')
+    assert.equal(opened.url, 'https://fixture.local/guide')
+    const targets = await provider.listTargets()
+    assert.equal(targets.some((item) => item.targetId === opened.targetId), true)
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider closeTab: /json/close removes the target', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const closed = await provider.closeTab({ targetId: 'page_1' })
+    assert.equal(closed.ok, true)
+    assert.equal(closed.method, 'cdp-http')
+    assert.equal(closed.closed, true)
+    assert.equal(closed.targetId, 'page_1')
+    const targets = await provider.listTargets()
+    assert.equal(targets.some((item) => item.targetId === 'page_1'), false)
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider capabilities: reload/back/forward/wait/newTab/closeTab/screenshot/navigate are native', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const report = await provider.getCapabilityReport()
+    assert.equal(report.actions.reload, 'native')
+    assert.equal(report.actions.back, 'native')
+    assert.equal(report.actions.forward, 'native')
+    assert.equal(report.actions.wait, 'native')
+    assert.equal(report.actions.newTab, 'native')
+    assert.equal(report.actions.closeTab, 'native')
+    assert.equal(report.actions.screenshot, 'native')
+    assert.equal(report.actions.navigate, 'native')
+  } finally {
+    await fake.close()
+  }
+})
+
 interface FakeCdpServerOptions {
   mode?: 'form' | 'link-navigation' | 'same-page-toggle'
   emptyTargets?: boolean
@@ -216,6 +341,13 @@ async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<F
     navigated: false,
   }
   const extraPages: Array<{ id: string; url: string; title: string }> = []
+  const history = {
+    currentIndex: 0,
+    entries: [
+      { id: 1, url: 'https://fixture.local/form', title: 'Fixture Form' },
+      { id: 2, url: 'https://fixture.local/guide', title: 'Guide' },
+    ],
+  }
   let emptyTargets = options.emptyTargets === true
   const sockets = new Set<Socket>()
   const server = http.createServer((request, response) => {
@@ -243,6 +375,17 @@ async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<F
         title: created.title,
         webSocketDebuggerUrl: `ws://127.0.0.1:${address.port}/devtools/page/${created.id}`,
       })
+      return
+    }
+    if (rawUrl.startsWith('/json/close/')) {
+      const closedId = decodeURIComponent(rawUrl.slice('/json/close/'.length))
+      if (closedId === page.id) {
+        emptyTargets = true
+      }
+      const extraIndex = extraPages.findIndex((item) => item.id === closedId)
+      if (extraIndex >= 0) extraPages.splice(extraIndex, 1)
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end('"Target is closing"')
       return
     }
     if (rawUrl === '/json' || rawUrl === '/json/list') {
@@ -300,9 +443,9 @@ async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<F
         const command = JSON.parse(frame.payload.toString('utf8')) as {
           id: number
           method: string
-          params?: { expression?: string; url?: string; format?: string; quality?: number; captureBeyondViewport?: boolean }
+          params?: { expression?: string; url?: string; format?: string; quality?: number; captureBeyondViewport?: boolean; entryId?: number }
         }
-        socket.write(encodeServerFrame(JSON.stringify(fakeCdpResult(command, mode, page))))
+        socket.write(encodeServerFrame(JSON.stringify(fakeCdpResult(command, mode, page, history))))
       }
     })
   })
@@ -321,9 +464,10 @@ async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<F
 }
 
 function fakeCdpResult(
-  command: { id: number; method: string; params?: { expression?: string; url?: string; format?: string; quality?: number; captureBeyondViewport?: boolean } },
+  command: { id: number; method: string; params?: { expression?: string; url?: string; format?: string; quality?: number; captureBeyondViewport?: boolean; entryId?: number } },
   mode: NonNullable<FakeCdpServerOptions['mode']>,
   page: { url: string; title: string; value: string; mutationHash: string; navigated: boolean },
+  history: { currentIndex: number; entries: Array<{ id: number; url: string; title: string }> },
 ): Record<string, unknown> {
   if (command.method === 'Page.enable') {
     return { id: command.id, result: {} }
@@ -335,6 +479,27 @@ function fakeCdpResult(
     page.mutationHash = url
     page.navigated = true
     return { id: command.id, result: { frameId: 'f1' } }
+  }
+  if (command.method === 'Page.reload') {
+    page.title = page.title.includes('(reloaded)') ? page.title : `${page.title} (reloaded)`
+    page.mutationHash = `${page.url}#reloaded`
+    return { id: command.id, result: {} }
+  }
+  if (command.method === 'Page.getNavigationHistory') {
+    return { id: command.id, result: { currentIndex: history.currentIndex, entries: history.entries } }
+  }
+  if (command.method === 'Page.navigateToHistoryEntry') {
+    const entryId = command.params?.entryId
+    const index = history.entries.findIndex((entry) => entry.id === entryId)
+    if (index >= 0) {
+      history.currentIndex = index
+      const entry = history.entries[index]
+      page.url = entry.url
+      page.title = entry.title
+      page.mutationHash = entry.url
+      page.navigated = true
+    }
+    return { id: command.id, result: {} }
   }
   if (command.method === 'Page.captureScreenshot') {
     const format = command.params?.format === 'jpeg' ? 'jpeg' : 'png'
@@ -357,6 +522,9 @@ function fakeRuntimeEvaluate(
 ): Record<string, unknown> {
   if (expression === '({url: location.href, title: document.title})') {
     return { result: { type: 'object', value: { url: page.url, title: page.title } } }
+  }
+  if (expression === '({url: location.href, title: document.title, text: document.body ? document.body.innerText : ""})') {
+    return { result: { type: 'object', value: { url: page.url, title: page.title, text: 'Fixture body text' } } }
   }
 
   if (expression.includes('const __spectraiTask = "find"')) {

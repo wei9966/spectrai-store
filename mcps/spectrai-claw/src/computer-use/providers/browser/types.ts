@@ -132,6 +132,9 @@ export type BrowserActionType =
   | 'contextMenu'
   | 'upload'
   | 'navigate'
+  | 'reload'
+  | 'back'
+  | 'forward'
 
 // ponytail: screenshot is a native CDP capture, not an executeAction click/type alias.
 export type BrowserScreenshotFormat = 'png' | 'jpeg'
@@ -155,6 +158,54 @@ export interface BrowserScreenshotResult {
   byteLength: number
   requiresForeground: false
   data: string
+}
+
+export interface BrowserWaitForPageOptions {
+  urlIncludes?: string
+  titleIncludes?: string
+  textIncludes?: string
+  timeoutMs?: number
+}
+
+export interface BrowserWaitForPageResult {
+  ok: boolean
+  provider: 'browser'
+  method: 'cdp-dom'
+  url: string
+  title: string
+  targetId: string
+  readyState?: string
+  matched: boolean
+  elapsedMs: number
+  failure?: BrowserActionFailure
+  warnings: string[]
+}
+
+export interface BrowserPageTextResult {
+  ok: boolean
+  provider: 'browser'
+  url: string
+  title: string
+  targetId: string
+  text: string
+  truncated: boolean
+  charCount: number
+  failure?: BrowserActionFailure
+}
+
+export interface BrowserOpenTabResult extends BrowserTarget {
+  ok: boolean
+  method: 'cdp-dom'
+  requiresForeground: false
+}
+
+export interface BrowserCloseTabResult {
+  ok: boolean
+  provider: 'browser'
+  method: 'cdp-http'
+  targetId: string
+  closed: boolean
+  failure?: BrowserActionFailure
 }
 
 export type BrowserKeyModifier = 'Alt' | 'Control' | 'Meta' | 'Shift'
@@ -258,7 +309,7 @@ export interface BrowserCapabilityReport {
   requiresForeground: boolean
   visionFallbackNeeded: boolean
   selectorSupport: Array<'css' | 'xpath' | 'text' | 'role' | 'aria-label' | 'testId' | 'framePath' | 'url/title' | 'bounds'>
-  actions: Record<BrowserActionType | 'screenshot', 'native' | 'thin' | 'fallback' | 'unsupported'>
+  actions: Record<BrowserActionType | 'screenshot' | 'wait' | 'newTab' | 'closeTab', 'native' | 'thin' | 'fallback' | 'unsupported'>
   limitations: {
     frames: string[]
     permissions: string[]
@@ -276,6 +327,10 @@ export interface BrowserComputerUseProvider {
   findElement(selector: BrowserSelector, target?: BrowserTargetQuery): Promise<BrowserElement | null>
   executeAction(action: BrowserAction, target?: BrowserTargetQuery): Promise<BrowserActionResult>
   captureScreenshot(options?: BrowserScreenshotOptions, target?: BrowserTargetQuery): Promise<BrowserScreenshotResult>
+  waitForPage(options?: BrowserWaitForPageOptions, target?: BrowserTargetQuery): Promise<BrowserWaitForPageResult>
+  getPageText(target?: BrowserTargetQuery, maxChars?: number): Promise<BrowserPageTextResult>
+  openTab(url?: string): Promise<BrowserOpenTabResult>
+  closeTab(target?: BrowserTargetQuery): Promise<BrowserCloseTabResult>
   getCapabilityReport(): Promise<BrowserCapabilityReport>
 
   getAppState(target?: BrowserTargetQuery): Promise<BrowserDomSnapshot>
