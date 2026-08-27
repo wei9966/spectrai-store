@@ -1,7 +1,8 @@
 # SpectrAI Claw — click-through presence overlay (Windows PowerShell 5.1)
 # Stdin commands: MARK <x> <y> <label> | BADGE <label> | HIDE | QUIT
 # EOF on stdin also quits (parent-death watchdog).
-# Coordinates are absolute screen pixels (SetCursorPos space).
+# Coordinates match the Claw pipeline: non-DPI-aware logical pixels (SetCursorPos space).
+# Do not call SetProcessDPIAware — PersistentShell screenshot/click is unaware.
 #
 # ponytail: stdin is polled from the WinForms timer via BaseStream.BeginRead.
 # A dedicated Thread + ReadLine deadlocks against Application.Run in PS 5.1.
@@ -11,16 +12,6 @@ $ProgressPreference = 'SilentlyContinue'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-
-# DPI-aware BEFORE creating any HWND so VirtualScreen matches SetCursorPos pixels.
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public static class PresenceDpi {
-    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-}
-"@
-[PresenceDpi]::SetProcessDPIAware() | Out-Null
 
 Add-Type -ReferencedAssemblies @('System.Windows.Forms.dll','System.Drawing.dll','System.dll') -TypeDefinition @"
 using System;
@@ -301,8 +292,9 @@ function Draw-Presence([System.Drawing.Graphics]$g) {
     $bw = [int]([Math]::Ceiling($sz.Width) + 24)
     $bh = [int]([Math]::Ceiling($sz.Height) + 12)
     $pad = 16
-    $bx = $script:vsW - $bw - $pad
-    $by = $pad
+    $primaryBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bx = [int]($primaryBounds.X - $script:vsX + $primaryBounds.Width - $bw - $pad)
+    $by = [int]($primaryBounds.Y - $script:vsY + $pad)
     if ($bx -lt $pad) { $bx = $pad }
 
     $bg = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 16, 24, 36))
