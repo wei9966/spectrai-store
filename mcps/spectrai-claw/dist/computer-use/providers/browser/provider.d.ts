@@ -15,7 +15,12 @@ export declare class BrowserDomCdpProvider implements BrowserComputerUseProvider
     invokeElement(selectorOrElement: BrowserSelector | BrowserElement, action?: Partial<BrowserAction>, target?: BrowserTargetQuery): Promise<BrowserActionResult>;
     setValue(selectorOrElement: BrowserSelector | BrowserElement, value: string, target?: BrowserTargetQuery): Promise<BrowserActionResult>;
     getCapabilities(): Promise<BrowserCapabilityReport>;
+    private navigateUrl;
+    private pageNavigate;
+    private waitForTargetLoad;
+    private safeReadyState;
     private ensureReady;
+    private waitForPageTargets;
     private normalizeAction;
     private resolveTarget;
     private evaluate;

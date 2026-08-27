@@ -57,6 +57,7 @@ test('ensureDebugBrowser returns alreadyRunning when /json/version is reachable'
     { host: '127.0.0.1', port: 9222 },
     {
       probeVersion: async () => ({ Browser: 'FakeChrome/1.0' }),
+      probePageTargets: async () => 1,
       spawn: () => {
         spawnCount += 1
         return fakeChild()
@@ -66,6 +67,49 @@ test('ensureDebugBrowser returns alreadyRunning when /json/version is reachable'
   assert.equal(result.alreadyRunning, true)
   assert.equal(result.spawned, false)
   assert.equal(spawnCount, 0)
+})
+
+test('ensureDebugBrowser polls /json for a page target after version is ready', async () => {
+  let pageCalls = 0
+  const result = await ensureDebugBrowser(
+    { host: '127.0.0.1', port: 9222, readyTimeoutMs: 1_000, pollIntervalMs: 1 },
+    {
+      probeVersion: async () => ({ Browser: 'FakeChrome/1.0' }),
+      probePageTargets: async () => {
+        pageCalls += 1
+        return pageCalls >= 3 ? 1 : 0
+      },
+      spawn: () => fakeChild(),
+      sleep: async () => undefined,
+      now: (() => {
+        let tick = 0
+        return () => {
+          tick += 1
+          return tick * 10
+        }
+      })(),
+    },
+  )
+  assert.equal(result.alreadyRunning, true)
+  assert.ok(pageCalls >= 3)
+})
+
+test('ensureDebugBrowser stays alreadyRunning even if /json never lists a page', async () => {
+  const result = await ensureDebugBrowser(
+    { host: '127.0.0.1', port: 9222, readyTimeoutMs: 40, pollIntervalMs: 1 },
+    {
+      probeVersion: async () => ({ Browser: 'FakeChrome/1.0' }),
+      probePageTargets: async () => 0,
+      spawn: () => fakeChild(),
+      sleep: async () => undefined,
+      now: (() => {
+        let tick = 0
+        return () => ++tick * 20
+      })(),
+    },
+  )
+  assert.equal(result.alreadyRunning, true)
+  assert.equal(result.spawned, false)
 })
 
 test('ensureDebugBrowser spawns isolated Chrome/Edge when port is down, then waits for readiness', async () => {
@@ -96,6 +140,7 @@ test('ensureDebugBrowser spawns isolated Chrome/Edge when port is down, then wai
         if (probeCalls < 3) throw new Error('not ready')
         return { Browser: 'Chrome/1.0' }
       },
+      probePageTargets: async () => 1,
       sleep: async () => undefined,
       now: (() => {
         let tick = 0
@@ -138,6 +183,7 @@ test('ensureDebugBrowser dedupes in-flight ensure for the same endpoint', async 
       await new Promise((resolve) => setTimeout(resolve, 20))
       return { Browser: 'Chrome/1.0' }
     },
+    probePageTargets: async () => 1,
     sleep: async () => undefined,
     now: (() => {
       let tick = 0
@@ -168,6 +214,7 @@ test('ensureDebugBrowser throws a clear install hint when no Chrome/Edge/Chromiu
           probeVersion: async () => {
             throw new Error('down')
           },
+          probePageTargets: async () => 0,
         },
       ),
     /请安装 Google Chrome 或 Microsoft Edge/,

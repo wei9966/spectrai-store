@@ -50,6 +50,8 @@ export interface BrowserSelector {
     framePath?: string[];
     urlIncludes?: string;
     titleIncludes?: string;
+    /** Agent 常把待打开 URL 塞进 selector；navigate 会读这个字段。 */
+    url?: string;
     bounds?: Partial<BrowserBounds>;
     index?: number;
     visible?: boolean;
@@ -106,7 +108,7 @@ export interface BrowserDomSnapshot {
     warnings: string[];
     capabilityHints: Pick<BrowserCapabilityReport, 'backgroundRead' | 'backgroundInvoke' | 'backgroundType' | 'requiresForeground' | 'visionFallbackNeeded'>;
 }
-export type BrowserActionType = 'click' | 'type' | 'setValue' | 'pressKey' | 'hotkey' | 'select' | 'scroll' | 'hover' | 'menu' | 'contextMenu' | 'upload';
+export type BrowserActionType = 'click' | 'type' | 'setValue' | 'pressKey' | 'hotkey' | 'select' | 'scroll' | 'hover' | 'menu' | 'contextMenu' | 'upload' | 'navigate';
 export type BrowserKeyModifier = 'Alt' | 'Control' | 'Meta' | 'Shift';
 export interface BrowserActionVerification {
     value?: string;
@@ -123,6 +125,8 @@ export interface BrowserAction {
     type: BrowserActionType;
     selector?: BrowserSelector;
     element?: BrowserElement;
+    /** 打开网页用：navigate + url。不要去点地址栏。 */
+    url?: string;
     text?: string;
     value?: string;
     key?: string;

@@ -47,6 +47,7 @@ export function normalizeBrowserSelector(input?: BrowserSelector | Record<string
   if (Array.isArray(raw.framePath)) out.framePath = raw.framePath.map(String)
   if (typeof raw.urlIncludes === 'string') out.urlIncludes = raw.urlIncludes
   if (typeof raw.titleIncludes === 'string') out.titleIncludes = raw.titleIncludes
+  if (typeof raw.url === 'string') out.url = raw.url
   if (raw.bounds && typeof raw.bounds === 'object' && !Array.isArray(raw.bounds)) {
     out.bounds = raw.bounds as Partial<BrowserBounds>
   }

@@ -114,8 +114,12 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
   }
 
   async executeAction(action: BrowserAction, target?: BrowserTargetQuery): Promise<BrowserActionResult> {
-    const resolvedTarget = await this.resolveTarget(target ?? action.selector)
-    const actionWithSelector = await this.normalizeAction(action, resolvedTarget)
+    const normalizedInput = coerceBrowserAction(action)
+    if (normalizedInput.type === 'navigate') {
+      return await this.navigateUrl(normalizedInput, target)
+    }
+    const resolvedTarget = await this.resolveTarget(target ?? normalizedInput.selector)
+    const actionWithSelector = await this.normalizeAction(normalizedInput, resolvedTarget)
     const before = actionWithSelector.selector ? await this.safeElementState(resolvedTarget, actionWithSelector.selector) : undefined
     const raw = await this.evaluate<RawActionPayload>(resolvedTarget, buildActionExpression(actionWithSelector))
     const targetElement = raw.element ? this.withTargetMetadata(raw.element, resolvedTarget, actionWithSelector.selector) : actionWithSelector.element
@@ -185,6 +189,7 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
         menu: 'thin',
         contextMenu: 'thin',
         upload: 'fallback',
+        navigate: 'native',
       },
       limitations: {
         frames: [
@@ -240,6 +245,135 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     return await this.getCapabilityReport()
   }
 
+  private async navigateUrl(action: BrowserAction, targetQuery?: BrowserTargetQuery): Promise<BrowserActionResult> {
+    const parsed = normalizeNavigateUrl(action.url)
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        provider: 'browser',
+        action: 'navigate',
+        method: 'cdp-dom',
+        warnings: [],
+        failure: { code: 'unsupported_action', message: parsed.message },
+      }
+    }
+
+    const timeoutMs = Math.max(action.timeoutMs ?? 0, 15_000)
+    await this.ensureReady()
+
+    let target: BrowserTarget | null = null
+    try {
+      target = await this.resolveTarget(targetQuery ?? action.selector, { waitMs: 400 })
+    } catch (error) {
+      if (!(error instanceof CdpError) || (error.code !== 'no_page_targets' && error.code !== 'target_not_found')) {
+        throw error
+      }
+    }
+
+    const warnings: string[] = []
+    let navigated: BrowserTarget
+    try {
+      if (target) {
+        try {
+          navigated = await this.pageNavigate(target, parsed.url, timeoutMs)
+        } catch (error) {
+          warnings.push(error instanceof Error ? error.message : String(error))
+          navigated = await this.http.openUrl(parsed.url, timeoutMs)
+          navigated = await this.waitForTargetLoad(navigated, parsed.url, timeoutMs)
+        }
+      } else {
+        navigated = await this.http.openUrl(parsed.url, timeoutMs)
+        navigated = await this.waitForTargetLoad(navigated, parsed.url, timeoutMs)
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        provider: 'browser',
+        action: 'navigate',
+        method: 'cdp-dom',
+        warnings,
+        failure: {
+          code: 'cdp_unavailable',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }
+    }
+
+    const after = (await this.safeElementState(navigated)) ?? {
+      url: navigated.url,
+      title: navigated.title,
+      text: '',
+      focused: false,
+      enabled: true,
+      visible: true,
+      mutationHash: navigated.url,
+    }
+    const verified = await this.verifyAction(navigated, { ...action, type: 'navigate', url: parsed.url }, undefined, after)
+    const { after: verifiedAfter, ...verification } = verified
+    const afterState = verifiedAfter ?? after
+    const ok = verification.ok
+    const failure = ok ? undefined : this.toFailure(undefined, verification, undefined, afterState)
+
+    return {
+      ok,
+      provider: 'browser',
+      action: 'navigate',
+      method: 'cdp-dom',
+      after: afterState,
+      verification,
+      failure,
+      fallback: ok ? undefined : this.fallbackForFailure(failure, { ...action, type: 'navigate', url: parsed.url }),
+      warnings,
+    }
+  }
+
+  private async pageNavigate(target: BrowserTarget, url: string, timeoutMs: number): Promise<BrowserTarget> {
+    if (!target.webSocketDebuggerUrl) {
+      throw new CdpError('target_not_found', 'Target has no webSocketDebuggerUrl', { target })
+    }
+    const session = new CdpSession(target.webSocketDebuggerUrl, timeoutMs)
+    try {
+      await session.send('Page.enable', {}, timeoutMs)
+      await session.send('Page.navigate', { url }, timeoutMs)
+    } finally {
+      session.close()
+    }
+    return await this.waitForTargetLoad(target, url, timeoutMs)
+  }
+
+  private async waitForTargetLoad(target: BrowserTarget, expectedUrl: string, timeoutMs: number): Promise<BrowserTarget> {
+    const needle = urlIncludesToken(expectedUrl) ?? expectedUrl
+    const deadline = Date.now() + timeoutMs
+    let current = target
+    while (Date.now() < deadline) {
+      try {
+        const listed = await this.http.listTargets()
+        current =
+          listed.find((item) => item.targetId === current.targetId) ??
+          listed.find((item) => item.url.includes(needle) || item.url.includes(expectedUrl)) ??
+          current
+      } catch {
+        // /json can flap while Chrome swaps the page target
+      }
+
+      if (current.url.includes(needle) || current.url.includes(expectedUrl)) {
+        const ready = await this.safeReadyState(current)
+        // ponytail: CdpSession drops events; missing readyState still counts if URL already moved.
+        if (ready !== 'loading') return current
+      }
+      await sleep(200)
+    }
+    return current
+  }
+
+  private async safeReadyState(target: BrowserTarget): Promise<string | undefined> {
+    try {
+      return await this.evaluate<string>(target, 'document.readyState')
+    } catch {
+      return undefined
+    }
+  }
+
   private async ensureReady(): Promise<void> {
     if (!this.ensurePromise) {
       this.ensurePromise = ensureDebugBrowser({
@@ -256,19 +390,30 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     await this.ensurePromise
   }
 
+  private async waitForPageTargets(waitMs: number): Promise<BrowserTarget[]> {
+    await this.ensureReady()
+    const deadline = Date.now() + waitMs
+    let targets = await this.http.listTargets()
+    while (targets.length === 0 && Date.now() < deadline) {
+      await sleep(200)
+      targets = await this.http.listTargets()
+    }
+    return targets
+  }
+
   private async normalizeAction(action: BrowserAction, target: BrowserTarget): Promise<BrowserAction> {
     if (action.selector || action.element) {
       return action
     }
-    if (action.type === 'pressKey' || action.type === 'hotkey' || action.type === 'scroll') {
+    if (action.type === 'pressKey' || action.type === 'hotkey' || action.type === 'scroll' || action.type === 'navigate') {
       return action
     }
     const element = await this.findElement({ visible: true, urlIncludes: target.url }, { targetId: target.targetId })
     return { ...action, element: element ?? undefined, selector: element?.metadata.selector }
   }
 
-  private async resolveTarget(query?: BrowserTargetQuery | BrowserSelector): Promise<BrowserTarget> {
-    const targets = await this.listTargets()
+  private async resolveTarget(query?: BrowserTargetQuery | BrowserSelector, options?: { waitMs?: number }): Promise<BrowserTarget> {
+    const targets = await this.waitForPageTargets(options?.waitMs ?? 2_000)
     if (targets.length === 0) {
       throw new CdpError('no_page_targets', 'No CDP page targets were found. Start Chrome/Edge with --remote-debugging-port=9222.')
     }
@@ -352,11 +497,11 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     let after = afterFromAction
 
     // Prefer page-level state for clicks: old selectors often vanish after navigation.
-    const preferPageState = action.type === 'click' || verify.urlIncludes != null
+    const preferPageState = action.type === 'click' || action.type === 'navigate' || verify.urlIncludes != null
     if (!after || verify.networkIdleMs != null || preferPageState) {
       if (verify.networkIdleMs && verify.networkIdleMs > 0) {
         await sleep(Math.min(verify.networkIdleMs, 5_000))
-      } else if (preferPageState) {
+      } else if (preferPageState && action.type !== 'navigate') {
         // Brief settle for SPA/history navigations that finish after the DOM click returns.
         await sleep(Math.min(verify.timeoutMs ?? 250, 1_000))
       }
@@ -459,6 +604,10 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
       // Links prefer navigation evidence; same-page controls still use mutation.
       return { mutation: true, timeoutMs: action.timeoutMs }
     }
+    if (action.type === 'navigate') {
+      const url = action.url ?? action.value ?? action.text ?? action.selector?.url
+      return { urlIncludes: urlIncludesToken(url) ?? url ?? '', timeoutMs: Math.max(action.timeoutMs ?? 0, 15_000) }
+    }
     return undefined
   }
 
@@ -506,6 +655,71 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
       action: action.type,
       reason: 'DOM verification failed with no navigation evidence; fall back to the visual/HID provider only after rereading page state.',
     }
+  }
+}
+
+const NAVIGATE_ALIASES = new Set(['navigate', 'goto', 'open', 'load', 'page.navigate', 'cdp_navigate'])
+
+function looksLikeUrl(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  if (/^https?:\/\//i.test(trimmed) || /^about:blank$/i.test(trimmed)) return true
+  return /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#].*)?$/i.test(trimmed)
+}
+
+function pickUrl(...candidates: unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue
+    const trimmed = candidate.trim()
+    if (looksLikeUrl(trimmed)) return trimmed
+  }
+  return undefined
+}
+
+function coerceBrowserAction(action: BrowserAction): BrowserAction {
+  const raw = action as BrowserAction & Record<string, unknown>
+  const url = pickUrl(raw.url, raw.value, raw.text, raw.selector?.url)
+  const typeRaw = typeof raw.type === 'string' ? raw.type.trim() : ''
+  if (typeRaw && NAVIGATE_ALIASES.has(typeRaw.toLowerCase())) {
+    return { ...action, type: 'navigate', ...(url ? { url } : {}) }
+  }
+  if (!typeRaw && url) {
+    return { ...action, type: 'navigate', url }
+  }
+  return url ? { ...action, url } : action
+}
+
+function normalizeNavigateUrl(raw?: string): { ok: true; url: string } | { ok: false; message: string } {
+  const trimmed = (raw ?? '').trim()
+  if (!trimmed) {
+    return { ok: false, message: 'Navigate requires a url (action.url). Do not click the address bar.' }
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      // eslint-disable-next-line no-new
+      new URL(trimmed)
+      return { ok: true, url: trimmed }
+    } catch {
+      return { ok: false, message: `Invalid URL: ${trimmed}` }
+    }
+  }
+  if (/^about:blank$/i.test(trimmed)) {
+    return { ok: true, url: 'about:blank' }
+  }
+  if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#].*)?$/i.test(trimmed)) {
+    return { ok: true, url: `https://${trimmed}` }
+  }
+  return { ok: false, message: `Not a URL: ${trimmed}` }
+}
+
+function urlIncludesToken(url?: string): string | undefined {
+  if (!url) return undefined
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`)
+    const path = parsed.pathname === '/' ? '' : parsed.pathname
+    return `${parsed.hostname}${path}` || url
+  } catch {
+    return url
   }
 }
 

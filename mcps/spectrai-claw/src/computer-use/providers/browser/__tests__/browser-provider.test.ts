@@ -51,6 +51,7 @@ test('BrowserDomCdpProvider smoke: capability report marks debug endpoint availa
     assert.equal(report.visionFallbackNeeded, false)
     assert.ok(report.selectorSupport.includes('css'))
     assert.equal(report.actions.upload, 'fallback')
+    assert.equal(report.actions.navigate, 'native')
   } finally {
     await fake.close()
   }
@@ -97,36 +98,144 @@ test('BrowserDomCdpProvider click: same-page control still verifies via mutation
   }
 })
 
+test('BrowserDomCdpProvider navigate: Page.navigate updates the page URL', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.executeAction({
+      type: 'navigate',
+      url: 'https://fixture.local/guide',
+      timeoutMs: 1_500,
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.action, 'navigate')
+    assert.equal(result.method, 'cdp-dom')
+    assert.equal(result.after?.url, 'https://fixture.local/guide')
+    assert.equal(result.verification?.status, 'passed')
+    assert.equal(result.verification?.checks.some((check) => check.name === 'urlIncludes' && check.ok), true)
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider navigate: goto alias uses value as url', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.executeAction({
+      type: 'goto',
+      value: 'https://fixture.local/guide',
+      timeoutMs: 1_500,
+    } as never)
+
+    assert.equal(result.ok, true)
+    assert.equal(result.action, 'navigate')
+    assert.equal(result.after?.url, 'https://fixture.local/guide')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider navigate: empty page targets fall back to /json/new', async () => {
+  const fake = await startFakeCdpServer({ emptyTargets: true })
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.executeAction({
+      type: 'navigate',
+      url: 'https://fixture.local/guide',
+      timeoutMs: 1_500,
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.action, 'navigate')
+    assert.equal(result.after?.url, 'https://fixture.local/guide')
+    const targets = await provider.listTargets()
+    assert.equal(targets.length, 1)
+    assert.equal(targets[0]?.url, 'https://fixture.local/guide')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider capability report marks navigate as native', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const report = await provider.getCapabilityReport()
+    assert.equal(report.actions.navigate, 'native')
+  } finally {
+    await fake.close()
+  }
+})
+
 interface FakeCdpServerOptions {
   mode?: 'form' | 'link-navigation' | 'same-page-toggle'
+  emptyTargets?: boolean
 }
 
 async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<FakeCdpServer> {
   const mode = options.mode ?? 'form'
   const page = {
+    id: 'page_1',
     url: 'https://fixture.local/form',
     title: 'Fixture Form',
     value: 'initial',
     mutationHash: 'initial',
     navigated: false,
   }
+  const extraPages: Array<{ id: string; url: string; title: string }> = []
+  let emptyTargets = options.emptyTargets === true
   const sockets = new Set<Socket>()
   const server = http.createServer((request, response) => {
     const address = server.address() as AddressInfo
-    if (request.url === '/json/version') {
+    const rawUrl = request.url ?? '/'
+    if (rawUrl === '/json/version') {
       writeJson(response, { Browser: 'FakeChrome/1.0', webSocketDebuggerUrl: `ws://127.0.0.1:${address.port}/devtools/browser/fake` })
       return
     }
-    if (request.url === '/json') {
-      writeJson(response, [
-        {
-          id: 'page_1',
+    if (rawUrl.startsWith('/json/new')) {
+      const targetUrl = decodeURIComponent(rawUrl.slice('/json/new'.length).replace(/^\?/, ''))
+      const created = {
+        id: `page_new_${extraPages.length + 1}`,
+        url: targetUrl,
+        title: targetUrl.includes('/guide') ? 'Guide' : 'New Tab',
+      }
+      extraPages.push(created)
+      page.url = created.url
+      page.title = created.title
+      page.mutationHash = created.url
+      writeJson(response, {
+        id: created.id,
+        type: 'page',
+        url: created.url,
+        title: created.title,
+        webSocketDebuggerUrl: `ws://127.0.0.1:${address.port}/devtools/page/${created.id}`,
+      })
+      return
+    }
+    if (rawUrl === '/json' || rawUrl === '/json/list') {
+      const pages = [
+        ...(emptyTargets
+          ? []
+          : [
+              {
+                id: page.id,
+                type: 'page',
+                url: page.url,
+                title: page.title,
+                webSocketDebuggerUrl: `ws://127.0.0.1:${address.port}/devtools/page/${page.id}`,
+              },
+            ]),
+        ...extraPages.map((item) => ({
+          id: item.id,
           type: 'page',
-          url: page.url,
-          title: page.title,
-          webSocketDebuggerUrl: `ws://127.0.0.1:${address.port}/devtools/page/page_1`,
-        },
-      ])
+          url: item.url,
+          title: item.title,
+          webSocketDebuggerUrl: `ws://127.0.0.1:${address.port}/devtools/page/${item.id}`,
+        })),
+      ]
+      writeJson(response, pages)
       return
     }
     response.writeHead(404)
@@ -157,8 +266,12 @@ async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<F
         const frame = decodeClientFrame(buffer)
         if (!frame) break
         buffer = frame.rest
-        const command = JSON.parse(frame.payload.toString('utf8')) as { id: number; method: string; params?: { expression?: string } }
-        socket.write(encodeServerFrame(JSON.stringify({ id: command.id, result: fakeRuntimeEvaluate(command.params?.expression ?? '', mode, page) })))
+        const command = JSON.parse(frame.payload.toString('utf8')) as {
+          id: number
+          method: string
+          params?: { expression?: string; url?: string }
+        }
+        socket.write(encodeServerFrame(JSON.stringify(fakeCdpResult(command, mode, page))))
       }
     })
   })
@@ -174,6 +287,32 @@ async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<F
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
     },
   }
+}
+
+function fakeCdpResult(
+  command: { id: number; method: string; params?: { expression?: string; url?: string } },
+  mode: NonNullable<FakeCdpServerOptions['mode']>,
+  page: { url: string; title: string; value: string; mutationHash: string; navigated: boolean },
+): Record<string, unknown> {
+  if (command.method === 'Page.enable') {
+    return { id: command.id, result: {} }
+  }
+  if (command.method === 'Page.navigate') {
+    const url = command.params?.url ?? page.url
+    page.url = url
+    page.title = url.includes('/guide') ? 'Guide' : page.title
+    page.mutationHash = url
+    page.navigated = true
+    return { id: command.id, result: { frameId: 'f1' } }
+  }
+  if (command.method === 'Runtime.evaluate') {
+    const expression = command.params?.expression ?? ''
+    if (expression === 'document.readyState') {
+      return { id: command.id, result: { result: { type: 'string', value: 'complete' } } }
+    }
+    return { id: command.id, result: fakeRuntimeEvaluate(expression, mode, page) }
+  }
+  return { id: command.id, result: {} }
 }
 
 function fakeRuntimeEvaluate(

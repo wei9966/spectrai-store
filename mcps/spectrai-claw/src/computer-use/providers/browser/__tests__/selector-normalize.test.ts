@@ -34,12 +34,14 @@ test('normalizeBrowserSelector keeps flat css and listing fields', () => {
     normalizeBrowserSelector({
       css: '#q',
       urlIncludes: 'fixture.local',
+      url: 'https://fixture.local/guide',
       visible: true,
       index: 0,
     }),
     {
       css: '#q',
       urlIncludes: 'fixture.local',
+      url: 'https://fixture.local/guide',
       visible: true,
       index: 0,
     },

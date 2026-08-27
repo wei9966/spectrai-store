@@ -49,11 +49,20 @@ export class CdpHttpClient {
   }
 
   async getJson<T>(path: string, timeoutMs = this.defaultTimeoutMs): Promise<T> {
-    const url = new URL(path, this.browserURL)
+    return await this.requestJson<T>('GET', path, timeoutMs)
+  }
+
+  async requestJson<T>(method: 'GET' | 'PUT' | 'POST', path: string, timeoutMs = this.defaultTimeoutMs): Promise<T> {
+    // ponytail: never `new URL('/json/new?'+url, base)` — it parses the target URL as the query and mangles it.
+    const href = path.startsWith('http://') || path.startsWith('https://')
+      ? path
+      : `${this.browserURL.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`
+    const url = new URL(href)
     return await new Promise<T>((resolve, reject) => {
-      const request = http.get(
+      const request = http.request(
         url,
         {
+          method,
           timeout: timeoutMs,
           headers: {
             accept: 'application/json',
@@ -65,7 +74,7 @@ export class CdpHttpClient {
           response.on('end', () => {
             const body = Buffer.concat(chunks).toString('utf8')
             if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
-              reject(new CdpError('http_error', `CDP HTTP ${url.pathname} returned ${response.statusCode}`, { body }))
+              reject(new CdpError('http_error', `CDP HTTP ${method} ${url.pathname} returned ${response.statusCode}`, { body }))
               return
             }
             try {
@@ -83,26 +92,55 @@ export class CdpHttpClient {
       request.on('error', (error) => {
         reject(error instanceof CdpError ? error : new CdpError('connection_failed', error.message, { url: url.href }))
       })
+      request.end()
     })
   }
 
   async listTargets(): Promise<BrowserTarget[]> {
     const payload = await this.getJson<Array<Record<string, unknown>>>('/json')
-    return payload
-      .filter((item) => String(item.type ?? '') === 'page')
-      .map((item) => ({
-        targetId: String(item.id ?? ''),
-        type: String(item.type ?? ''),
-        url: String(item.url ?? ''),
-        title: String(item.title ?? ''),
-        webSocketDebuggerUrl: typeof item.webSocketDebuggerUrl === 'string' ? item.webSocketDebuggerUrl : undefined,
-        browserContextId: typeof item.browserContextId === 'string' ? item.browserContextId : undefined,
-      }))
-      .filter((target) => target.targetId.length > 0)
+    return this.toPageTargets(payload)
   }
 
   async getVersion(): Promise<Record<string, unknown>> {
     return await this.getJson<Record<string, unknown>>('/json/version')
+  }
+
+  /** Open a URL via Chrome's HTTP `/json/new?<url>` (GET, then PUT). */
+  async openUrl(url: string, timeoutMs = this.defaultTimeoutMs): Promise<BrowserTarget> {
+    const path = `/json/new?${url}`
+    let payload: Record<string, unknown>
+    try {
+      payload = await this.requestJson<Record<string, unknown>>('GET', path, timeoutMs)
+    } catch {
+      payload = await this.requestJson<Record<string, unknown>>('PUT', path, timeoutMs)
+    }
+    const target = this.toPageTarget(payload)
+    if (!target) {
+      throw new CdpError('http_error', 'CDP /json/new did not return a page target', { payload })
+    }
+    return target
+  }
+
+  private toPageTargets(payload: Array<Record<string, unknown>>): BrowserTarget[] {
+    return payload
+      .map((item) => this.toPageTarget(item))
+      .filter((target): target is BrowserTarget => Boolean(target))
+  }
+
+  private toPageTarget(item: Record<string, unknown> | null | undefined): BrowserTarget | null {
+    if (!item || typeof item !== 'object') return null
+    const type = String(item.type ?? 'page')
+    if (type && type !== 'page') return null
+    const targetId = String(item.id ?? '')
+    if (!targetId) return null
+    return {
+      targetId,
+      type: type || 'page',
+      url: String(item.url ?? ''),
+      title: String(item.title ?? ''),
+      webSocketDebuggerUrl: typeof item.webSocketDebuggerUrl === 'string' ? item.webSocketDebuggerUrl : undefined,
+      browserContextId: typeof item.browserContextId === 'string' ? item.browserContextId : undefined,
+    }
   }
 }
 

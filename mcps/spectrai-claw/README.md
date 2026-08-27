@@ -52,7 +52,7 @@ open -na "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$H
 curl http://localhost:9222/json/version
 ```
 
-环境变量：`SPECTRAI_BROWSER_CDP_HOST` / `SPECTRAI_BROWSER_CDP_PORT`（默认 `127.0.0.1:9222`）。启用后 `ax_plus_cdp` / `browser_*` 会自动检测。
+环境变量：`SPECTRAI_BROWSER_CDP_HOST` / `SPECTRAI_BROWSER_CDP_PORT`（默认 `127.0.0.1:9222`）。启用后 `ax_plus_cdp` / `browser_*` 会自动检测。打开网页用 `browser_navigate` 或 `browser_execute_action` 的 `action.type=navigate` + `action.url`（CDP `Page.navigate`），不要点地址栏。
 
 ## 安装
 

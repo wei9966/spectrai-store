@@ -58,12 +58,15 @@ async function runEnsure(endpoint, options, deps) {
     const mkdirSync = deps.mkdirSync ?? nodeMkdirSync;
     const spawn = deps.spawn ?? nodeSpawn;
     const probeVersion = deps.probeVersion ?? defaultProbeVersion;
+    const probePageTargets = deps.probePageTargets ?? defaultProbePageTargets;
     const sleep = deps.sleep ?? defaultSleep;
     const now = deps.now ?? Date.now;
     const resolveHomedir = deps.homedir ?? homedir;
     const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
     const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     if (await isDebugPortReady(endpoint.browserURL, probeVersion)) {
+        // ponytail: already-running Chrome is version-ready; only short-poll pages so /json/new can still run.
+        await waitForPageTargetSoft(endpoint.browserURL, probePageTargets, sleep, now, now() + Math.min(readyTimeoutMs, 1_000), pollIntervalMs);
         return {
             ...endpoint,
             alreadyRunning: true,
@@ -94,6 +97,7 @@ async function runEnsure(endpoint, options, deps) {
     const deadline = now() + readyTimeoutMs;
     while (now() < deadline) {
         if (await isDebugPortReady(endpoint.browserURL, probeVersion)) {
+            await waitForPageTargetSoft(endpoint.browserURL, probePageTargets, sleep, now, deadline, pollIntervalMs);
             return {
                 ...endpoint,
                 alreadyRunning: false,
@@ -115,6 +119,22 @@ async function isDebugPortReady(browserURL, probeVersion) {
         return false;
     }
 }
+/** ponytail: version-up is enough to return; missing page targets still allow /json/new later. */
+async function waitForPageTargetSoft(browserURL, probePageTargets, sleep, now, deadline, pollIntervalMs) {
+    while (now() < deadline) {
+        try {
+            const count = await probePageTargets(browserURL, 1_000);
+            if (count > 0)
+                return;
+        }
+        catch {
+            // /json can lag behind /json/version while Chrome is still creating the first tab
+        }
+        if (now() >= deadline)
+            return;
+        await sleep(pollIntervalMs);
+    }
+}
 function defaultProbeVersion(browserURL, timeoutMs = 1_000) {
     const url = new URL('/json/version', browserURL);
     return new Promise((resolve, reject) => {
@@ -132,6 +152,39 @@ function defaultProbeVersion(browserURL, timeoutMs = 1_000) {
                 }
                 try {
                     resolve(JSON.parse(body));
+                }
+                catch (error) {
+                    reject(error);
+                }
+            });
+        });
+        request.on('timeout', () => {
+            request.destroy(new Error(`Timed out probing ${url.href}`));
+        });
+        request.on('error', (error) => {
+            reject(error);
+        });
+    });
+}
+function defaultProbePageTargets(browserURL, timeoutMs = 1_000) {
+    const url = new URL('/json', browserURL);
+    return new Promise((resolve, reject) => {
+        const request = http.get(url, {
+            timeout: timeoutMs,
+            headers: { accept: 'application/json' },
+        }, (response) => {
+            const chunks = [];
+            response.on('data', (chunk) => chunks.push(chunk));
+            response.on('end', () => {
+                const body = Buffer.concat(chunks).toString('utf8');
+                if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+                    reject(new Error(`CDP /json returned ${response.statusCode}`));
+                    return;
+                }
+                try {
+                    const payload = JSON.parse(body);
+                    const count = Array.isArray(payload) ? payload.filter((item) => String(item.type ?? '') === 'page').length : 0;
+                    resolve(count);
                 }
                 catch (error) {
                     reject(error);

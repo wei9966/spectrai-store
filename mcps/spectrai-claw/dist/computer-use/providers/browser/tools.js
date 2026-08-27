@@ -52,6 +52,7 @@ const selectorSchema = {
         framePath: { type: 'array', items: { type: 'string' } },
         urlIncludes: { type: 'string' },
         titleIncludes: { type: 'string' },
+        url: { type: 'string', description: 'Agent sometimes puts the page URL here; navigate will read it.' },
         bounds: boundsSchema,
         index: { type: 'number' },
         visible: { type: 'boolean' },
@@ -78,8 +79,13 @@ const verificationSchema = {
 const actionSchema = {
     type: 'object',
     properties: {
-        type: { type: 'string', enum: ['click', 'type', 'setValue', 'pressKey', 'hotkey', 'select', 'scroll', 'hover', 'menu', 'contextMenu', 'upload'] },
+        type: {
+            type: 'string',
+            enum: ['click', 'type', 'setValue', 'pressKey', 'hotkey', 'select', 'scroll', 'hover', 'menu', 'contextMenu', 'upload', 'navigate', 'goto', 'open', 'load'],
+            description: 'Use navigate (aliases: goto/open/load) with action.url to open a page. Do not click the address bar.',
+        },
         selector: selectorSchema,
+        url: { type: 'string', description: 'Absolute or host/path URL for navigate. example.com is normalized to https://example.com.' },
         text: { type: 'string' },
         value: { type: 'string' },
         key: { type: 'string' },
@@ -102,8 +108,10 @@ const actionSchema = {
         verify: verificationSchema,
         timeoutMs: { type: 'number' },
     },
-    required: ['type'],
-    additionalProperties: false,
+    // ponytail: url-only payloads default to navigate in the handler; do not require type.
+    required: [],
+    // ponytail: Agent often sends extra fields (url/href); reject-all was causing "导航参数不对".
+    additionalProperties: true,
 };
 export function registerBrowserComputerUseTools() {
     registerTool('browser_list_targets', 'Browser Computer Use: list Chrome/Edge/Brave CDP page targets from a remote debugging endpoint. This is DOM/CDP-based and does not use screenshots.', {
@@ -156,21 +164,37 @@ export function registerBrowserComputerUseTools() {
         const element = await provider.findElement(normalizeBrowserSelector(readObject(args.selector)) ?? {}, readObject(args.target));
         return json({ element });
     }, { title: 'Browser find element', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_execute_action', 'Browser Computer Use: execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover and contextMenu. Click verification prefers page URL/title changes (navigation success) before element mutation; vanished link nodes after navigation are not treated as failure. Visual/HID is only a fallback when there is no navigation evidence.', {
+    registerTool('browser_execute_action', 'Browser Computer Use: execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover, contextMenu and navigate. To open a page, use action.type=navigate (aliases: goto/open/load) with action.url — do not click the address bar or type into omnibox. Click verification prefers page URL/title changes before element mutation. Visual/HID is only a fallback when there is no navigation evidence.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
             target: targetSchema,
             action: actionSchema,
+            url: { type: 'string', description: 'Optional page URL; used when action.url is missing (navigate).' },
         },
         required: ['action'],
         additionalProperties: false,
     }, async (args) => {
         const provider = await createProvider(args);
-        const action = normalizeActionSelector(readObject(args.action) ?? { type: 'click' });
+        const action = normalizeBrowserAction(readObject(args.action) ?? {}, typeof args.url === 'string' ? args.url : undefined);
         const result = await provider.executeAction(action, readObject(args.target));
         return json(result);
     }, { title: 'Browser execute action', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+    registerTool('browser_navigate', 'Browser Computer Use: open a page with CDP Page.navigate (or /json/new). Pass url. Do not click the address bar.', {
+        type: 'object',
+        properties: {
+            connection: connectionSchema,
+            target: targetSchema,
+            url: { type: 'string', description: 'http(s) URL or host/path (https:// is added).' },
+        },
+        required: ['url'],
+        additionalProperties: false,
+    }, async (args) => {
+        const provider = await createProvider(args);
+        const action = normalizeBrowserAction({ type: 'navigate' }, typeof args.url === 'string' ? args.url : undefined);
+        const result = await provider.executeAction(action, readObject(args.target));
+        return json(result);
+    }, { title: 'Browser navigate', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
     registerTool('browser_get_capabilities', 'Browser Computer Use: report DOM/CDP background read/invoke/type capability, limitations, frame/permission/userGesture constraints and fallback order.', {
         type: 'object',
         properties: {
@@ -194,12 +218,50 @@ function readObject(value) {
     }
     return undefined;
 }
-function normalizeActionSelector(action) {
-    if (!action.selector)
-        return action;
+const NAVIGATE_ALIASES = new Set(['navigate', 'goto', 'open', 'load', 'page.navigate', 'cdp_navigate']);
+function looksLikeUrl(value) {
+    const trimmed = value.trim();
+    if (!trimmed)
+        return false;
+    if (/^https?:\/\//i.test(trimmed))
+        return true;
+    if (/^about:blank$/i.test(trimmed))
+        return true;
+    // host or host/path, no spaces — Agent often omits the scheme.
+    return /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#].*)?$/i.test(trimmed);
+}
+function pickUrl(...candidates) {
+    for (const candidate of candidates) {
+        if (typeof candidate !== 'string')
+            continue;
+        const trimmed = candidate.trim();
+        if (looksLikeUrl(trimmed))
+            return trimmed;
+    }
+    return undefined;
+}
+function normalizeActionType(raw, hasUrl) {
+    const type = typeof raw === 'string' ? raw.trim() : '';
+    if (type && NAVIGATE_ALIASES.has(type.toLowerCase()))
+        return 'navigate';
+    if (!type && hasUrl)
+        return 'navigate';
+    if (type)
+        return type;
+    return 'click';
+}
+function normalizeBrowserAction(action, topLevelUrl) {
+    const raw = (action ?? {});
+    const selector = raw.selector
+        ? normalizeBrowserSelector(raw.selector)
+        : undefined;
+    const url = pickUrl(raw.url, topLevelUrl, raw.value, raw.text, selector?.url);
+    const type = normalizeActionType(raw.type, Boolean(url));
     return {
-        ...action,
-        selector: normalizeBrowserSelector(action.selector),
+        ...raw,
+        type,
+        selector,
+        ...(url ? { url } : {}),
     };
 }
 function json(value) {

@@ -22,6 +22,8 @@ export interface EnsureDebugBrowserDeps {
     }) => void;
     spawn?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
     probeVersion?: (browserURL: string, timeoutMs?: number) => Promise<Record<string, unknown>>;
+    /** Count type=page targets from /json. Used after /json/version is up; missing pages are not fatal. */
+    probePageTargets?: (browserURL: string, timeoutMs?: number) => Promise<number>;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
     homedir?: () => string;

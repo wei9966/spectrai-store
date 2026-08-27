@@ -35,6 +35,8 @@ export interface EnsureDebugBrowserDeps {
   mkdirSync?: (dirPath: string, options?: { recursive?: boolean }) => void
   spawn?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess
   probeVersion?: (browserURL: string, timeoutMs?: number) => Promise<Record<string, unknown>>
+  /** Count type=page targets from /json. Used after /json/version is up; missing pages are not fatal. */
+  probePageTargets?: (browserURL: string, timeoutMs?: number) => Promise<number>
   sleep?: (ms: number) => Promise<void>
   now?: () => number
   homedir?: () => string
@@ -113,6 +115,7 @@ async function runEnsure(
   const mkdirSync = deps.mkdirSync ?? nodeMkdirSync
   const spawn = deps.spawn ?? nodeSpawn
   const probeVersion = deps.probeVersion ?? defaultProbeVersion
+  const probePageTargets = deps.probePageTargets ?? defaultProbePageTargets
   const sleep = deps.sleep ?? defaultSleep
   const now = deps.now ?? Date.now
   const resolveHomedir = deps.homedir ?? homedir
@@ -120,6 +123,15 @@ async function runEnsure(
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
 
   if (await isDebugPortReady(endpoint.browserURL, probeVersion)) {
+    // ponytail: already-running Chrome is version-ready; only short-poll pages so /json/new can still run.
+    await waitForPageTargetSoft(
+      endpoint.browserURL,
+      probePageTargets,
+      sleep,
+      now,
+      now() + Math.min(readyTimeoutMs, 1_000),
+      pollIntervalMs,
+    )
     return {
       ...endpoint,
       alreadyRunning: true,
@@ -155,6 +167,7 @@ async function runEnsure(
   const deadline = now() + readyTimeoutMs
   while (now() < deadline) {
     if (await isDebugPortReady(endpoint.browserURL, probeVersion)) {
+      await waitForPageTargetSoft(endpoint.browserURL, probePageTargets, sleep, now, deadline, pollIntervalMs)
       return {
         ...endpoint,
         alreadyRunning: false,
@@ -183,6 +196,27 @@ async function isDebugPortReady(
   }
 }
 
+/** ponytail: version-up is enough to return; missing page targets still allow /json/new later. */
+async function waitForPageTargetSoft(
+  browserURL: string,
+  probePageTargets: (browserURL: string, timeoutMs?: number) => Promise<number>,
+  sleep: (ms: number) => Promise<void>,
+  now: () => number,
+  deadline: number,
+  pollIntervalMs: number,
+): Promise<void> {
+  while (now() < deadline) {
+    try {
+      const count = await probePageTargets(browserURL, 1_000)
+      if (count > 0) return
+    } catch {
+      // /json can lag behind /json/version while Chrome is still creating the first tab
+    }
+    if (now() >= deadline) return
+    await sleep(pollIntervalMs)
+  }
+}
+
 function defaultProbeVersion(browserURL: string, timeoutMs = 1_000): Promise<Record<string, unknown>> {
   const url = new URL('/json/version', browserURL)
   return new Promise((resolve, reject) => {
@@ -203,6 +237,43 @@ function defaultProbeVersion(browserURL: string, timeoutMs = 1_000): Promise<Rec
           }
           try {
             resolve(JSON.parse(body) as Record<string, unknown>)
+          } catch (error) {
+            reject(error)
+          }
+        })
+      },
+    )
+    request.on('timeout', () => {
+      request.destroy(new Error(`Timed out probing ${url.href}`))
+    })
+    request.on('error', (error) => {
+      reject(error)
+    })
+  })
+}
+
+function defaultProbePageTargets(browserURL: string, timeoutMs = 1_000): Promise<number> {
+  const url = new URL('/json', browserURL)
+  return new Promise((resolve, reject) => {
+    const request = http.get(
+      url,
+      {
+        timeout: timeoutMs,
+        headers: { accept: 'application/json' },
+      },
+      (response) => {
+        const chunks: Buffer[] = []
+        response.on('data', (chunk: Buffer) => chunks.push(chunk))
+        response.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf8')
+          if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+            reject(new Error(`CDP /json returned ${response.statusCode}`))
+            return
+          }
+          try {
+            const payload = JSON.parse(body) as Array<Record<string, unknown>>
+            const count = Array.isArray(payload) ? payload.filter((item) => String(item.type ?? '') === 'page').length : 0
+            resolve(count)
           } catch (error) {
             reject(error)
           }

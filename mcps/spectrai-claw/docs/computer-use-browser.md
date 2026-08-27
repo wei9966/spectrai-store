@@ -22,6 +22,7 @@ await provider.listTargets()
 await provider.listWindows()
 await provider.readDomSnapshot({ css: 'input[name=q]' }, 200)
 await provider.findElement({ role: 'button', text: '百度一下' })
+await provider.executeAction({ type: 'navigate', url: 'https://www.baidu.com' })
 await provider.executeAction({ type: 'click', selector: { text: '百度一下' }, verify: { urlIncludes: 'baidu.com' } })
 await provider.getCapabilityReport()
 
@@ -40,6 +41,7 @@ MCP tool names:
 - `browser_get_app_state`
 - `browser_find_element`
 - `browser_execute_action`
+- `browser_navigate`
 - `browser_get_capabilities`
 
 ## CDP / Playwright 接入策略
@@ -66,7 +68,8 @@ open -a "Google Chrome" --args --remote-debugging-port=9222
 
 - 不通过截图编号点击；
 - 不依赖 AXWebArea 是否能被唤醒；
-- 通过 `/json` 发现 tab target；
+- 通过 `/json` 发现 tab target；没有 page target 时用 `/json/new?<url>` 开新 tab；
+- 打开网页走 CDP `Page.navigate`（不要点地址栏）；
 - 通过 `Runtime.evaluate` 在页面上下文执行 DOM selector/action/verification；
 - 与 Playwright 的边界是：Playwright 可通过 `connectOverCDP` 复用同一 `http://127.0.0.1:9222` endpoint，在跨源 frame、下载、上传、权限弹窗等复杂场景提供更完整封装。
 
@@ -102,6 +105,7 @@ open -a "Google Chrome" --args --remote-debugging-port=9222
 | `scroll` | DOM/window scroll | 显式 `verify` 推荐 |
 | `hover` | MouseEvent `mouseover` 薄实现 | 显式 `verify` 推荐 |
 | `menu` / `contextMenu` | MouseEvent `contextmenu` 薄实现 | 显式 `verify` 推荐 |
+| `navigate`（别名 `goto`/`open`/`load`） | CDP `Page.enable` + `Page.navigate({url})`；失败或无 page target 时 fallback `/json/new?<url>` | 默认 `urlIncludes` hostname/path；超时 `max(action.timeoutMs, 15000)` |
 | `upload` | 接口已建模，当前返回 permission-aware fallback | 建议 Playwright/CDP `DOM.setFileInputFiles` 路径 |
 
 ## 动作后验证
@@ -157,17 +161,41 @@ open -a "Google Chrome" --args --remote-debugging-port=9222
     "hover": "thin",
     "menu": "thin",
     "contextMenu": "thin",
-    "upload": "fallback"
+    "upload": "fallback",
+    "navigate": "native"
   }
 }
 ```
 
 当 DOM/CDP 可用时，`backgroundActionSuccess` 的预期是：`backgroundRead/backgroundInvoke/backgroundType=true`，`requiresForeground=false`，动作通过 DOM state 验证；仅在跨源 frame、下载/上传、浏览器权限弹窗、系统文件选择器、passkey/clipboard 等用户手势受限场景降级。
 
+## 打开网页
+
+不要点地址栏。一次成功的 CDP 导航即可：
+
+```ts
+await provider.executeAction({ type: 'navigate', url: 'https://www.baidu.com' })
+```
+
+等价 MCP：
+
+```json
+{
+  "tool": "browser_navigate",
+  "arguments": {
+    "url": "https://www.baidu.com"
+  }
+}
+```
+
+或 `browser_execute_action`：`action.type=navigate` + `action.url`。别名 `goto`/`open`/`load` 以及顶层 `url` / `action.value`（像 URL 时）也会归一成 navigate。`example.com` 会补 `https://`。
+
 ## 百度搜索示例
 
 ```ts
 const provider = new BrowserDomCdpProvider({ browserURL: 'http://127.0.0.1:9222' })
+
+await provider.executeAction({ type: 'navigate', url: 'https://www.baidu.com' })
 
 await provider.setValue(
   { css: 'input[name="wd"], input[name="word"]', urlIncludes: 'baidu.com' },
@@ -222,7 +250,7 @@ await provider.executeAction({
 ```bash
 cd mcps/spectrai-claw
 npm run build
-node --test dist/computer-use/providers/browser/__tests__/browser-provider.test.js
+node --test dist/computer-use/providers/browser/__tests__/browser-provider.test.js dist/computer-use/providers/browser/__tests__/ensure-debug-browser.test.js dist/computer-use/providers/browser/__tests__/selector-normalize.test.js
 ```
 
 可选真实浏览器 smoke：
