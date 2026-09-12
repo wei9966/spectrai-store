@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { registerTool } from '../../../tools/registry.js';
 import { ensureDebugBrowser } from './ensure-debug-browser.js';
-import { BrowserDomCdpProvider } from './provider.js';
+import { BrowserDomCdpProvider, looksLikeUrl } from './provider.js';
 import { normalizeBrowserSelector } from './selector-normalize.js';
 const connectionSchema = {
     type: 'object',
@@ -115,7 +115,7 @@ const actionSchema = {
             description: 'Use navigate (aliases: goto/open/load) with action.url to open a page. reload/back/forward are page-level CDP actions (not DOM click). Do not click the address bar.',
         },
         selector: selectorSchema,
-        url: { type: 'string', description: 'Absolute or host/path URL for navigate. example.com is normalized to https://example.com.' },
+        url: { type: 'string', description: 'Absolute or host/path URL for navigate; file:// URLs and local absolute paths are supported. example.com is normalized to https://example.com.' },
         text: { type: 'string' },
         value: { type: 'string' },
         key: { type: 'string' },
@@ -215,7 +215,7 @@ export function registerBrowserComputerUseTools() {
         properties: {
             connection: connectionSchema,
             target: targetSchema,
-            url: { type: 'string', description: 'http(s) URL or host/path (https:// is added).' },
+            url: { type: 'string', description: 'http(s) URL, file:// URL, local absolute path (F:\\dir\\a.html), or host/path (https:// is added).' },
         },
         required: ['url'],
         additionalProperties: false,
@@ -408,17 +408,6 @@ const NAVIGATE_ALIASES = new Set(['navigate', 'goto', 'open', 'load', 'page.navi
 const RELOAD_ALIASES = new Set(['reload', 'refresh', 'page.reload']);
 const BACK_ALIASES = new Set(['back', 'goback', 'page.goback']);
 const FORWARD_ALIASES = new Set(['forward', 'goforward', 'page.goforward']);
-function looksLikeUrl(value) {
-    const trimmed = value.trim();
-    if (!trimmed)
-        return false;
-    if (/^https?:\/\//i.test(trimmed))
-        return true;
-    if (/^about:blank$/i.test(trimmed))
-        return true;
-    // host or host/path, no spaces — Agent often omits the scheme.
-    return /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#].*)?$/i.test(trimmed);
-}
 function pickUrl(...candidates) {
     for (const candidate of candidates) {
         if (typeof candidate !== 'string')

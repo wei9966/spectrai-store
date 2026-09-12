@@ -1054,10 +1054,28 @@ const PAGE_TEXT_EXPRESSION = '({url: location.href, title: document.title, text:
 const PAGE_TEXT_MAX_CHARS = 50_000
 const WAIT_PAGE_DEFAULT_MS = 15_000
 
-function looksLikeUrl(value: string): boolean {
+const FILE_URL_RE = /^file:\/\//i
+const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i
+const WINDOWS_PATH_RE = /^[a-z]:[\\/]/i
+const UNC_PATH_RE = /^\\\\[^\\/]+[\\/]/
+
+function isLocalFilePath(value: string): boolean {
+  return WINDOWS_PATH_RE.test(value) || UNC_PATH_RE.test(value)
+}
+
+// Local absolute paths -> file: URL so the built-in browser can open them like http(s).
+function toFileUrl(value: string): string {
+  const normalized = value.replace(/\\/g, '/')
+  if (FILE_URL_RE.test(normalized)) return encodeURI(normalized)
+  if (UNC_PATH_RE.test(value)) return encodeURI(`file:${normalized}`)
+  return encodeURI(`file:///${normalized}`)
+}
+
+export function looksLikeUrl(value: string): boolean {
   const trimmed = value.trim()
   if (!trimmed) return false
   if (/^https?:\/\//i.test(trimmed) || /^about:blank$/i.test(trimmed)) return true
+  if (FILE_URL_RE.test(trimmed) || isLocalFilePath(trimmed)) return true
   return /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#].*)?$/i.test(trimmed)
 }
 
@@ -1110,6 +1128,16 @@ function normalizeNavigateUrl(raw?: string): { ok: true; url: string } | { ok: f
   if (/^about:blank$/i.test(trimmed)) {
     return { ok: true, url: 'about:blank' }
   }
+  if (FILE_URL_RE.test(trimmed) || isLocalFilePath(trimmed)) {
+    const url = toFileUrl(trimmed)
+    try {
+      // eslint-disable-next-line no-new
+      new URL(url)
+      return { ok: true, url }
+    } catch {
+      return { ok: false, message: `Invalid file URL: ${trimmed}` }
+    }
+  }
   if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#].*)?$/i.test(trimmed)) {
     return { ok: true, url: `https://${trimmed}` }
   }
@@ -1129,9 +1157,11 @@ function matchesWaitOptions(
 function urlIncludesToken(url?: string): string | undefined {
   if (!url) return undefined
   try {
-    const parsed = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`)
+    const parsed = new URL(SCHEME_RE.test(url) ? url : `https://${url}`)
+    if (parsed.protocol === 'file:') return parsed.pathname || parsed.href
     const path = parsed.pathname === '/' ? '' : parsed.pathname
-    return `${parsed.hostname}${path}` || url
+    // host keeps the port; hostname dropped it and broke localhost:port verification.
+    return `${parsed.host}${path}` || url
   } catch {
     return url
   }

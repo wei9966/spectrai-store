@@ -40,3 +40,4 @@ export declare class BrowserDomCdpProvider implements BrowserComputerUseProvider
     private toFailure;
     private fallbackForFailure;
 }
+export declare function looksLikeUrl(value: string): boolean;

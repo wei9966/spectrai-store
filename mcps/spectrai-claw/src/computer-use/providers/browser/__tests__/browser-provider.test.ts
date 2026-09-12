@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import http from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
 
-import { BrowserDomCdpProvider } from '../provider.js'
+import { BrowserDomCdpProvider, looksLikeUrl } from '../provider.js'
 
 interface FakeCdpServer {
   url: string
@@ -136,6 +136,75 @@ test('BrowserDomCdpProvider navigate: goto alias uses value as url', async () =>
     assert.equal(result.ok, true)
     assert.equal(result.action, 'navigate')
     assert.equal(result.after?.url, 'https://fixture.local/guide')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('looksLikeUrl accepts file:// URLs and local absolute paths (regression: built-in browser local files)', () => {
+  assert.equal(looksLikeUrl('file:///F:/tmp/demo.html'), true)
+  assert.equal(looksLikeUrl('F:/tmp/demo.html'), true)
+  assert.equal(looksLikeUrl('F:\\tmp\\demo.html'), true)
+  assert.equal(looksLikeUrl('\\\\server\\share\\demo.html'), true)
+  assert.equal(looksLikeUrl('about:blank'), true)
+  assert.equal(looksLikeUrl('https://example.com'), true)
+  // still rejects non-URLs so the navigate tool keeps its accidental-garbage guard
+  assert.equal(looksLikeUrl('foobar'), false)
+  assert.equal(looksLikeUrl(''), false)
+})
+
+test('BrowserDomCdpProvider navigate: file:// URL opens and verifies', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.executeAction({
+      type: 'navigate',
+      url: 'file:///F:/tmp/demo.html',
+      timeoutMs: 1_500,
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.action, 'navigate')
+    assert.equal(result.after?.url, 'file:///F:/tmp/demo.html')
+    assert.equal(result.verification?.status, 'passed')
+    const check = result.verification?.checks.find((c) => c.name === 'urlIncludes')
+    assert.equal(check?.ok, true)
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider navigate: windows absolute path in value normalizes to file URL', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.executeAction({
+      type: 'goto',
+      value: 'F:\\tmp\\demo.html',
+      timeoutMs: 1_500,
+    } as never)
+
+    assert.equal(result.ok, true)
+    assert.equal(result.action, 'navigate')
+    assert.equal(result.after?.url, 'file:///F:/tmp/demo.html')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('BrowserDomCdpProvider navigate: localhost urlIncludes keeps the port (regression)', async () => {
+  const fake = await startFakeCdpServer()
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.executeAction({
+      type: 'navigate',
+      url: 'http://127.0.0.1:8731/demo.html',
+      timeoutMs: 1_500,
+    })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.after?.url, 'http://127.0.0.1:8731/demo.html')
+    assert.equal(result.verification?.status, 'passed')
   } finally {
     await fake.close()
   }
