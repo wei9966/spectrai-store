@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import http from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
 
-import { BrowserDomCdpProvider, looksLikeUrl } from '../provider.js'
+import { BrowserDomCdpProvider, isAppOwnTargetUrl, looksLikeUrl } from '../provider.js'
 
 interface FakeCdpServer {
   url: string
@@ -397,6 +397,8 @@ test('BrowserDomCdpProvider capabilities: reload/back/forward/wait/newTab/closeT
 interface FakeCdpServerOptions {
   mode?: 'form' | 'link-navigation' | 'same-page-toggle'
   emptyTargets?: boolean
+  /** 模拟 Electron 把 SpectrAI 自身窗口也暴露成 target（列在最前，最容易被误选） */
+  appTargetUrl?: string
 }
 
 async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<FakeCdpServer> {
@@ -459,6 +461,17 @@ async function startFakeCdpServer(options: FakeCdpServerOptions = {}): Promise<F
     }
     if (rawUrl === '/json' || rawUrl === '/json/list') {
       const pages = [
+        ...(options.appTargetUrl
+          ? [
+              {
+                id: 'page_app',
+                type: 'page',
+                url: options.appTargetUrl,
+                title: 'SpectrAI',
+                webSocketDebuggerUrl: `ws://127.0.0.1:${address.port}/devtools/page/page_app`,
+              },
+            ]
+          : []),
         ...(emptyTargets
           ? []
           : [
@@ -829,3 +842,31 @@ function decodeClientFrame(buffer: Buffer): { payload: Buffer; rest: Buffer } | 
   }
   return { payload, rest: Buffer.from(buffer.subarray(offset + length)) }
 }
+
+
+test('isAppOwnTargetUrl recognizes SpectrAI own windows (regression: app UI hijacked as browser)', () => {
+  assert.equal(
+    isAppOwnTargetUrl('file:///F:/Program%20Files/SpectrAI/resources/app.asar/out/renderer/index.html#browser'),
+    true,
+  )
+  assert.equal(isAppOwnTargetUrl('devtools://devtools/bundled/inspector.html'), true)
+  assert.equal(isAppOwnTargetUrl('https://fixture.local/form'), false)
+  assert.equal(isAppOwnTargetUrl('about:blank'), false)
+  assert.equal(isAppOwnTargetUrl('file:///F:/tmp/demo.html'), false)
+  assert.equal(isAppOwnTargetUrl(''), false)
+})
+
+test('listTargets hides SpectrAI own window even when it is listed first', async () => {
+  const fake = await startFakeCdpServer({
+    appTargetUrl: 'file:///F:/Program%20Files/SpectrAI/resources/app.asar/out/renderer/index.html#browser',
+  })
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const targets = await provider.listTargets()
+    assert.equal(targets.length, 1)
+    assert.equal(targets[0]?.title, 'Fixture Form')
+    assert.equal(targets.some((t) => isAppOwnTargetUrl(t.url)), false)
+  } finally {
+    await fake.close()
+  }
+})

@@ -75,7 +75,9 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
 
   async listTargets(): Promise<BrowserTarget[]> {
     await this.ensureReady()
-    return await this.http.listTargets()
+    const targets = await this.http.listTargets()
+    // 兜底：绝不把 SpectrAI 自身窗口（主界面等）当成可操作的浏览器 target
+    return targets.filter((target) => !isAppOwnTargetUrl(target.url))
   }
 
   async listWindows(): Promise<BrowserWindow[]> {
@@ -792,6 +794,7 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
 
     const matches = (target: BrowserTarget) => {
       if (!target.webSocketDebuggerUrl) return false
+      if (isAppOwnTargetUrl(target.url)) return false
       if (queryTargetId && target.targetId !== queryTargetId) return false
       if (queryWebSocketDebuggerUrl && target.webSocketDebuggerUrl !== queryWebSocketDebuggerUrl) return false
       if (queryUrlIncludes && !target.url.includes(queryUrlIncludes)) return false
@@ -799,7 +802,9 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
       return true
     }
 
-    const selected = targets.find(matches) ?? targets.find((target) => Boolean(target.webSocketDebuggerUrl))
+    const selected =
+      targets.find(matches) ??
+      targets.find((target) => Boolean(target.webSocketDebuggerUrl) && !isAppOwnTargetUrl(target.url))
     if (!selected?.webSocketDebuggerUrl) {
       throw new CdpError('target_not_found', 'No attachable CDP page target matched the browser query.', { query })
     }
@@ -1069,6 +1074,20 @@ function toFileUrl(value: string): string {
   if (FILE_URL_RE.test(normalized)) return encodeURI(normalized)
   if (UNC_PATH_RE.test(value)) return encodeURI(`file:${normalized}`)
   return encodeURI(`file:///${normalized}`)
+}
+
+/**
+ * 判定 target 是否属于 SpectrAI 自身窗口（主界面/任务控制/会话聊天等）。
+ * 这些窗口统一加载 …/out/renderer/*.html#<hash>；一旦被当成浏览器 target 操作，
+ * 整个软件界面就会被 Page.navigate 等导航走或打白。门面已在 /json/list 过滤，
+ * 这里再兜一层，避免指向未过滤的 CDP 端点时误伤。
+ */
+export function isAppOwnTargetUrl(url: string): boolean {
+  if (!url) return false
+  if (url.startsWith('devtools://')) return true
+  const devUrl = process.env.ELECTRON_RENDERER_URL
+  if (devUrl && url.startsWith(devUrl)) return true
+  return /\/out\/renderer\/[^?#]*\.html/i.test(url)
 }
 
 export function looksLikeUrl(value: string): boolean {
