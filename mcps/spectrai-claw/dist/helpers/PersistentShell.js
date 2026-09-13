@@ -87,6 +87,81 @@ public class Win32 {
             return true;
         }, IntPtr.Zero);
     }
+
+    // ---- Input injection: SendInput absolute (one atomic call, no cursor round-trip) ----
+    public const int SM_XVIRTUALSCREEN = 76;
+    public const int SM_YVIRTUALSCREEN = 77;
+    public const int SM_CXVIRTUALSCREEN = 78;
+    public const int SM_CYVIRTUALSCREEN = 79;
+    public const uint MOUSEEVENTF_MOVE = 0x0001;
+    public const uint MOUSEEVENTF_WHEEL = 0x0800;
+    public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+    public const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT {
+        public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT { public uint type; public MOUSEINPUT mi; }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int nIndex);
+
+    // Map a virtual-desktop pixel into the 0..65535 normalized space SendInput expects.
+    public static int Normalize(int value, int origin, int span) {
+        if (span <= 0) return 0;
+        long v = ((long)(value - origin) * 65535L) / span;
+        if (v < 0) v = 0;
+        if (v > 65535) v = 65535;
+        return (int)v;
+    }
+    static INPUT MouseInput(int x, int y) {
+        int nx = Normalize(x, GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN));
+        int ny = Normalize(y, GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        return new INPUT { type = 0, mi = new MOUSEINPUT { dx = nx, dy = ny, dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK } };
+    }
+    public static uint[] ParseFlags(string csv) {
+        if (String.IsNullOrEmpty(csv)) return new uint[0];
+        var parts = csv.Split(new char[] { ';', ',' });
+        var list = new List<uint>();
+        foreach (var p in parts) { var t = p.Trim(); if (t.Length == 0) continue; list.Add(Convert.ToUInt32(t, 16)); }
+        return list.ToArray();
+    }
+
+    // Absolute move + button events in ONE SendInput call. Falls back to the legacy
+    // SetCursorPos + mouse_event path when injection is refused (e.g. secured desktop).
+    public static void SendMouse(int x, int y, string flagCsv) {
+        var flags = ParseFlags(flagCsv);
+        var inputs = new INPUT[flags.Length + 1];
+        inputs[0] = MouseInput(x, y);
+        for (int i = 0; i < flags.Length; i++) { inputs[i + 1] = new INPUT { type = 0, mi = new MOUSEINPUT { dwFlags = flags[i] } }; }
+        uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+        if (sent != inputs.Length) {
+            SetCursorPos(x, y);
+            foreach (var f in flags) mouse_event(f, 0, 0, 0, UIntPtr.Zero);
+        }
+    }
+    public static void SendMove(int x, int y) {
+        var inputs = new INPUT[1] { MouseInput(x, y) };
+        uint sent = SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
+        if (sent != 1) SetCursorPos(x, y);
+    }
+    public static void SendWheel(int x, int y, int delta) {
+        var inputs = new INPUT[2];
+        inputs[0] = MouseInput(x, y);
+        inputs[1] = new INPUT { type = 0, mi = new MOUSEINPUT { mouseData = unchecked((uint)delta), dwFlags = MOUSEEVENTF_WHEEL } };
+        uint sent = SendInput(2, inputs, Marshal.SizeOf(typeof(INPUT)));
+        if (sent != 2) { SetCursorPos(x, y); mouse_event(MOUSEEVENTF_WHEEL, 0, 0, unchecked((uint)delta), UIntPtr.Zero); }
+    }
+    public static void SendWheelCurrent(int delta) {
+        var inputs = new INPUT[1];
+        inputs[0] = new INPUT { type = 0, mi = new MOUSEINPUT { mouseData = unchecked((uint)delta), dwFlags = MOUSEEVENTF_WHEEL } };
+        uint sent = SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
+        if (sent != 1) mouse_event(MOUSEEVENTF_WHEEL, 0, 0, unchecked((uint)delta), UIntPtr.Zero);
+    }
 }
 "@
 `;

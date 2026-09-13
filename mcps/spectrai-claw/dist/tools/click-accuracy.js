@@ -99,3 +99,12 @@ export function scoreSearchAmbiguity(el) {
 export function preferLocalSessionOverNetworkSearch(a, b) {
     return scoreSearchAmbiguity(b) - scoreSearchAmbiguity(a);
 }
+/**
+ * PowerShell one-liner for an atomic absolute move+click (Win32.SendMouse).
+ * Replaces the old `SetCursorPos + Start-Sleep + mouse_event` sequence:
+ * a single SendInput round-trip is faster and lands more reliably under DPI scaling
+ * and multi-monitor virtual-desktop layouts.
+ */
+export function formatSendMouseCommand(x, y, flagCsv) {
+    return `[Win32]::SendMouse(${Math.round(x)}, ${Math.round(y)}, '${flagCsv}')`;
+}

@@ -37,7 +37,7 @@ import { visionLocate } from './vision-grounding.js';
 import { renderHud } from './hud-renderer.js';
 import { inferElementCapability } from '../computer-use/providers/windows/uia-mapper.js';
 import { activationEvidenceMatches, classifyForegroundResult, interpretActivatableHidVerify, interpretActivatableSelectVerify, isActivatableSelectionItem, NEAR_MONO_MAX_LUMINANCE_VARIANCE, NEAR_MONO_MAX_UNIQUE, resolveCaptureBlankDecision, resolveHidClickTypeForActivatable, resolveScreenshotCaptureMode, shouldFallbackClickAfterUia, SUSPICIOUS_BLANK_MAX_LUMINANCE_VARIANCE, SUSPICIOUS_BLANK_MAX_UNIQUE, } from './desktop-action-guards.js';
-import { isUiaElementCandidate, parseAnnotatedSource, scoreSearchAmbiguity, } from './click-accuracy.js';
+import { formatSendMouseCommand, isUiaElementCandidate, parseAnnotatedSource, scoreSearchAmbiguity, } from './click-accuracy.js';
 import { getScreenshotMeta, setScreenshotMeta, } from './screenshot-meta.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -60,9 +60,6 @@ function getMouseClickFlags(button, clickType) {
         case 'middle': return clickType === 'double' ? '0x0020;0x0040;0x0020;0x0040' : '0x0020;0x0040';
         default: return clickType === 'double' ? '0x0002;0x0004;0x0002;0x0004' : '0x0002;0x0004';
     }
-}
-function getMouseClickEvents(flags) {
-    return flags.split(';').map(f => `[Win32]::mouse_event(${f}, 0, 0, 0, [UIntPtr]::Zero)`).join('\n');
 }
 // Rank an annotated element by how confidently it can be acted on natively.
 // Reuses the computer-use capability inference so the screenshot workflow and the
@@ -1490,28 +1487,14 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
         const screenY = Math.round(meta.captureY + (imageY / meta.imageH) * meta.captureH);
         const button = (args.button === 'right' || args.button === 'middle') ? args.button : 'left';
         const clickType = args.clickType === 'double' ? 'double' : 'single';
-        let clickFlags;
-        switch (button) {
-            case 'right':
-                clickFlags = clickType === 'double' ? '0x0008;0x0010;0x0008;0x0010' : '0x0008;0x0010';
-                break;
-            case 'middle':
-                clickFlags = clickType === 'double' ? '0x0020;0x0040;0x0020;0x0040' : '0x0020;0x0040';
-                break;
-            default:
-                clickFlags = clickType === 'double' ? '0x0002;0x0004;0x0002;0x0004' : '0x0002;0x0004';
-                break;
-        }
-        const events = clickFlags.split(';').map(f => `[Win32]::mouse_event(${f}, 0, 0, 0, [UIntPtr]::Zero)`).join('\n');
+        const clickFlags = getMouseClickFlags(button, clickType);
         try {
             presenceMark('click', screenX, screenY);
         }
         catch { /* overlay must never fail click */ }
         const script = `
-[Win32]::SetCursorPos(${screenX}, ${screenY})
-Start-Sleep -Milliseconds 30
-${events}
-Start-Sleep -Milliseconds 200
+${formatSendMouseCommand(screenX, screenY, clickFlags)}
+Start-Sleep -Milliseconds 100
 # Capture a small region around click point to verify
 $vSize = 200
 $vx = [Math]::Max(0, ${screenX} - $vSize)
@@ -1563,15 +1546,12 @@ Write-Output "clicked|$vPath"
      */
     async function hidClickAndVerify(cx, cy, button, clickType, label) {
         const clickFlags = getMouseClickFlags(button, clickType);
-        const events = getMouseClickEvents(clickFlags);
         try {
             presenceMark('click', cx, cy);
         }
         catch { /* overlay must never fail HID click */ }
         const script = `
-[Win32]::SetCursorPos(${cx}, ${cy})
-Start-Sleep -Milliseconds 20
-${events}
+${formatSendMouseCommand(cx, cy, clickFlags)}
 Start-Sleep -Milliseconds 80
 $vSize = 150
 $vx = [Math]::Max(0, ${cx} - $vSize)
@@ -2312,28 +2292,14 @@ $g.Dispose()
         const py = sn(args.y);
         const button = (args.button === 'right' || args.button === 'middle') ? args.button : 'left';
         const clickType = args.clickType === 'double' ? 'double' : 'single';
-        let flags;
-        switch (button) {
-            case 'right':
-                flags = clickType === 'double' ? '0x0008;0x0010;0x0008;0x0010' : '0x0008;0x0010';
-                break;
-            case 'middle':
-                flags = clickType === 'double' ? '0x0020;0x0040;0x0020;0x0040' : '0x0020;0x0040';
-                break;
-            default:
-                flags = clickType === 'double' ? '0x0002;0x0004;0x0002;0x0004' : '0x0002;0x0004';
-                break;
-        }
-        const events = flags.split(';').map(f => `[Win32]::mouse_event(${f}, 0, 0, 0, [UIntPtr]::Zero)`).join('\n');
+        const flags = getMouseClickFlags(button, clickType);
         try {
             presenceMark('click', px, py);
         }
         catch { /* overlay must never fail click */ }
         const script = `
-[Win32]::SetCursorPos(${px}, ${py})
-Start-Sleep -Milliseconds 30
-${events}
-Start-Sleep -Milliseconds 200
+${formatSendMouseCommand(px, py, flags)}
+Start-Sleep -Milliseconds 100
 # Capture verification region around click
 $vSize = 150
 $vx = [Math]::Max(0, ${px} - $vSize)
@@ -2391,7 +2357,7 @@ Write-Output "clicked|$vPath"
         }
         catch { /* overlay must never fail move */ }
         const script = `
-[Win32]::SetCursorPos(${px}, ${py})
+[Win32]::SendMove(${px}, ${py})
 Write-Output "moved to ${px},${py}"
 `;
         const result = await shell.exec(script, 5000);
@@ -2412,13 +2378,13 @@ Write-Output "moved to ${px},${py}"
         additionalProperties: false,
     }, async (args) => {
         const delta = sn(args.delta) * 120;
-        let moveCmd = '';
+        let scrollCmd = `[Win32]::SendWheelCurrent(${delta})`;
         if (args.x != null && args.y != null) {
             try {
                 presenceMark('scroll', sn(args.x), sn(args.y));
             }
             catch { /* overlay must never fail scroll */ }
-            moveCmd = `[Win32]::SetCursorPos(${sn(args.x)}, ${sn(args.y)})\nStart-Sleep -Milliseconds 30`;
+            scrollCmd = `[Win32]::SendWheel(${sn(args.x)}, ${sn(args.y)}, ${delta})`;
         }
         else {
             try {
@@ -2427,8 +2393,7 @@ Write-Output "moved to ${px},${py}"
             catch { /* overlay must never fail scroll */ }
         }
         const script = `
-${moveCmd}
-[Win32]::mouse_event(0x0800, 0, 0, ${delta}, [UIntPtr]::Zero)
+${scrollCmd}
 Write-Output "scrolled"
 `;
         const result = await shell.exec(script, 5000);
@@ -2512,7 +2477,7 @@ Write-Output "scrolled"
         }
         catch { /* overlay must never fail type */ }
         const focusClick = targetElement
-            ? `[Win32]::SetCursorPos(${sn(targetElement.screenX)}, ${sn(targetElement.screenY)}); Start-Sleep -Milliseconds 20; [Win32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); [Win32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 30\n`
+            ? `${formatSendMouseCommand(sn(targetElement.screenX), sn(targetElement.screenY), getMouseClickFlags('left', 'single'))}\n`
             : '';
         const script = `
 ${focusClick}$wsh = New-Object -ComObject WScript.Shell

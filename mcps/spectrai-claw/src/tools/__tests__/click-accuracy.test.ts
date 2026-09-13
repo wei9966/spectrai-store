@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   findOcrUiaAnchor,
+  formatSendMouseCommand,
   isUiaElementCandidate,
   ocrUiaNeighborThreshold,
   parseAnnotatedSource,
@@ -137,5 +138,21 @@ describe('scoreSearchAmbiguity / preferLocalSessionOverNetworkSearch (P3.15)', (
     assert.ok(scoreSearchAmbiguity(local) > 0)
     assert.ok(scoreSearchAmbiguity(network) < 0)
     assert.ok(scoreSearchAmbiguity(local) > scoreSearchAmbiguity(network))
+  })
+})
+
+describe('formatSendMouseCommand', () => {
+  it('emits a single absolute SendMouse call with rounded coords', () => {
+    assert.equal(
+      formatSendMouseCommand(100, 200, '0x0002;0x0004'),
+      "[Win32]::SendMouse(100, 200, '0x0002;0x0004')",
+    )
+  })
+
+  it('rounds fractional coordinates and keeps double-click flag order', () => {
+    assert.equal(
+      formatSendMouseCommand(10.4, 20.6, '0x0002;0x0004;0x0002;0x0004'),
+      "[Win32]::SendMouse(10, 21, '0x0002;0x0004;0x0002;0x0004')",
+    )
   })
 })

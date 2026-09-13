@@ -64,3 +64,10 @@ export interface SearchAmbiguityFields {
 export declare function scoreSearchAmbiguity(el: SearchAmbiguityFields | null | undefined): number;
 /** Comparator for same-name ambiguity: local/session-ish before network-search chrome. */
 export declare function preferLocalSessionOverNetworkSearch(a: SearchAmbiguityFields, b: SearchAmbiguityFields): number;
+/**
+ * PowerShell one-liner for an atomic absolute move+click (Win32.SendMouse).
+ * Replaces the old `SetCursorPos + Start-Sleep + mouse_event` sequence:
+ * a single SendInput round-trip is faster and lands more reliably under DPI scaling
+ * and multi-monitor virtual-desktop layouts.
+ */
+export declare function formatSendMouseCommand(x: number, y: number, flagCsv: string): string;
