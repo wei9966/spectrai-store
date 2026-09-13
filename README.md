@@ -12,7 +12,12 @@ SpectrAI 官方插件仓库，提供 MCP Server 和 Skill 的一站式安装。
 
 ### Skills
 
-即将推出...
+| 名称 | 描述 | 依赖 | 版本 |
+|------|------|------|------|
+| [video-shots](./skills/video-shots) | 拉片：把成片拆成逐镜头分析表（时长/景别/类别/运镜/画面），15 道质量门对账，产出单文件交互式拉片报告 | node, ffmpeg, ffprobe | 1.0.0 |
+| [video-sync](./skills/video-sync) | 分镜成片：拉片数据 + 原片合成为带分镜信息的视频，镜头切了信息跟着切、镜头表自动滚动高亮 | node, ffmpeg, ffprobe, chrome | 1.0.0 |
+
+> 以上两个技能来自开源项目 [eternityspring/reelbench-skills](https://github.com/eternityspring/reelbench-skills)（Apache-2.0），各自随附 LICENSE。
 
 ## 安装方式
 
@@ -43,7 +48,9 @@ spectrai-store/
 ├── registry.json      ← 插件注册清单
 ├── mcps/              ← MCP Server 插件
 │   └── spectrai-claw/
-└── skills/            ← Skill 插件（即将推出）
+└── skills/            ← Skill 插件
+    ├── video-shots/
+    └── video-sync/
 ```
 
 ## 贡献

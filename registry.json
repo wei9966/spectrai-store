@@ -22,5 +22,43 @@
       "homepage": "https://github.com/wei9966/spectrai-store"
     }
   ],
-  "skills": []
+  "skills": [
+    {
+      "name": "video-shots",
+      "displayName": "VideoShots 拉片",
+      "description": "把一条成片拆成逐镜头的分析表：时长、景别、类别、运镜、画面。切点/时长/运动量由 ffmpeg 确定性测量，模型只判断景别/类别/运镜/画面，再由 15 道质量门逐条对账。产出 shots.json、Markdown 镜头表和单文件交互式拉片报告（内嵌播放器、可搜索筛选的镜头表）。零 npm 依赖。",
+      "version": "1.0.0",
+      "type": "skill",
+      "path": "skills/video-shots",
+      "entry": "SKILL.md",
+      "category": "video",
+      "tags": ["video", "shot-breakdown", "拉片", "拆镜头", "ffmpeg", "analysis", "report", "claude-code", "codex"],
+      "requires": {
+        "bins": ["node", "ffmpeg", "ffprobe"],
+        "runtimes": ["claude-code", "codex"]
+      },
+      "author": "eternityspring",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/eternityspring/reelbench-skills"
+    },
+    {
+      "name": "video-sync",
+      "displayName": "VideoSync 分镜成片",
+      "description": "吃 video-shots 的 shots.json，把拉片数据和原片合成一条能直接看的视频：画面一边、当前镜头的分镜信息一边，镜头切了信息跟着切，镜头表自动滚动并高亮。横版上下叠、竖版左右并，改 panel.css 即可改版式。零 npm 依赖，需 ffmpeg 与无头 Chrome/Edge。",
+      "version": "1.0.0",
+      "type": "skill",
+      "path": "skills/video-sync",
+      "entry": "SKILL.md",
+      "category": "video",
+      "tags": ["video", "storyboard", "分镜", "合成视频", "ffmpeg", "claude-code", "codex"],
+      "requires": {
+        "bins": ["node", "ffmpeg", "ffprobe", "chrome"],
+        "runtimes": ["claude-code", "codex"]
+      },
+      "dependsOn": ["video-shots"],
+      "author": "eternityspring",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/eternityspring/reelbench-skills"
+    }
+  ]
 }
