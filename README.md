@@ -8,7 +8,7 @@ SpectrAI 官方插件仓库，提供 MCP Server 和 Skill 的一站式安装。
 
 | 名称 | 描述 | 平台 | 版本 |
 |------|------|------|------|
-| [spectrai-claw](./mcps/spectrai-claw) | 桌面自动化（截图、鼠标键盘、UIA、窗口管理） | Windows | 0.1.0 |
+| [spectrai-claw](./mcps/spectrai-claw) | 桌面自动化（截图、鼠标键盘、UIA、窗口管理） | Windows | 0.5.1 |
 
 ### Skills
 
