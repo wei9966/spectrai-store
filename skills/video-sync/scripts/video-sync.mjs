@@ -491,6 +491,11 @@ function frameCtx(rest, doc) {
  * 两个都用 crop + overlay——**只有这两个滤镜的表达式是逐帧求值的**；
  * drawbox 的表达式在初始化时算一次就定死，拿它做动画得到的是一张不动的框（踩过）。
  */
+// ponytail: ffmpeg 滤镜图不认 Windows 的 `C:\...` 路径（反斜杠当转义、冒号当选项分隔）。
+// 转成正斜杠并把冒号转义为 `\\:`，且不能套引号——实测 `'C\\:/...'` 反而解析失败。
+// ceiling: 路径含 `[ ] ; ,` 等滤镜保留字符时仍需更完整的转义（本项目输出目录不含这些）。
+const ffGraphPath = (p) => String(p).replace(/\\/g, '/').replace(/:/g, '\\\\:');
+
 export function composeArgs({
   video, still, listDim, listLit, out, layout, motion, view, commands, hasAudio,
 }) {
@@ -499,7 +504,7 @@ export function composeArgs({
   const { bands, parkY, initial } = motion;
   const chain = [
     `[0:v]scale=${vw}:${vh}:flags=lanczos,setsar=1,fps=${layout.fps}[v]`,
-    `[1:v]scale=${pw}:${ph},setsar=1,fps=${layout.fps},sendcmd=f='${commands}'[base]`,
+    `[1:v]scale=${pw}:${ph},setsar=1,fps=${layout.fps},sendcmd=f=${ffGraphPath(commands)}[base]`,
     // x 必须取 view.x：长图是整块面板宽的，列表在里面是缩进的。
     // 从 x=0 裁再盖回 x=view.x，整张表会往右挪一个缩进，右边同样宽度的字被切掉（踩过）
     `[2:v]fps=${layout.fps},crop@win=w=${view.width}:h=${view.height}:x=${view.x}:y=${initial.offset}[win]`,

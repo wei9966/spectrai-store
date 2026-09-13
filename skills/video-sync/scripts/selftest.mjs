@@ -251,7 +251,7 @@ const doc = () => ({
     '亮条长图也从 view.x 裁起');
   ok(filter.includes(`overlay@win=x=${view.x}:`), '裁的 x 和盖的 x 是同一个值');
   ok(filter.includes('overlay@band0='), '高亮条按行高分层，层号从 0 起');
-  ok(filter.includes("sendcmd=f='/tmp/motion.cmd'"), '动画由 sendcmd 驱动');
+  ok(filter.includes("sendcmd=f=/tmp/motion.cmd"), '动画由 sendcmd 驱动');
   ok(filter.includes('crop@win=') && filter.includes('crop@band0=') && filter.includes('overlay@band0='),
     '被驱动的滤镜都起了名字，sendcmd 靠名字找它们');
   ok(filter.includes(`overlay@win=x=${view.x}:y=${view.y}`), '窗口盖回列表的位置');
