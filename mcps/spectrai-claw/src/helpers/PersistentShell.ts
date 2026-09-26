@@ -118,10 +118,26 @@ public class Win32 {
     [DllImport("user32.dll")]
     public static extern int GetSystemMetrics(int nIndex);
 
+    // Per-Monitor-V2 DPI awareness: set ONCE at process start, before any GDI/UIA/window call, so
+    // screenshots, UIA BoundingRectangle and SendInput share one un-virtualized physical-pixel space.
+    [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+    [DllImport("shcore.dll")] static extern int SetProcessDpiAwareness(int awareness);
+    [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+    public static string DpiAwarenessMode = "unset";
+    public static string InitDpiAwareness() {
+        // Setters fail (ACCESS_DENIED) when awareness is already set; not an error.
+        try { if (SetProcessDpiAwarenessContext(new IntPtr(-4))) return (DpiAwarenessMode = "PerMonitorV2"); } catch {}
+        try { if (SetProcessDpiAwareness(2) == 0) return (DpiAwarenessMode = "PerMonitor"); } catch {}
+        try { if (SetProcessDPIAware()) return (DpiAwarenessMode = "System"); } catch {}
+        return (DpiAwarenessMode = "preset_or_unaware");
+    }
+
     // Map a virtual-desktop pixel into the 0..65535 normalized space SendInput expects.
+    // Divisor is (span - 1): normalized 65535 must map to the last addressable pixel, not one past it
+    // (MOUSEEVENTF_VIRTUALDESK absolute-coordinate convention), else edges drift ~1px on hi-dpi.
     public static int Normalize(int value, int origin, int span) {
-        if (span <= 0) return 0;
-        long v = ((long)(value - origin) * 65535L) / span;
+        if (span <= 1) return 0;
+        long v = ((long)(value - origin) * 65535L) / (span - 1);
         if (v < 0) v = 0;
         if (v > 65535) v = 65535;
         return (int)v;
@@ -195,6 +211,10 @@ $null = [Windows.Storage.Streams.IRandomAccessStream, Windows.Foundation.Univers
 
 # Pre-load consolidated Win32 helpers
 ${BOOTSTRAP_CSHARP}
+
+# Set Per-Monitor-V2 DPI awareness before any screenshot/UIA/SendInput call so every
+# coordinate is a physical pixel (see desktop-tools.ts header). Result is read by get_screen_info.
+$global:ClawDpiMode = [Win32]::InitDpiAwareness()
 
 # Pre-cache JPEG codec
 $global:jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
@@ -322,7 +342,13 @@ export class PersistentShell {
           if (this.stdoutBuf.includes('READY')) {
             this.ready = true
             this.stdoutBuf = ''
-            finish(() => resolveReady())
+            // PowerShell `-Command -` can read-ahead and swallow the FIRST command sent right after
+            // READY (a nondeterministic stdin race). Warm up with retrying pings so callers never
+            // lose their first exec; only resolve start() once the command loop provably responds.
+            this.warmup().then(
+              () => finish(() => resolveReady()),
+              (err: Error) => finish(() => rejectReady(err)),
+            )
           }
           return
         }
@@ -370,6 +396,9 @@ export class PersistentShell {
   }
 
   private async ensureReady(): Promise<void> {
+    // Wait out an in-flight start (incl. its warmup) before trusting `ready`, otherwise a caller
+    // could slip an exec in during warmup and collide with the warmup ping on pendingResolve.
+    if (this.starting) await this.starting.catch(() => undefined)
     if (this.ready && this.proc && !this.proc.killed) return
     try {
       await this.start()
@@ -414,7 +443,24 @@ export class PersistentShell {
     }
   }
 
-  private execUnlocked(script: string, timeout: number): Promise<ShellResult> {
+  /**
+   * Confirm the command loop is reading stdin before start() resolves. The first line written right
+   * after READY can be swallowed by PowerShell's `-Command -` read-ahead, so retry a cheap ping
+   * (without killing the process on a swallowed try) until one echoes back.
+   */
+  private async warmup(): Promise<void> {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        const r = await this.execUnlocked("Write-Output 'CLAW_WARM'", 1500, false)
+        if (r.exitCode === 0 && r.stdout.includes('CLAW_WARM')) return
+      } catch {
+        /* swallowed / timed out → retry */
+      }
+    }
+    throw new Error(`${PS_UNHEALTHY}: command loop unresponsive after warmup`)
+  }
+
+  private execUnlocked(script: string, timeout: number, killOnTimeout = true): Promise<ShellResult> {
     return new Promise<ShellResult>((resolve, reject) => {
       this.pendingResolve = resolve
       this.pendingReject = reject
@@ -422,8 +468,9 @@ export class PersistentShell {
       this.pendingTimer = setTimeout(() => {
         this.pendingResolve = null
         this.pendingReject = null
-        // Kill on timeout; next exec/restart cold-starts
-        this.kill()
+        // Kill on timeout; next exec/restart cold-starts. Warmup pings opt out (killOnTimeout=false)
+        // so a swallowed first command can simply be retried without tearing down the process.
+        if (killOnTimeout) this.kill()
         reject(new Error(`PowerShell command timed out after ${timeout}ms`))
       }, timeout)
 

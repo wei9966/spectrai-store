@@ -1,7 +1,9 @@
 /**
  * Desktop automation tools for SpectrAI Claw.
  * Uses PersistentShell for all PowerShell operations (single process, pre-loaded DLLs).
- * All coordinates are in logical pixels — NO DPI conversion needed for non-DPI-aware process.
+ * All coordinates are physical pixels — the PersistentShell process is Per-Monitor-V2 DPI aware,
+ * so GDI screenshots, UIA BoundingRectangle and SendInput share one un-virtualized physical-pixel
+ * space (no DPI conversion needed). See get_screen_info for the effective DPI-awareness mode.
  *
  * === TOOL PRIORITY GUIDE (embedded in tool descriptions for AI) ===
  * 
@@ -54,10 +56,13 @@ import {
 import {
   formatSendMouseCommand,
   isUiaElementCandidate,
+  matchesExpectText,
   parseAnnotatedSource,
   scoreSearchAmbiguity,
 } from './click-accuracy.js'
 import {
+  AUTO_SCALE_MAX_LONG_EDGE,
+  AUTO_SCALE_MAX_PIXELS,
   getScreenshotMeta,
   setScreenshotMeta,
   type AnnotatedElement,
@@ -777,7 +782,7 @@ export async function registerDesktopTools(): Promise<void> {
         y: { type: 'number', description: 'Top Y coordinate (logical pixels)' },
         width: { type: 'number', description: 'Width of capture region (logical pixels)' },
         height: { type: 'number', description: 'Height of capture region (logical pixels)' },
-        maxWidth: { type: 'number', description: 'Max output image width in pixels. Default: 0 (no scaling, native resolution). Set a value like 1568 to reduce file size.' },
+        maxWidth: { type: 'number', description: 'Output image sizing. OMIT (default) → auto-downscale to fit the model vision limits (long edge ≤1568px, ~1.15M px) with high-quality interpolation so grid labels/small text stay readable; image pixels then differ from screen coordinates. Set 0 → keep NATIVE resolution (no scaling). Set a positive value (e.g. 1568) → scale by that max width.' },
         quality: { type: 'number', description: 'JPEG compression quality 1-100. Default: 95 (high quality for accurate AI analysis)' },
         savePath: { type: 'string', description: 'File path to save screenshot. Default: auto-generated temp file (.png)' },
         allScreens: { type: 'boolean', description: 'Capture all monitors as one image (virtual screen). Default: false' },
@@ -793,7 +798,10 @@ export async function registerDesktopTools(): Promise<void> {
     },
     async (args) => {
       const quality = args.quality != null ? Math.max(1, Math.min(100, sn(args.quality))) : 95
-      const maxWidth = args.maxWidth != null ? sn(args.maxWidth) : 0
+      // maxWidth omitted → auto-scale to model vision limits; =0 → native; >0 → width scale.
+      const maxWidthProvided = args.maxWidth != null
+      const maxWidth = maxWidthProvided ? sn(args.maxWidth) : 0
+      const autoScale = !maxWidthProvided
       const allScreens = args.allScreens === true
       const monitorExplicit = args.monitor != null
       const monitorIdx = monitorExplicit ? sn(args.monitor) : 0
@@ -1007,10 +1015,24 @@ $g.CopyFromScreen($captureX, $captureY, 0, 0, (New-Object System.Drawing.Size($c
 $g.Dispose()
 ${blankProbe}
 $maxW = ${maxWidth}
-if ($maxW -gt 0 -and $bmp.Width -gt $maxW) {
+$autoScale = ${autoScale ? '$true' : '$false'}
+$maxLongEdge = ${AUTO_SCALE_MAX_LONG_EDGE}
+$maxPixels = ${AUTO_SCALE_MAX_PIXELS}
+$newW = 0; $newH = 0
+if ($autoScale -and $bmp.Width -gt 0 -and $bmp.Height -gt 0) {
+    # scale = min(1, maxLongEdge/longEdge, sqrt(maxPixels/(w*h))) — matches computeAutoScale()
+    $longEdge = [Math]::Max($bmp.Width, $bmp.Height)
+    $scaleF = [Math]::Min(1.0, [Math]::Min($maxLongEdge / $longEdge, [Math]::Sqrt($maxPixels / ([double]$bmp.Width * $bmp.Height))))
+    if ($scaleF -lt 1.0) {
+        $newW = [Math]::Max(1, [int][Math]::Round($bmp.Width * $scaleF))
+        $newH = [Math]::Max(1, [int][Math]::Round($bmp.Height * $scaleF))
+    }
+} elseif ($maxW -gt 0 -and $bmp.Width -gt $maxW) {
     $ratio = $maxW / $bmp.Width
     $newW = [int]($bmp.Width * $ratio)
     $newH = [int]($bmp.Height * $ratio)
+}
+if ($newW -gt 0 -and $newH -gt 0) {
     $resized = New-Object System.Drawing.Bitmap($newW, $newH)
     $g2 = [System.Drawing.Graphics]::FromImage($resized)
     $g2.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
@@ -1484,17 +1506,22 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
         // meta persistence failure does not affect screenshot result
       }
 
+      const wasScaled = imageW > 0 && capW > 0 && (imageW !== capW || imageH !== capH)
+      const scalingNotice = wasScaled
+        ? `SCALED: image=${imageW}x${imageH} downscaled from capture ${capW}x${capH}. IMAGE PIXELS ≠ SCREEN COORDINATES. To click: prefer click_element(number); or screenshot_click(imageX,imageY) which auto-converts image pixels back to screen; or read a grid label (absolute screen coords) and pass it to mouse_click(x,y). Grid labels and numbered markers already use absolute screen coordinates.`
+        : ''
       return {
         content: [{
           type: 'text',
           text: [
             `Screenshot saved: ${filePath}`,
             `Capture region: origin=(${originX},${originY}), size=${capturedSize}, image=${imageW}x${imageH}, file=${fileSize} bytes`,
+            scalingNotice,
             `NEXT: Use the Read tool to VIEW this image first. Understand the full layout.`,
             annotate && meta.elements && meta.elements.length > 0
               ? `Found ${meta.elements.length} annotated elements. Use click_element(number) for any numbered element. If your target is NOT numbered, use zoom_screenshot(x,y,w,h) on that area → read grid coordinates → mouse_click(x,y).`
               : `No annotated elements found (common for web/Electron apps). Use zoom_screenshot(x,y,w,h) on the area of interest → read grid coordinates → mouse_click(x,y). Do NOT use screenshot_click.`,
-          ].join('\n') + elementListText,
+          ].filter(Boolean).join('\n') + elementListText,
         }],
       }
     },
@@ -1518,6 +1545,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
         screenshotPath: { type: 'string', description: 'Path to the screenshot file. If omitted, uses the most recent screenshot.' },
         button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button. Default: left' },
         clickType: { type: 'string', enum: ['single', 'double'], description: 'Click type. Default: single' },
+        expectText: { type: 'string', description: 'Optional safety guard. If set, the click only fires when this text (case-insensitive substring) appears in the UIA element under the cursor or up to 3 of its ancestors. Otherwise the click is refused and the actual target is returned so you can re-locate. Use for toggle buttons (like/follow) to avoid mis-clicks.' },
       },
       additionalProperties: false,
     },
@@ -1553,23 +1581,33 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
 
       const clickFlags = getMouseClickFlags(button, clickType)
 
+      // Pre-click UIA hit-test: always report, and gate on expectText when provided.
+      const expectText = (args.expectText as string) || ''
+      const hit = await hitTestUnderPoint(screenX, screenY)
+      const hitTargetText = formatHitTarget(hit)
+      if (expectText.trim() && !matchesExpectText([hit.name, ...hit.ancestors], expectText)) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text',
+            text: `Click refused: expectText="${expectText}" not found under cursor at screen(${screenX},${screenY}).\n${hitTargetText}\nRe-locate the target (screenshot + click_element or zoom_screenshot → mouse_click) and retry.`,
+          }],
+        }
+      }
+
       try { presenceMark('click', screenX, screenY) } catch { /* overlay must never fail click */ }
 
       const script = `
 ${formatSendMouseCommand(screenX, screenY, clickFlags)}
 Start-Sleep -Milliseconds 100
-# Capture a small region around click point to verify
-$vSize = 200
-$vx = [Math]::Max(0, ${screenX} - $vSize)
-$vy = [Math]::Max(0, ${screenY} - $vSize)
-$vw = $vSize * 2
-$vh = $vSize * 2
+# Capture a small region around click point to verify (clamped to virtual desktop)
+${verifyCropPs(screenX, screenY, 200)}
 $vBmp = New-Object System.Drawing.Bitmap($vw, $vh)
 $vg = [System.Drawing.Graphics]::FromImage($vBmp)
 $vg.CopyFromScreen($vx, $vy, 0, 0, (New-Object System.Drawing.Size($vw, $vh)))
 # Draw crosshair at click position
-$cx = ${screenX} - $vx
-$cy = ${screenY} - $vy
+$cx = $px
+$cy = $py
 $crossPen = New-Object System.Drawing.Pen([System.Drawing.Color]::Red, 3)
 $vg.DrawLine($crossPen, ($cx - 20), $cy, ($cx + 20), $cy)
 $vg.DrawLine($crossPen, $cx, ($cy - 20), $cx, ($cy + 20))
@@ -1597,12 +1635,123 @@ Write-Output "clicked|$vPath"
       const verifyPath = parts[1] || ''
       const content: Array<{ type: string; text?: string }> = [{
         type: 'text',
-        text: `Clicked ${button} at screen(${screenX},${screenY}) — mapped from image pixel(${imageX},${imageY}) in ${ssPath}\nCapture region: origin=(${meta.captureX},${meta.captureY}), image=${meta.imageW}x${meta.imageH}, screen=${meta.captureW}x${meta.captureH}\n\nVerification image saved to: ${verifyPath}\nThis image shows a 400x400 region centered on the click point with a RED crosshair marking the exact click position. Use Read tool to view it and confirm the click hit the right target.`,
+        text: `Clicked ${button} at screen(${screenX},${screenY}) — mapped from image pixel(${imageX},${imageY}) in ${ssPath}\n${hitTargetText}\nCapture region: origin=(${meta.captureX},${meta.captureY}), image=${meta.imageW}x${meta.imageH}, screen=${meta.captureW}x${meta.captureH}\n\nVerification image saved to: ${verifyPath}\nThis image shows the click point with a RED crosshair marking the exact click position (crop clamped to the virtual desktop). Use Read tool to view it and confirm the click hit the right target.`,
       }]
       return { content }
     },
     { title: 'Screenshot Click', destructiveHint: true },
   )
+
+  // ---- Verify-crop + pre-click hit-test helpers (shared by click tools) ----
+  /**
+   * Emit PowerShell that computes a verify-crop rect clamped to the virtual
+   * desktop (VirtualScreen.Left/Top can be negative for monitors above/left of
+   * primary). Mirrors clampCropRect() in click-accuracy.ts. After running,
+   * $vx,$vy,$vw,$vh hold the crop origin/size and $px,$py the crosshair position
+   * relative to that origin. cx/cy are physical pixels.
+   */
+  function verifyCropPs(cx: number, cy: number, half: number): string {
+    return `$vsInfo = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$half = ${half}
+$full = $half * 2
+$vw = [Math]::Min($full, $vsInfo.Width)
+$vh = [Math]::Min($full, $vsInfo.Height)
+$vx = [Math]::Round(${cx} - $half)
+$vy = [Math]::Round(${cy} - $half)
+$vx = [Math]::Max($vsInfo.Left, [Math]::Min($vx, $vsInfo.Right - $vw))
+$vy = [Math]::Max($vsInfo.Top, [Math]::Min($vy, $vsInfo.Bottom - $vh))
+$px = ${cx} - $vx
+$py = ${cy} - $vy`
+  }
+
+  interface HitTestResult {
+    ok: boolean
+    name: string
+    controlType: string
+    className: string
+    processName: string
+    ancestors: string[]
+  }
+
+  /**
+   * UIA hit-test the element under a screen point (physical px) via
+   * AutomationElement.FromPoint, plus up to 3 ancestor Names. Best-effort:
+   * any failure returns ok=false and never blocks the caller's click.
+   */
+  async function hitTestUnderPoint(x: number, y: number): Promise<HitTestResult> {
+    const empty: HitTestResult = { ok: false, name: '', controlType: '', className: '', processName: '', ancestors: [] }
+    const script = `
+$out = @{ ok = $false; name = ''; controlType = ''; className = ''; processName = ''; ancestors = @() }
+try {
+  Add-Type -AssemblyName WindowsBase -ErrorAction SilentlyContinue
+  Add-Type -AssemblyName UIAutomationClient -ErrorAction SilentlyContinue
+  Add-Type -AssemblyName UIAutomationTypes -ErrorAction SilentlyContinue
+  $pt = New-Object System.Windows.Point(${Math.round(x)}, ${Math.round(y)})
+  $el = [System.Windows.Automation.AutomationElement]::FromPoint($pt)
+  if ($el -ne $null) {
+    $out.ok = $true
+    try { $out.name = [string]$el.Current.Name } catch {}
+    try { $out.controlType = [string]$el.Current.ControlType.ProgrammaticName } catch {}
+    try { $out.className = [string]$el.Current.ClassName } catch {}
+    try {
+      $p = Get-Process -Id $el.Current.ProcessId -ErrorAction SilentlyContinue
+      if ($p) { $out.processName = [string]$p.ProcessName }
+    } catch {}
+    try {
+      $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+      $anc = @()
+      $cur = $walker.GetParent($el)
+      $depth = 0
+      while ($cur -ne $null -and $depth -lt 3) {
+        try { $anc += [string]$cur.Current.Name } catch { $anc += '' }
+        $cur = $walker.GetParent($cur)
+        $depth++
+      }
+      $out.ancestors = @($anc)
+    } catch {}
+  }
+} catch {}
+Write-Output "__SPECTRAI_HIT_JSON__$($out | ConvertTo-Json -Compress)"
+`
+    try {
+      const result = await shell.exec(script, 3000)
+      const marker = '__SPECTRAI_HIT_JSON__'
+      const line = result.stdout
+        .split('\n')
+        .map(l => l.trim())
+        .filter(Boolean)
+        .reverse()
+        .find(l => l.startsWith(marker))
+      if (!line) return empty
+      const parsed = JSON.parse(line.slice(marker.length)) as Partial<HitTestResult>
+      const rawAnc = (parsed as { ancestors?: unknown }).ancestors
+      const ancestors = Array.isArray(rawAnc)
+        ? rawAnc.map(a => String(a ?? ''))
+        : rawAnc != null ? [String(rawAnc)] : []
+      return {
+        ok: Boolean(parsed.ok),
+        name: parsed.name || '',
+        controlType: parsed.controlType || '',
+        className: parsed.className || '',
+        processName: parsed.processName || '',
+        ancestors,
+      }
+    } catch {
+      return empty
+    }
+  }
+
+  /** One-line "Target under cursor: ..." summary of a hit-test result. */
+  function formatHitTarget(h: HitTestResult): string {
+    if (!h.ok) return 'Target under cursor: <unknown> (UIA hit-test unavailable)'
+    const parts: string[] = [`name="${h.name || ''}"`]
+    if (h.controlType) parts.push(h.controlType.replace(/^ControlType\./, ''))
+    if (h.className) parts.push(`class=${h.className}`)
+    if (h.processName) parts.push(`proc=${h.processName}`)
+    const anc = h.ancestors.filter(Boolean)
+    const ancText = anc.length ? ` | ancestors: ${anc.map(a => `"${a}"`).join(' < ')}` : ''
+    return `Target under cursor: ${parts.join(', ')}${ancText}`
+  }
 
   // ---- Vision-grounding HID click helper (shared by click_element fallback & vision_click) ----
   /**
@@ -1618,20 +1767,17 @@ Write-Output "clicked|$vPath"
     label: string,
   ): Promise<string> {
     const clickFlags = getMouseClickFlags(button, clickType)
+    // Pre-click hit-test (report only; never blocks the HID click).
+    const hit = await hitTestUnderPoint(cx, cy)
+    const hitLabel = hit.ok && hit.name ? `${label} | under:${hit.name.slice(0, 40)}` : label
     try { presenceMark('click', cx, cy) } catch { /* overlay must never fail HID click */ }
     const script = `
 ${formatSendMouseCommand(cx, cy, clickFlags)}
 Start-Sleep -Milliseconds 80
-$vSize = 150
-$vx = [Math]::Max(0, ${cx} - $vSize)
-$vy = [Math]::Max(0, ${cy} - $vSize)
-$vw = $vSize * 2
-$vh = $vSize * 2
+${verifyCropPs(cx, cy, 150)}
 $vBmp = New-Object System.Drawing.Bitmap($vw, $vh)
 $vg = [System.Drawing.Graphics]::FromImage($vBmp)
 $vg.CopyFromScreen($vx, $vy, 0, 0, (New-Object System.Drawing.Size($vw, $vh)))
-$px = ${cx} - $vx
-$py = ${cy} - $vy
 $crossPen = New-Object System.Drawing.Pen([System.Drawing.Color]::Red, 3)
 $vg.DrawLine($crossPen, ($px - 15), $py, ($px + 15), $py)
 $vg.DrawLine($crossPen, $px, ($py - 15), $px, ($py + 15))
@@ -1640,7 +1786,7 @@ $crossPen.Dispose()
 $lFont = New-Object System.Drawing.Font('Arial', 9, [System.Drawing.FontStyle]::Bold)
 $lBg = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(200,0,0,0))
 $lFg = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Yellow)
-$label = '${label.replace(/'/g, "''")}'
+$label = '${hitLabel.replace(/'/g, "''")}'
 $lsz = $vg.MeasureString($label, $lFont)
 $vg.FillRectangle($lBg, 4, 4, $lsz.Width + 4, $lsz.Height + 2)
 $vg.DrawString($label, $lFont, $lFg, 6, 4)
@@ -2003,43 +2149,13 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
         }
       }
       if (!meta || !meta.elements || meta.elements.length === 0) {
-        // Vision-grounding fallback: UIA element tree is empty for this screenshot
-        try {
-          const button = (args.button === 'right' || args.button === 'middle') ? args.button as string : 'left'
-          const clickType = args.clickType === 'double' ? 'double' : 'single'
-          const loc = await visionLocate({ text: String(elemNum) }, ssPath)
-          if (loc && loc.confidence >= 0.4) {
-            const verifyImg = await hidClickAndVerify(loc.x, loc.y, button, clickType, `vision#${elemNum}@(${loc.x},${loc.y})`)
-            return {
-              content: [{
-                type: 'text',
-                text: `Clicked element #${elemNum} via vision-fallback (no UIA tree). Matched "${loc.matchedText}" at screen(${loc.x},${loc.y}) confidence=${loc.confidence.toFixed(2)} method=vision-fallback\n\nVerification image: ${verifyImg}`,
-              }],
-            }
-          }
-        } catch { /* vision fallback failed — return original error */ }
-        return { isError: true, content: [{ type: 'text', text: `No annotated elements found for: ${ssPath}. Take a new screenshot with annotate=true.` }] }
+        return { isError: true, content: [{ type: 'text', text: `No annotated elements found for: ${ssPath}. Take a new screenshot with annotate=true, then click by element number. For a text-only target (Canvas/Electron/RDP with no UIA tree), use vision_click.` }] }
       }
       const usedLastAnnotatedNote = usedLastAnnotated ? ' usedLastAnnotated=true' : ''
       const element = meta.elements.find(e => e.number === elemNum)
       if (!element) {
         const available = meta.elements.map(e => `[${e.number}] "${e.name}"`).join(', ')
-        // Vision-grounding fallback: element number not found in current element list — try by element name hint via vision
-        const button = (args.button === 'right' || args.button === 'middle') ? args.button as string : 'left'
-        const clickType = args.clickType === 'double' ? 'double' : 'single'
-        try {
-          const loc = await visionLocate({ text: String(elemNum) }, ssPath)
-          if (loc && loc.confidence >= 0.4) {
-            const verifyImg = await hidClickAndVerify(loc.x, loc.y, button, clickType, `vision#${elemNum}@(${loc.x},${loc.y})`)
-            return {
-              content: [{
-                type: 'text',
-                text: `Clicked element #${elemNum} via vision-fallback (element not in UIA list). Matched "${loc.matchedText}" at screen(${loc.x},${loc.y}) confidence=${loc.confidence.toFixed(2)} method=vision-fallback\n\nVerification image: ${verifyImg}`,
-              }],
-            }
-          }
-        } catch { /* vision fallback failed — return original error */ }
-        return { isError: true, content: [{ type: 'text', text: `Element #${elemNum} not found. Available: ${available}` }] }
+        return { isError: true, content: [{ type: 'text', text: `Element #${elemNum} not found. Available: ${available}. Take a new screenshot with annotate=true if the UI changed.` }] }
       }
 
       let clickX = element.screenX
@@ -2308,11 +2424,13 @@ Write-Output $outPath
         }
       }
 
-      // Get capture region from meta if available, otherwise full screen
+      // Capture region is required for correct OCR→screen coordinate mapping.
+      // Without it we cannot reliably map matched text back to screen coordinates.
       const meta = getScreenshotMeta(screenshotMetaMap, ssPath)
-      const captureRegion = meta
-        ? { x: meta.captureX, y: meta.captureY, w: meta.captureW, h: meta.captureH }
-        : undefined
+      if (!meta) {
+        return { isError: true, content: [{ type: 'text', text: `vision_click: no capture metadata for ${ssPath}, cannot map OCR coordinates to screen. Take a screenshot() first so its capture region is recorded, then retry.` }] }
+      }
+      const captureRegion = { x: meta.captureX, y: meta.captureY, w: meta.captureW, h: meta.captureH }
 
       const near = args.near as { x: number; y: number } | undefined
 
@@ -2352,23 +2470,45 @@ Write-Output $outPath
   // 2. get_screen_info
   registerTool(
     'get_screen_info',
-    'Get screen resolution, DPI, and scale factor.',
+    'Get physical resolution, per-monitor bounds + scale factor, and the process DPI-awareness mode.',
     { type: 'object', properties: {}, additionalProperties: false },
     async () => {
       const script = `
-$screen = [System.Windows.Forms.Screen]::PrimaryScreen
-$bounds = $screen.Bounds
-$g = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
-$dpiX = $g.DpiX
-$dpiY = $g.DpiY
-$g.Dispose()
-@{
-  Width = $bounds.Width
-  Height = $bounds.Height
-  DpiX = $dpiX
-  DpiY = $dpiY
-  ScaleFactor = $dpiX / 96.0
-} | ConvertTo-Json
+$mode = try { [Win32]::DpiAwarenessMode } catch { 'unknown' }
+# Per-monitor DPI helper (kept out of the hot bootstrap; defined once, then cached in-process).
+if (-not ('ClawMon.Dpi' -as [type])) {
+  Add-Type -Namespace ClawMon -Name Dpi -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; public POINT(int x, int y){X=x;Y=y;} }
+[DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+[DllImport("shcore.dll")] public static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
+'@
+}
+$mons = @()
+foreach ($s in [System.Windows.Forms.Screen]::AllScreens) {
+  $b = $s.Bounds
+  $dpiX = 96; $dpiY = 96
+  try {
+    $hMon = [ClawMon.Dpi]::MonitorFromPoint([ClawMon.Dpi+POINT]::new(($b.X + [int]($b.Width / 2)), ($b.Y + [int]($b.Height / 2))), 2)
+    $dx = [uint32]0; $dy = [uint32]0
+    if ([ClawMon.Dpi]::GetDpiForMonitor($hMon, 0, [ref]$dx, [ref]$dy) -eq 0) { $dpiX = [int]$dx; $dpiY = [int]$dy }
+  } catch {}
+  $mons += [ordered]@{
+    Primary = $s.Primary
+    X = $b.X; Y = $b.Y; Width = $b.Width; Height = $b.Height
+    DpiX = $dpiX; DpiY = $dpiY; ScaleFactor = [math]::Round($dpiX / 96.0, 4)
+  }
+}
+$prim = $mons | Where-Object { $_.Primary } | Select-Object -First 1
+if (-not $prim) { $prim = $mons[0] }
+[ordered]@{
+  DpiAwareness = $mode
+  Width = $prim.Width
+  Height = $prim.Height
+  DpiX = $prim.DpiX
+  DpiY = $prim.DpiY
+  ScaleFactor = $prim.ScaleFactor
+  Monitors = $mons
+} | ConvertTo-Json -Depth 4
 `
       const result = await shell.exec(script)
       if (result.exitCode !== 0) {
@@ -2379,7 +2519,7 @@ $g.Dispose()
     { title: 'Get Screen Info', readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   )
 
-  // 3. mouse_click — NO DPI conversion, coordinates used as-is (logical pixels)
+  // 3. mouse_click — coordinates are physical pixels (process Per-Monitor-V2 DPI aware); used as-is
   registerTool(
     'mouse_click',
     '★ STEP 3: Click at exact screen coordinates. Best used AFTER zoom_screenshot.\n\n' +
@@ -2393,6 +2533,7 @@ $g.Dispose()
         y: { type: 'number', description: 'Y coordinate (logical pixels)' },
         button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button' },
         clickType: { type: 'string', enum: ['single', 'double'], description: 'Click type' },
+        expectText: { type: 'string', description: 'Optional safety guard. If set, the click only fires when this text (case-insensitive substring) appears in the UIA element under the cursor or up to 3 of its ancestors. Otherwise the click is refused and the actual target is returned so you can re-locate. Use for toggle buttons (like/follow) to avoid mis-clicks.' },
       },
       required: ['x', 'y'],
       additionalProperties: false,
@@ -2405,20 +2546,31 @@ $g.Dispose()
 
       const flags = getMouseClickFlags(button, clickType)
 
+      // Pre-click UIA hit-test: always report, and gate on expectText when provided.
+      const expectText = (args.expectText as string) || ''
+      const hit = await hitTestUnderPoint(px, py)
+      const hitTargetText = formatHitTarget(hit)
+      if (expectText.trim() && !matchesExpectText([hit.name, ...hit.ancestors], expectText)) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text',
+            text: `Click refused: expectText="${expectText}" not found under cursor at screen(${px},${py}).\n${hitTargetText}\nRe-locate the target (screenshot + click_element or zoom_screenshot) and retry with correct coordinates.`,
+          }],
+        }
+      }
+
       try { presenceMark('click', px, py) } catch { /* overlay must never fail click */ }
 
       const script = `
 ${formatSendMouseCommand(px, py, flags)}
 Start-Sleep -Milliseconds 100
-# Capture verification region around click
-$vSize = 150
-$vx = [Math]::Max(0, ${px} - $vSize)
-$vy = [Math]::Max(0, ${py} - $vSize)
-$vw = $vSize * 2; $vh = $vSize * 2
+# Capture verification region around click (clamped to virtual desktop)
+${verifyCropPs(px, py, 150)}
 $vBmp = New-Object System.Drawing.Bitmap($vw, $vh)
 $vg = [System.Drawing.Graphics]::FromImage($vBmp)
 $vg.CopyFromScreen($vx, $vy, 0, 0, (New-Object System.Drawing.Size($vw, $vh)))
-$cx = ${px} - $vx; $cy = ${py} - $vy
+$cx = $px; $cy = $py
 $crossPen = New-Object System.Drawing.Pen([System.Drawing.Color]::Red, 3)
 $vg.DrawLine($crossPen, ($cx - 15), $cy, ($cx + 15), $cy)
 $vg.DrawLine($crossPen, $cx, ($cy - 15), $cx, ($cy + 15))
@@ -2446,7 +2598,7 @@ Write-Output "clicked|$vPath"
       return {
         content: [{
           type: 'text',
-          text: `Clicked ${button} at screen(${px},${py})\n\nVerification image: ${verifyImg}\nShows 300x300 region centered on click with RED crosshair. Use Read tool to confirm the click hit the correct target.`,
+          text: `Clicked ${button} at screen(${px},${py})\n${hitTargetText}\n\nVerification image: ${verifyImg}\nShows the click point with RED crosshair (crop clamped to the virtual desktop). Use Read tool to confirm the click hit the correct target.`,
         }],
       }
     },
@@ -3023,6 +3175,26 @@ if ($scale -gt 1) {
     $bmp = $scaled
 }
 
+# Final safety cap: keep output within model vision limits (long edge / total pixels) so the
+# API does not re-compress it and blur the grid. Same math as computeAutoScale().
+$maxLongEdge = ${AUTO_SCALE_MAX_LONG_EDGE}
+$maxPixels = ${AUTO_SCALE_MAX_PIXELS}
+if ($bmp.Width -gt 0 -and $bmp.Height -gt 0) {
+    $longEdge = [Math]::Max($bmp.Width, $bmp.Height)
+    $capF = [Math]::Min(1.0, [Math]::Min($maxLongEdge / $longEdge, [Math]::Sqrt($maxPixels / ([double]$bmp.Width * $bmp.Height))))
+    if ($capF -lt 1.0) {
+        $capW = [Math]::Max(1, [int][Math]::Round($bmp.Width * $capF))
+        $capH = [Math]::Max(1, [int][Math]::Round($bmp.Height * $capF))
+        $capped = New-Object System.Drawing.Bitmap($capW, $capH)
+        $gc = [System.Drawing.Graphics]::FromImage($capped)
+        $gc.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $gc.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+        $gc.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+        $gc.DrawImage($bmp, 0, 0, $capW, $capH)
+        $gc.Dispose(); $bmp.Dispose(); $bmp = $capped
+    }
+}
+
 # Draw fine coordinate grid with ABSOLUTE screen coordinates
 if (${grid ? '$true' : '$false'}) {
     $gd = [System.Drawing.Graphics]::FromImage($bmp)
@@ -3334,6 +3506,9 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
           text: [
             `Zoom screenshot saved: ${filePath}`,
             `Region: (${zx},${zy}) ${zw}x${zh}, image=${imageW}x${imageH}${scale > 1 ? `, scale=${scale}x` : ''}`,
+            imageW > 0 && imageW !== zw
+              ? `NOTE: image pixels ≠ screen coordinates (output resized to fit model vision limits). Rely on the GRID labels below (absolute screen coords) or click_element(number), not raw image pixels.`
+              : '',
             grid ? `GRID: Shows absolute screen coordinates. Read the X,Y numbers from grid lines near your target, then use mouse_click(x,y) directly — ONE shot, no estimation.` : '',
             `Use click_element(number) for annotated elements, or read grid coordinates and use mouse_click(x,y).`,
             `Use the Read tool to view this image.`,

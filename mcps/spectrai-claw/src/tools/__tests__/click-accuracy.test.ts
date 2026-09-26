@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  clampCropRect,
   findOcrUiaAnchor,
   formatSendMouseCommand,
   isUiaElementCandidate,
+  matchesExpectText,
+  normalizeAbsCoord,
   ocrUiaNeighborThreshold,
   parseAnnotatedSource,
   preferClickablePoint,
@@ -138,6 +141,97 @@ describe('scoreSearchAmbiguity / preferLocalSessionOverNetworkSearch (P3.15)', (
     assert.ok(scoreSearchAmbiguity(local) > 0)
     assert.ok(scoreSearchAmbiguity(network) < 0)
     assert.ok(scoreSearchAmbiguity(local) > scoreSearchAmbiguity(network))
+  })
+})
+
+describe('clampCropRect', () => {
+  const primary = { left: 0, top: 0, width: 1920, height: 1080 }
+
+  it('centers the crop and crosshair when fully inside the primary screen', () => {
+    const r = clampCropRect(500, 400, 150, primary)
+    assert.deepEqual(r, { x: 350, y: 250, w: 300, h: 300, crossX: 150, crossY: 150 })
+  })
+
+  it('clamps the origin to 0 near the top-left corner (no negative read)', () => {
+    const r = clampCropRect(50, 30, 150, primary)
+    assert.equal(r.x, 0)
+    assert.equal(r.y, 0)
+    // crosshair tracks the actual origin, not the ideal center
+    assert.equal(r.crossX, 50)
+    assert.equal(r.crossY, 30)
+  })
+
+  it('clamps against the right/bottom edges', () => {
+    const r = clampCropRect(1900, 1070, 150, primary)
+    assert.equal(r.x, 1920 - 300)
+    assert.equal(r.y, 1080 - 300)
+    assert.equal(r.crossX, 1900 - (1920 - 300))
+    assert.equal(r.crossY, 1070 - (1080 - 300))
+  })
+
+  it('handles a secondary monitor placed left/above with negative origin', () => {
+    // Virtual screen spans a monitor to the left and above the primary.
+    const vs = { left: -1920, top: -600, width: 3840, height: 1680 }
+    const r = clampCropRect(-1800, -500, 150, vs)
+    // ideal origin (-1950,-650) escapes left/top edges → clamped to vs.left/vs.top
+    assert.equal(r.x, vs.left) // -1950 < -1920
+    assert.equal(r.y, vs.top) //  -650 < -600
+    assert.equal(r.crossX, -1800 - r.x)
+    assert.equal(r.crossY, -500 - r.y)
+    // crop must stay within virtual bounds
+    assert.ok(r.x >= vs.left)
+    assert.ok(r.y >= vs.top)
+    assert.ok(r.x + r.w <= vs.left + vs.width)
+    assert.ok(r.y + r.h <= vs.top + vs.height)
+  })
+
+  it('shrinks the crop to fit a virtual screen smaller than the requested size', () => {
+    const tiny = { left: 0, top: 0, width: 200, height: 100 }
+    const r = clampCropRect(100, 50, 150, tiny)
+    assert.equal(r.w, 200)
+    assert.equal(r.h, 100)
+    assert.equal(r.x, 0)
+    assert.equal(r.y, 0)
+  })
+})
+
+describe('matchesExpectText', () => {
+  it('returns true (no block) when expectText is empty/blank', () => {
+    assert.equal(matchesExpectText(['whatever'], ''), true)
+    assert.equal(matchesExpectText(['whatever'], '   '), true)
+    assert.equal(matchesExpectText([], undefined), true)
+  })
+
+  it('matches case-insensitively as a substring across names/ancestors', () => {
+    assert.equal(matchesExpectText(['Send Message', null], 'send'), true)
+    assert.equal(matchesExpectText([null, undefined, 'Chat with 张三'], '张三'), true)
+    assert.equal(matchesExpectText(['OK', 'Dialog Button'], 'button'), true)
+  })
+
+  it('returns false when no name contains expectText', () => {
+    assert.equal(matchesExpectText(['Like', 'Comment', 'Share'], 'follow'), false)
+    assert.equal(matchesExpectText([null, ''], 'anything'), false)
+  })
+})
+
+describe('normalizeAbsCoord', () => {
+  it('maps the last addressable pixel to exactly 65535 (span-1 divisor)', () => {
+    // Single 1920-wide desktop at origin 0: pixel 1919 is the last one.
+    assert.equal(normalizeAbsCoord(1919, 0, 1920), 65535)
+    assert.equal(normalizeAbsCoord(0, 0, 1920), 0)
+  })
+
+  it('accounts for a negative virtual-desktop origin', () => {
+    // Monitor to the left: origin -1920, span 3840, last pixel at x=1919.
+    assert.equal(normalizeAbsCoord(-1920, -1920, 3840), 0)
+    assert.equal(normalizeAbsCoord(1919, -1920, 3840), 65535)
+  })
+
+  it('clamps out-of-range values and guards degenerate spans', () => {
+    assert.equal(normalizeAbsCoord(5000, 0, 1920), 65535)
+    assert.equal(normalizeAbsCoord(-10, 0, 1920), 0)
+    assert.equal(normalizeAbsCoord(100, 0, 1), 0)
+    assert.equal(normalizeAbsCoord(100, 0, 0), 0)
   })
 })
 

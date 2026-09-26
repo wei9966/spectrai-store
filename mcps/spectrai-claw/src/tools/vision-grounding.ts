@@ -127,8 +127,8 @@ function dist(ax: number, ay: number, bx: number, by: number): number {
  *
  * @param selector  - text (required for text match), near (tie-breaking), role (ignored in v1 OCR)
  * @param screenshotPath - absolute path to screenshot PNG
- * @param captureRegion  - screen region the screenshot covers; defaults to full-screen 1920×1080
- *                         if omitted (best-effort; pass real values when available)
+ * @param captureRegion  - screen region the screenshot covers; REQUIRED for correct
+ *                         OCR→screen coordinate mapping. Returns null if omitted.
  * @returns matched location with confidence, or null if no match
  */
 export async function visionLocate(
@@ -138,8 +138,10 @@ export async function visionLocate(
 ): Promise<VisionLocation | null> {
   if (!selector.text) return null
   if (!existsSync(screenshotPath)) return null
+  // Without a real capture region we cannot map OCR coordinates back to the screen.
+  if (!captureRegion) return null
 
-  const region = captureRegion ?? { x: 0, y: 0, w: 1920, h: 1080 }
+  const region = captureRegion
   const needle = normalize(selector.text)
   if (!needle) return null
 
@@ -160,7 +162,8 @@ export async function visionLocate(
     const wordNorm = normalize(word.text)
     if (wordNorm === needle) {
       candidates.push({ word, confidence: 1.0 })
-    } else if (wordNorm.includes(needle)) {
+    } else if (needle.length >= 2 && wordNorm.includes(needle)) {
+      // Substring match only for needles ≥ 2 chars; a 1-char needle matches far too much.
       candidates.push({ word, confidence: 0.7 })
     } else if (needle.includes(wordNorm) && wordNorm.length >= 2) {
       candidates.push({ word, confidence: 0.5 })

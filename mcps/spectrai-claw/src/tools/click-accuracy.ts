@@ -156,3 +156,68 @@ export function preferLocalSessionOverNetworkSearch(
 export function formatSendMouseCommand(x: number, y: number, flagCsv: string): string {
   return `[Win32]::SendMouse(${Math.round(x)}, ${Math.round(y)}, '${flagCsv}')`
 }
+
+/** Virtual-desktop bounds (Left/Top may be negative for monitors above/left of primary). */
+export interface VirtualScreenRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/** Clamped verify-crop rect plus crosshair position relative to the crop origin. */
+export interface CropRect {
+  x: number
+  y: number
+  w: number
+  h: number
+  crossX: number
+  crossY: number
+}
+
+/**
+ * Compute the verify-screenshot crop rect for a click at (cx,cy), clamped to the
+ * virtual screen so we never read outside the desktop (which yields black/garbage)
+ * and never draw the crosshair at the wrong offset.
+ *
+ * `half` is the half-size of the desired square (crop is 2*half on a side, shrunk
+ * to fit if the virtual screen is smaller). Coordinates are physical pixels; the
+ * PowerShell verify blocks replicate this exact logic against VirtualScreen.
+ */
+export function clampCropRect(cx: number, cy: number, half: number, vs: VirtualScreenRect): CropRect {
+  const full = Math.max(1, Math.round(half * 2))
+  const w = Math.min(full, Math.max(1, Math.round(vs.width)))
+  const h = Math.min(full, Math.max(1, Math.round(vs.height)))
+  const right = vs.left + vs.width
+  const bottom = vs.top + vs.height
+  let x = Math.round(cx - half)
+  let y = Math.round(cy - half)
+  x = Math.max(vs.left, Math.min(x, right - w))
+  y = Math.max(vs.top, Math.min(y, bottom - h))
+  return { x, y, w, h, crossX: Math.round(cx - x), crossY: Math.round(cy - y) }
+}
+
+/**
+ * True when `expectText` is found (case-insensitive substring) in any of the
+ * supplied names (hit element Name + ancestor Names). Empty/blank expectText
+ * means "no expectation" → returns true (never blocks the click).
+ */
+export function matchesExpectText(
+  names: readonly (string | null | undefined)[],
+  expectText: string | null | undefined,
+): boolean {
+  const needle = (expectText || '').trim().toLowerCase()
+  if (!needle) return true
+  return names.some((n) => (n || '').toLowerCase().includes(needle))
+}
+
+/**
+ * JS mirror of Win32.Normalize (PersistentShell C#): map a virtual-desktop pixel into the
+ * 0..65535 absolute space SendInput expects. Divisor is (span - 1) so 65535 maps to the last
+ * addressable pixel — the MOUSEEVENTF_VIRTUALDESK convention. Keep in sync with the C# copy.
+ */
+export function normalizeAbsCoord(value: number, origin: number, span: number): number {
+  if (span <= 1) return 0
+  const v = Math.trunc(((value - origin) * 65535) / (span - 1))
+  return Math.max(0, Math.min(65535, v))
+}

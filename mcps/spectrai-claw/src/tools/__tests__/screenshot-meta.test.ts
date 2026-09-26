@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  AUTO_SCALE_MAX_LONG_EDGE,
+  AUTO_SCALE_MAX_PIXELS,
+  computeAutoScale,
   getScreenshotMeta,
   normalizeScreenshotMetaKey,
   parseScreenshotMetaJson,
@@ -134,5 +137,47 @@ describe('getScreenshotMeta hydrate', () => {
 describe('parseScreenshotMetaJson', () => {
   it('rejects invalid json', () => {
     assert.equal(parseScreenshotMetaJson('{'), null)
+  })
+})
+
+describe('computeAutoScale', () => {
+  const within = (w: number, h: number) => {
+    const r = computeAutoScale(w, h)
+    assert.ok(Math.max(r.width, r.height) <= AUTO_SCALE_MAX_LONG_EDGE + 1, 'long edge within limit')
+    assert.ok(r.width * r.height <= AUTO_SCALE_MAX_PIXELS * 1.01, 'pixel budget within limit')
+    return r
+  }
+
+  it('never upscales an already-small image', () => {
+    const r = computeAutoScale(800, 600)
+    assert.equal(r.scale, 1)
+    assert.equal(r.width, 800)
+    assert.equal(r.height, 600)
+  })
+
+  it('downscales 1920x1080 within the vision limits, keeping aspect ratio', () => {
+    const r = within(1920, 1080)
+    assert.ok(r.scale < 1)
+    // pixel budget dominates here (sqrt(1.15M/2.07M) ≈ 0.745)
+    assert.equal(r.width, Math.round(1920 * r.scale))
+    assert.equal(r.height, Math.round(1080 * r.scale))
+    const srcAspect = 1920 / 1080
+    assert.ok(Math.abs(r.width / r.height - srcAspect) < 0.01)
+  })
+
+  it('downscales 2560x1440 and 4K within limits', () => {
+    within(2560, 1440)
+    within(3840, 2160)
+  })
+
+  it('caps the long edge for extreme aspect ratios', () => {
+    // very wide, low pixel count: long-edge cap must bind even if pixel budget would not
+    const r = within(4000, 200)
+    assert.ok(r.width <= AUTO_SCALE_MAX_LONG_EDGE + 1)
+  })
+
+  it('is defensive against non-positive / non-finite input', () => {
+    assert.equal(computeAutoScale(0, 100).scale, 1)
+    assert.equal(computeAutoScale(Number.NaN, 100).scale, 1)
   })
 })

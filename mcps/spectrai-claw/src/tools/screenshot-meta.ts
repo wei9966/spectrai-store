@@ -35,6 +35,46 @@ export interface ScreenshotMeta {
   elements?: AnnotatedElement[]
 }
 
+/**
+ * Model-side vision limits Anthropic's standard tier enforces on an uploaded image
+ * BEFORE the model sees it: long edge capped at 1568px, total pixels near ~1.15M
+ * (≈1568 vision-token budget). If we hand over a native 2560x1440 / 4K capture, the API
+ * downscales it lossily and grid labels / small text get mushed. So we downscale
+ * application-side with high-quality interpolation and keep coordinates in screen space.
+ * Other providers differ, but these bounds are a safe common ceiling.
+ */
+export const AUTO_SCALE_MAX_LONG_EDGE = 1568
+export const AUTO_SCALE_MAX_PIXELS = 1_150_000
+
+/**
+ * Target image size for auto-scaling a WxH capture within the model's vision limits.
+ * scale = min(1, MAX_LONG_EDGE/longEdge, sqrt(MAX_PIXELS/(w*h))). Never upscales.
+ * Same math is inlined in the PowerShell capture path via the two injected constants.
+ */
+export function computeAutoScale(
+  w: number,
+  h: number,
+): { width: number; height: number; scale: number } {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    return {
+      width: Math.max(1, Math.round(w) || 1),
+      height: Math.max(1, Math.round(h) || 1),
+      scale: 1,
+    }
+  }
+  const longEdge = Math.max(w, h)
+  const scale = Math.min(
+    1,
+    AUTO_SCALE_MAX_LONG_EDGE / longEdge,
+    Math.sqrt(AUTO_SCALE_MAX_PIXELS / (w * h)),
+  )
+  return {
+    width: Math.max(1, Math.round(w * scale)),
+    height: Math.max(1, Math.round(h * scale)),
+    scale,
+  }
+}
+
 export type ScreenshotMetaFs = {
   existsSync: (p: string) => boolean
   readFileSync: (p: string, encoding: 'utf8') => string

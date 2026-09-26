@@ -1,14 +1,30 @@
 # SpectrAI Claw — click-through presence overlay (Windows PowerShell 5.1)
 # Stdin commands: MARK <x> <y> <label> | BADGE <label> | HIDE | QUIT
 # EOF on stdin also quits (parent-death watchdog).
-# Coordinates match the Claw pipeline: non-DPI-aware logical pixels (SetCursorPos space).
-# Do not call SetProcessDPIAware — PersistentShell screenshot/click is unaware.
+# Coordinates match the Claw pipeline: physical pixels (process Per-Monitor-V2 DPI aware),
+# same space as PersistentShell screenshot/click/SendInput. Awareness is set below BEFORE any
+# WinForms / VirtualScreen call so the overlay window is positioned in true physical pixels.
 #
 # ponytail: stdin is polled from the WinForms timer via BaseStream.BeginRead.
 # A dedicated Thread + ReadLine deadlocks against Application.Run in PS 5.1.
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
+
+# Per-Monitor-V2 DPI awareness — must run before WinForms loads any window / queries VirtualScreen.
+# Already-set (e.g. by manifest) → setter returns false; not an error, fall through to weaker mode.
+Add-Type -Namespace ClawDpi -Name Native -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+[DllImport("shcore.dll")] public static extern int SetProcessDpiAwareness(int awareness);
+[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+'@
+try {
+    if (-not [ClawDpi.Native]::SetProcessDpiAwarenessContext([IntPtr](-4))) {
+        try { [void][ClawDpi.Native]::SetProcessDpiAwareness(2) } catch { try { [void][ClawDpi.Native]::SetProcessDPIAware() } catch {} }
+    }
+} catch {
+    try { [void][ClawDpi.Native]::SetProcessDpiAwareness(2) } catch { try { [void][ClawDpi.Native]::SetProcessDPIAware() } catch {} }
+}
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
