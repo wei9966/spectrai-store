@@ -180,6 +180,28 @@ public class Win32 {
         uint sent = SendInput(2, inputs, Marshal.SizeOf(typeof(INPUT)));
         if (sent != 2) { SetCursorPos(x, y); mouse_event(MOUSEEVENTF_WHEEL, 0, 0, unchecked((uint)delta), UIntPtr.Zero); }
     }
+    // Keyboard INPUT: KEYBDINPUT padded to MOUSEINPUT's size so Marshal.SizeOf matches the native union (x86 and x64).
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; public uint pad1; public uint pad2; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KINPUT { public uint type; public KEYBDINPUT ki; }
+    [DllImport("user32.dll", EntryPoint = "SendInput", SetLastError = true)]
+    static extern uint SendKeyInput(uint nInputs, KINPUT[] pInputs, int cbSize);
+
+    // Type text as VK_PACKET (KEYEVENTF_UNICODE): bypasses keyboard layout and IME, so CJK and
+    // symbols arrive verbatim (SendKeys goes through the active IME and mangles them). Newline → Enter.
+    public static uint SendUnicode(string text) {
+        var list = new List<KINPUT>();
+        foreach (char c in text) {
+            if (c == '\\r') continue;
+            ushort vk = 0, scan = c; uint flags = 0x0004;
+            if (c == '\\n') { vk = 0x0D; scan = 0; flags = 0; }
+            list.Add(new KINPUT { type = 1, ki = new KEYBDINPUT { wVk = vk, wScan = scan, dwFlags = flags } });
+            list.Add(new KINPUT { type = 1, ki = new KEYBDINPUT { wVk = vk, wScan = scan, dwFlags = flags | 0x0002 } });
+        }
+        if (list.Count == 0) return 0;
+        return SendKeyInput((uint)list.Count, list.ToArray(), Marshal.SizeOf(typeof(KINPUT)));
+    }
     public static void SendWheelCurrent(int delta) {
         var inputs = new INPUT[1];
         inputs[0] = new INPUT { type = 0, mi = new MOUSEINPUT { mouseData = unchecked((uint)delta), dwFlags = MOUSEEVENTF_WHEEL } };

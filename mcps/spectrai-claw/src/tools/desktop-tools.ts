@@ -1595,6 +1595,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
         }
       }
 
+      lastActionableElement = null // focus moves here; keyboard_type must not re-click a stale target
       try { presenceMark('click', screenX, screenY) } catch { /* overlay must never fail click */ }
 
       const script = `
@@ -2450,6 +2451,7 @@ Write-Output $outPath
       }
 
       let verifyImg: string
+      lastActionableElement = null
       try {
         verifyImg = await hidClickAndVerify(loc.x, loc.y, button, clickType, `vision:"${targetText}"@(${loc.x},${loc.y})`)
       } catch (err: unknown) {
@@ -2560,6 +2562,7 @@ if (-not $prim) { $prim = $mons[0] }
         }
       }
 
+      lastActionableElement = null // focus moves here; keyboard_type must not re-click a stale target
       try { presenceMark('click', px, py) } catch { /* overlay must never fail click */ }
 
       const script = `
@@ -2674,7 +2677,7 @@ Write-Output "scrolled"
   // 6. keyboard_type
   registerTool(
     'keyboard_type',
-    'Type text (supports Unicode). Tries UIA ValuePattern.SetValue first when a target input element is known, then falls back to SendKeys.',
+    'Type text (supports Unicode). Tries UIA ValuePattern.SetValue first when a target input element is known, then falls back to SendInput KEYEVENTF_UNICODE (IME-independent, CJK-safe) into the focused control.',
     {
       type: 'object',
       properties: {
@@ -2738,9 +2741,7 @@ Write-Output "scrolled"
         uiaFallbackReason = 'uia_target_not_set'
       }
 
-      // Fallback: focus known target via center click (cheap) + SendKeys.
-      const sanitized = sp(text)
-      const sendKeySafe = sanitized.replace(/[+^%~(){}[\]]/g, '{$&}')
+      // Fallback: focus known target via center click (cheap) + SendInput unicode (IME-proof).
       try {
         if (targetElement) presenceMark('type', targetElement.screenX, targetElement.screenY)
         else presenceMark('type')
@@ -2749,20 +2750,21 @@ Write-Output "scrolled"
         ? `${formatSendMouseCommand(sn(targetElement.screenX), sn(targetElement.screenY), getMouseClickFlags('left', 'single'))}\n`
         : ''
       const script = `
-${focusClick}$wsh = New-Object -ComObject WScript.Shell
-$wsh.SendKeys('${sendKeySafe}')
-Write-Output "typed"
+${focusClick}${targetElement ? 'Start-Sleep -Milliseconds 80\n' : ''}Write-Output ([Win32]::SendUnicode('${sp(text)}'))
 `
       const result = await shell.exec(script, 3500)
       if (result.exitCode !== 0) {
         return { isError: true, content: [{ type: 'text', text: `Type failed: ${result.stderr}` }] }
       }
+      if (text.length > 0 && result.stdout.trim() === '0') {
+        return { isError: true, content: [{ type: 'text', text: 'Type failed: SendInput injected 0 events (target may be elevated / secure desktop).' }] }
+      }
       const fallbackText = uiaFallbackReason ? ` uiaFallback=${uiaFallbackReason}` : ''
-      const focusHint = targetElement ? ' focus=centerClick' : ''
+      const focusHint = targetElement ? ` focus=centerClick on [${targetElement.number}] "${targetElement.name}"` : ' focus=current'
       return {
         content: [{
           type: 'text',
-          text: `typed ${text.length} chars via method=sendKeys${fallbackText}${focusHint}`,
+          text: `typed ${text.length} chars via method=sendInputUnicode${fallbackText}${focusHint}`,
         }],
       }
     },
@@ -3050,6 +3052,7 @@ $trees | ConvertTo-Json -Depth ${jsonDepth}
       if (!args.title && !args.handle) {
         return { isError: true, content: [{ type: 'text', text: 'Provide either title or handle' }] }
       }
+      lastActionableElement = null
       const focusResult = await ensureTargetForeground({
         title: typeof args.title === 'string' ? args.title : undefined,
         handle: args.handle != null ? sn(args.handle) : undefined,
