@@ -2774,11 +2774,11 @@ ${focusClick}${targetElement ? 'Start-Sleep -Milliseconds 80\n' : ''}Write-Outpu
   // 7. keyboard_press
   registerTool(
     'keyboard_press',
-    'Press a single key (e.g., Enter, Tab, Escape, F1-F12, Delete, etc.).',
+    'Press a single key (e.g., Enter, Tab, Escape, F1-F12, Delete, a-z, 0-9, etc.).',
     {
       type: 'object',
       properties: {
-        key: { type: 'string', description: 'Key name (e.g., Enter, Tab, Escape, F1, Delete)' },
+        key: { type: 'string', description: 'Key name (e.g., Enter, Tab, Escape, F1, Delete) or a single letter/digit' },
       },
       required: ['key'],
       additionalProperties: false,
@@ -2796,7 +2796,8 @@ ${focusClick}${targetElement ? 'Start-Sleep -Milliseconds 80\n' : ''}Write-Outpu
         capslock: '{CAPSLOCK}', numlock: '{NUMLOCK}', scrolllock: '{SCROLLLOCK}',
         printscreen: '{PRTSC}', pause: '{BREAK}',
       }
-      const sendKey = keyMap[key.toLowerCase()]
+      // Single letters/digits have no special meaning in SendKeys, pass them through as-is
+      const sendKey = /^[a-z0-9]$/i.test(key) ? key : keyMap[key.toLowerCase()]
       if (!sendKey) {
         return { isError: true, content: [{ type: 'text', text: `Unknown key: ${key}` }] }
       }
@@ -3128,7 +3129,8 @@ Write-Output "closed window(s)"
     '4. Find your target element, read the nearest grid label numbers for its center X,Y\n' +
     '5. Call mouse_click(x, y) with those EXACT coordinates — ONE shot, do NOT repeat\n\n' +
     'GRID LABELS = absolute screen coordinates. Pass them directly to mouse_click. No math or estimation needed.\n' +
-    'Also auto-detects elements via UIA + OCR. If numbered elements appear, use click_element(number) instead.',
+    'Also auto-detects elements via UIA + OCR. If numbered elements appear, use click_element(number) instead.\n' +
+    'Just checking a result (e.g. what got typed into an input box)? Pass annotate:false — skips UIA/OCR, much faster.',
     {
       type: 'object',
       properties: {
@@ -3138,7 +3140,7 @@ Write-Output "closed window(s)"
         height: { type: 'number', description: 'Height of zoom region. Default: 400' },
         scale: { type: 'number', description: 'Upscale factor for tiny regions (2 = 2x zoom). Default: 1 (native). Max: 4' },
         grid: { type: 'boolean', description: 'Overlay coordinate grid with absolute screen coordinates. Default: true' },
-        annotate: { type: 'boolean', description: 'Auto-detect elements via UIA + OCR. Default: true' },
+        annotate: { type: 'boolean', description: 'Auto-detect elements via UIA + OCR. Default: true. Set false for pure visual verification.' },
       },
       required: ['x', 'y'],
       additionalProperties: false,
@@ -3198,6 +3200,13 @@ if ($bmp.Width -gt 0 -and $bmp.Height -gt 0) {
     }
 }
 
+# OCR must read the clean capture, otherwise the grid labels come back as OCR text
+$rawFile = ''
+if (${grid && annotate ? '$true' : '$false'}) {
+    $rawFile = $outFile -replace '\\.png$', '_raw.png'
+    $bmp.Save($rawFile, [System.Drawing.Imaging.ImageFormat]::Png)
+}
+
 # Draw fine coordinate grid with ABSOLUTE screen coordinates
 if (${grid ? '$true' : '$false'}) {
     $gd = [System.Drawing.Graphics]::FromImage($bmp)
@@ -3251,7 +3260,7 @@ if (${grid ? '$true' : '$false'}) {
 $bmp.Save($outFile, [System.Drawing.Imaging.ImageFormat]::Png)
 $imgW = $bmp.Width; $imgH = $bmp.Height
 $bmp.Dispose()
-Write-Output "$outFile|$imgW|$imgH"
+Write-Output "$outFile|$imgW|$imgH|$rawFile"
 `
       const captureResult = await shell.exec(script, 10000)
       if (captureResult.exitCode !== 0) {
@@ -3261,6 +3270,7 @@ Write-Output "$outFile|$imgW|$imgH"
       const filePath = capParts[0]
       const imageW = parseInt(capParts[1] || '0', 10)
       const imageH = parseInt(capParts[2] || '0', 10)
+      const ocrSourcePath = capParts[3] || filePath
 
       // Store metadata for screenshot_click
       const meta: ScreenshotMeta = {
@@ -3277,6 +3287,7 @@ Write-Output "$outFile|$imgW|$imgH"
           const annotateScript = `
 $captureX = ${zx}; $captureY = ${zy}; $captureW = ${zw}; $captureH = ${zh}
 $imgPath = '${sp(filePath.replace(/\\/g, '\\\\'))}'
+$ocrSrcPath = '${sp(ocrSourcePath.replace(/\\/g, '\\\\'))}'
 
 # Force Chrome accessibility if needed
 try {
@@ -3363,7 +3374,7 @@ try {
 if ($uiaActionable.Count -lt 5) {
     try {
         $ocrWorker = '${OCR_WORKER_PS1.replace(/\\/g, '\\\\')}'.Replace('\\\\','\\')
-        $ocrImgPath = $imgPath.Replace('\\\\','\\')
+        $ocrImgPath = $ocrSrcPath.Replace('\\\\','\\')
         $ocrOut = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "spectrai_ocr_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').txt")
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = 'powershell.exe'
@@ -3409,6 +3420,7 @@ if ($uiaActionable.Count -lt 5) {
         Remove-Item $ocrOut -ErrorAction SilentlyContinue
     } catch {}
 }
+if ($ocrSrcPath -ne $imgPath) { Remove-Item $ocrSrcPath.Replace('\\\\','\\') -ErrorAction SilentlyContinue }
 
 # Draw annotations
 if ($filtered.Count -gt 0) {
