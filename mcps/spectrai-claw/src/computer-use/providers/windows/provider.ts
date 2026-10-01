@@ -829,6 +829,7 @@ $targetHwnd = ${params.hwnd}
 $script:nodeCount = 0
 
 function Convert-Bounds($rect) {
+  if ($rect.IsEmpty) { return @{ X = 0; Y = 0; Width = 0; Height = 0 } }
   return @{ X = [int]$rect.X; Y = [int]$rect.Y; Width = [int]$rect.Width; Height = [int]$rect.Height }
 }
 

@@ -40,4 +40,11 @@ export declare class BrowserDomCdpProvider implements BrowserComputerUseProvider
     private toFailure;
     private fallbackForFailure;
 }
+/**
+ * 判定 target 是否属于 SpectrAI 自身窗口（主界面/任务控制/会话聊天等）。
+ * 这些窗口统一加载 …/out/renderer/*.html#<hash>；一旦被当成浏览器 target 操作，
+ * 整个软件界面就会被 Page.navigate 等导航走或打白。门面已在 /json/list 过滤，
+ * 这里再兜一层，避免指向未过滤的 CDP 端点时误伤。
+ */
+export declare function isAppOwnTargetUrl(url: string): boolean;
 export declare function looksLikeUrl(value: string): boolean;

@@ -39,7 +39,7 @@ test('persistBrowserScreenshot writes PNG to savePath and returns desktop-style 
     assert.match(persisted.text, /^Screenshot saved: /)
     assert.equal(persisted.text.includes(savePath), true)
     assert.match(persisted.text, /Capture: url=https:\/\/fixture.local\/form title=Fixture Form method=cdp-page byteLength=\d+ requiresForeground=false/)
-    assert.match(persisted.text, /NEXT: Use the Read tool to VIEW this image first\. Understand the page before clicking\./)
+    assert.match(persisted.text, /NEXT: The image is attached to this result/)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

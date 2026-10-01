@@ -529,7 +529,7 @@ export async function persistBrowserScreenshot(
   const text = [
     `Screenshot saved: ${absolutePath}`,
     `Capture: url=${result.url} title=${result.title} method=${result.method} byteLength=${result.byteLength} requiresForeground=${result.requiresForeground}`,
-    'NEXT: Use the Read tool to VIEW this image first. Understand the page before clicking.',
+    'NEXT: The image is attached to this result — look at it and understand the page before clicking. Do NOT re-open the file with a file/Read tool.',
     JSON.stringify(meta, null, 2),
   ].join('\n')
   return { path: absolutePath, text, meta }

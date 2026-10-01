@@ -31,7 +31,7 @@
  *   - uia_find_element / uia_get_tree → Direct UIA queries for native apps
  */
 import { existsSync, mkdirSync } from 'fs'
-import { writeFile, mkdir } from 'fs/promises'
+import { writeFile, mkdir, stat } from 'fs/promises'
 import { dirname, resolve, join } from 'path'
 import { fileURLToPath } from 'url'
 import { registerTool } from './registry.js'
@@ -76,6 +76,7 @@ const OCR_WORKER_PS1 = join(__dirname, '..', 'scripts', 'ocr-worker.ps1')
 import { shell } from '../helpers/PersistentShell.js'
 import { PolicyEngine } from '../security/PolicyEngine.js'
 import { presenceHide, presenceMark } from '../helpers/presence-overlay.js'
+import { imageContentFromFile, type MCPImageContent } from '../helpers/SoMRenderer.js'
 
 const sn = PolicyEngine.sanitizeNumber.bind(PolicyEngine)
 const sp = PolicyEngine.sanitizeForPowerShell.bind(PolicyEngine)
@@ -86,6 +87,23 @@ const screenshotMetaMap = new Map<string, ScreenshotMeta>()
 let lastScreenshotPath = ''
 let lastAnnotatedPath = ''
 let lastActionableElement: AnnotatedElement | null = null
+
+// Attach the image itself to the tool result: providers whose file tool can't view images
+// (e.g. read_file) previously only got a PNG path and acted blind.
+const INLINE_IMAGE_MAX_BYTES = 3_500_000
+const TEXT_ONLY_HINT = 'Text-only model? Do NOT open the image file with a file/Read tool — rely on the element/OCR list and hit-target text.'
+async function loadInlineImage(filePath: string, enabled = true): Promise<{ block?: MCPImageContent; note: string }> {
+  if (!enabled || !filePath) return { note: `Image not attached (includeImage=false). ${TEXT_ONLY_HINT}` }
+  try {
+    const { size } = await stat(filePath)
+    if (size > INLINE_IMAGE_MAX_BYTES) {
+      return { note: `Image not attached (${size} bytes > ${INLINE_IMAGE_MAX_BYTES}); use zoom_screenshot or a smaller maxWidth. ${TEXT_ONLY_HINT}` }
+    }
+    return { block: await imageContentFromFile(filePath), note: `The image is attached to this result — look at it before acting. If you cannot see it: ${TEXT_ONLY_HINT}` }
+  } catch (err) {
+    return { note: `Image not attached (${err instanceof Error ? err.message : String(err)}). ${TEXT_ONLY_HINT}` }
+  }
+}
 
 interface UiaActionResult {
   ok: boolean
@@ -769,12 +787,12 @@ export async function registerDesktopTools(): Promise<void> {
   registerTool(
     'screenshot',
     '★ STEP 1: Take a FULL screenshot at native resolution. Always start here.\n\n' +
-    'Returns file path + auto-detected UI elements. Use Read tool to VIEW the image first — understand the full layout before acting.\n\n' +
+    'Returns the image itself (attached to the result) + file path + auto-detected UI elements. LOOK at the attached image first — understand the full layout before acting. Never click coordinates you have not seen in a screenshot/zoom.\n\n' +
     'WORKFLOW (follow strictly):\n' +
-    '1. screenshot() → Read image → understand layout, identify target area\n' +
+    '1. screenshot() → look at the attached image → understand layout, identify target area\n' +
     '2. If target has a numbered marker → click_element(number) — DONE\n' +
     '3. If target is NOT annotated (icons, images, web app buttons) → zoom_screenshot(x,y,w,h) on that area → read grid coordinates → mouse_click(x,y)\n\n' +
-    'IMPORTANT: The image is captured at NATIVE resolution for maximum clarity. Read the image carefully to identify exactly where your target is before zooming.',
+    'IMPORTANT: Inspect the image carefully to identify exactly where your target is before zooming.',
     {
       type: 'object',
       properties: {
@@ -793,6 +811,7 @@ export async function registerDesktopTools(): Promise<void> {
         followProcessId: { type: 'number', description: 'Capture the main window of this process id (fallback to its screen). Only used when region/allScreens/monitor are unset.' },
         grid: { type: 'boolean', description: 'Overlay coordinate grid. Default: false' },
         annotate: { type: 'boolean', description: 'Auto-detect interactive elements via UIA and draw numbered markers. Use click_element(number) to click. Default: true' },
+        includeImage: { type: 'boolean', description: 'Attach the image to the tool result. Default: true. Set false only if your model cannot accept images.' },
       },
       additionalProperties: false,
     },
@@ -1515,6 +1534,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
       const scalingNotice = wasScaled
         ? `SCALED: image=${imageW}x${imageH} downscaled from capture ${capW}x${capH}. IMAGE PIXELS ≠ SCREEN COORDINATES. To click: prefer click_element(number); or screenshot_click(imageX,imageY) which auto-converts image pixels back to screen; or read a grid label (absolute screen coords) and pass it to mouse_click(x,y). Grid labels and numbered markers already use absolute screen coordinates.`
         : ''
+      const inline = await loadInlineImage(filePath, args.includeImage !== false)
       return {
         content: [{
           type: 'text',
@@ -1522,12 +1542,12 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
             `Screenshot saved: ${filePath}`,
             `Capture region: origin=(${originX},${originY}), size=${capturedSize}, image=${imageW}x${imageH}, file=${fileSize} bytes`,
             scalingNotice,
-            `NEXT: Use the Read tool to VIEW this image first. Understand the full layout.`,
+            `NEXT: ${inline.note}`,
             annotate && meta.elements && meta.elements.length > 0
               ? `Found ${meta.elements.length} annotated elements. Use click_element(number) for any numbered element. If your target is NOT numbered, use zoom_screenshot(x,y,w,h) on that area → read grid coordinates → mouse_click(x,y).`
               : `No annotated elements found (common for web/Electron apps). Use zoom_screenshot(x,y,w,h) on the area of interest → read grid coordinates → mouse_click(x,y). Do NOT use screenshot_click.`,
           ].filter(Boolean).join('\n') + elementListText,
-        }],
+        }, ...(inline.block ? [inline.block] : [])],
       }
     },
     { title: 'Screenshot', readOnlyHint: true, destructiveHint: false },
@@ -1639,11 +1659,13 @@ Write-Output "clicked|$vPath"
       }
       const parts = result.stdout.trim().split('|')
       const verifyPath = parts[1] || ''
-      const content: Array<{ type: string; text?: string }> = [{
-        type: 'text',
-        text: `Clicked ${button} at screen(${screenX},${screenY}) — mapped from image pixel(${imageX},${imageY}) in ${ssPath}\n${hitTargetText}\nCapture region: origin=(${meta.captureX},${meta.captureY}), image=${meta.imageW}x${meta.imageH}, screen=${meta.captureW}x${meta.captureH}\n\nVerification image saved to: ${verifyPath}\nThis image shows the click point with a RED crosshair marking the exact click position (crop clamped to the virtual desktop). Use Read tool to view it and confirm the click hit the right target.`,
-      }]
-      return { content }
+      const verify = await loadInlineImage(verifyPath)
+      return {
+        content: [{
+          type: 'text',
+          text: `Clicked ${button} at screen(${screenX},${screenY}) — mapped from image pixel(${imageX},${imageY}) in ${ssPath}\n${hitTargetText}\nCapture region: origin=(${meta.captureX},${meta.captureY}), image=${meta.imageW}x${meta.imageH}, screen=${meta.captureW}x${meta.captureH}\n\nVerification image saved to: ${verifyPath}\nThis image shows the click point with a RED crosshair marking the exact click position (crop clamped to the virtual desktop). Confirm the click hit the right target. ${verify.note}`,
+        }, ...(verify.block ? [verify.block] : [])],
+      }
     },
     { title: 'Screenshot Click', destructiveHint: true },
   )
@@ -2368,11 +2390,12 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
       }
 
       const fallbackReasonText = uiaFallbackReason ? `, uiaFallback=${uiaFallbackReason}` : ''
+      const verify = await loadInlineImage(verifyImgPath)
       return {
         content: [{
           type: 'text',
-          text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText})${uiaTitleDetail}${usedLastAnnotatedNote}\n\nVerification image: ${verifyImgPath}\nShows 300x300 region centered on click with RED crosshair. Use Read tool to confirm it hit the right target.`,
-        }],
+          text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText})${uiaTitleDetail}${usedLastAnnotatedNote}\n\nVerification image: ${verifyImgPath}\nShows 300x300 region centered on click with RED crosshair. Confirm it hit the right target. ${verify.note}`,
+        }, ...(verify.block ? [verify.block] : [])],
       }
     },
     { title: 'Click Element', destructiveHint: true },
@@ -2473,11 +2496,12 @@ Write-Output $outPath
         return { isError: true, content: [{ type: 'text', text: `vision_click: HID click failed: ${msg}` }] }
       }
 
+      const verify = await loadInlineImage(verifyImg)
       return {
         content: [{
           type: 'text',
-          text: `vision_click: clicked "${targetText}" → matched "${loc.matchedText}" at screen(${loc.x},${loc.y}) confidence=${loc.confidence.toFixed(2)} method=vision-fallback button=${button} ${clickType}\n\nVerification image: ${verifyImg}\nShows 300x300 region centered on click with RED crosshair. Use Read tool to confirm it hit the right target.`,
-        }],
+          text: `vision_click: clicked "${targetText}" → matched "${loc.matchedText}" at screen(${loc.x},${loc.y}) confidence=${loc.confidence.toFixed(2)} method=vision-fallback button=${button} ${clickType}\n\nVerification image: ${verifyImg}\nShows 300x300 region centered on click with RED crosshair. Confirm it hit the right target. ${verify.note}`,
+        }, ...(verify.block ? [verify.block] : [])],
       }
     },
     { title: 'Vision Click', destructiveHint: true },
@@ -2541,7 +2565,8 @@ if (-not $prim) { $prim = $mons[0] }
     '★ STEP 3: Click at exact screen coordinates. Best used AFTER zoom_screenshot.\n\n' +
     'Read the grid coordinate labels from the zoomed image, then pass those exact X,Y numbers here.\n' +
     'Returns a verification screenshot with red crosshair showing where the click landed.\n' +
-    'Only click ONCE — many UI buttons toggle state (like/unlike), clicking twice cancels the action.',
+    'Only click ONCE — many UI buttons toggle state (like/unlike), clicking twice cancels the action.\n' +
+    'NEVER guess coordinates you have not seen in a screenshot/zoom (blind clicks land in the wrong app). When you know the target label, pass expectText.',
     {
       type: 'object',
       properties: {
@@ -2612,11 +2637,12 @@ Write-Output "clicked|$vPath"
       }
       const clickParts = result.stdout.trim().split('|')
       const verifyImg = clickParts[1] || ''
+      const verify = await loadInlineImage(verifyImg)
       return {
         content: [{
           type: 'text',
-          text: `Clicked ${button} at screen(${px},${py})\n${hitTargetText}\n\nVerification image: ${verifyImg}\nShows the click point with RED crosshair (crop clamped to the virtual desktop). Use Read tool to confirm the click hit the correct target.`,
-        }],
+          text: `Clicked ${button} at screen(${px},${py})\n${hitTargetText}\n\nVerification image: ${verifyImg}\nShows the click point with RED crosshair (crop clamped to the virtual desktop). Confirm the click hit the correct target. ${verify.note}`,
+        }, ...(verify.block ? [verify.block] : [])],
       }
     },
     { title: 'Mouse Click', destructiveHint: true },
@@ -3000,7 +3026,8 @@ function Get-UIATree($element, $currentDepth, $maxDepth) {
     ClassName = $element.Current.ClassName
     ControlType = $element.Current.ControlType.ProgrammaticName
     ProcessId = $element.Current.ProcessId
-    Rect = "$([int]$rect.X),$([int]$rect.Y),$([int]$rect.Width),$([int]$rect.Height)"
+    # Offscreen/virtual elements report Rect.Empty (X/Y = Infinity) — [int]∞ throws and kills the whole tree.
+    Rect = if ($rect.IsEmpty) { 'empty' } else { "$([int]$rect.X),$([int]$rect.Y),$([int]$rect.Width),$([int]$rect.Height)" }
     Children = @()
   }
   if ($currentDepth -lt $maxDepth) {
@@ -3035,7 +3062,7 @@ $trees | ConvertTo-Json -Depth ${jsonDepth}
   // 11. window_list — uses pre-loaded Win32 class
   registerTool(
     'window_list',
-    'List all visible windows with their titles, handles, and positions.',
+    'List all visible windows with their titles, handles, and positions. A browser window title only shows its ACTIVE tab — use window_tabs to see every open tab.',
     { type: 'object', properties: {}, additionalProperties: false },
     async () => {
       const script = `
@@ -3049,6 +3076,108 @@ $trees | ConvertTo-Json -Depth ${jsonDepth}
       return { content: [{ type: 'text', text: result.stdout.trim() || '[]' }] }
     },
     { title: 'Window List', readOnlyHint: true },
+  )
+
+  // 11b. window_tabs — read the desktop browser tab strip via UIA (works on minimized windows)
+  registerTool(
+    'window_tabs',
+    'List ALL open tabs of desktop browser windows (Chrome/Edge/other Chromium) by reading the tab strip via UI Automation — no screenshot, no CDP, works even when the window is minimized.\n' +
+    'Use this to find which window holds a page before acting. activate="<tab title substring>" switches that tab (UIA select, no mouse); then window_focus(handle) to bring the window up, and e.g. keyboard_hotkey ctrl+r to refresh it.',
+    {
+      type: 'object',
+      properties: {
+        handle: { type: 'number', description: 'Only this browser window (HWND from window_list / a previous window_tabs result)' },
+        title: { type: 'string', description: 'Only browser windows whose title contains this text' },
+        activate: { type: 'string', description: 'Switch to the first tab whose title contains this text (case-insensitive)' },
+      },
+      additionalProperties: false,
+    },
+    async (args) => {
+      const handle = args.handle != null ? sn(args.handle) : 0
+      const titleFilter = typeof args.title === 'string' ? sp(args.title) : ''
+      const activate = typeof args.activate === 'string' ? sp(args.activate) : ''
+      const script = `
+$root = [Windows.Automation.AutomationElement]::RootElement
+if (${handle} -ne 0) {
+  $wins = @([Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new(${handle})))
+} else {
+  $wins = @($root.FindAll([Windows.Automation.TreeScope]::Children, [Windows.Automation.Condition]::TrueCondition) | Where-Object { $_.Current.ClassName -eq 'Chrome_WidgetWin_1' })
+}
+# Walk the browser's own UI only: pruning Document subtrees skips web content, which is both slow
+# (Electron apps are all web content) and full of in-page "tabs" that aren't browser tabs.
+$walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+function Find-BrowserTabs($el, $depth) {
+  if ($depth -gt 15) { return }
+  $c = $walker.GetFirstChild($el)
+  while ($c) {
+    $ct = $c.Current.ControlType
+    if ($ct -eq [Windows.Automation.ControlType]::TabItem) { $script:found += $c }
+    elseif ($ct -ne [Windows.Automation.ControlType]::Document) { Find-BrowserTabs $c ($depth + 1) }
+    $c = $walker.GetNextSibling($c)
+  }
+}
+$out = @()
+$activated = ''
+$US = [char]31  # field separator: tab titles may contain '|'
+foreach ($w in $wins) {
+  $wTitle = $w.Current.Name
+  if ('${titleFilter}' -and $wTitle.IndexOf('${titleFilter}', [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+  $script:found = @()
+  try { Find-BrowserTabs $w 0 } catch { continue }
+  $list = @()
+  foreach ($t in $script:found) {
+    $sel = $null; $isSel = $false
+    try { if ($t.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$sel)) { $isSel = $sel.Current.IsSelected } } catch {}
+    $name = $t.Current.Name
+    if ('${activate}' -and -not $activated -and $name.IndexOf('${activate}', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      try { $sel.Select(); $isSel = $true; $activated = "selected$US$($w.Current.NativeWindowHandle)$US$name" } catch {
+        try { $t.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke(); $isSel = $true; $activated = "invoked$US$($w.Current.NativeWindowHandle)$US$name" } catch { $activated = "failed$US$($w.Current.NativeWindowHandle)$US$name$US$($_.Exception.Message)" }
+      }
+    }
+    $list += [pscustomobject]@{ title = $name; selected = $isSel }
+  }
+  if ($list.Count -gt 0) {
+    $out += [pscustomobject]@{ handle = $w.Current.NativeWindowHandle; processId = $w.Current.ProcessId; windowTitle = $wTitle; tabs = $list }
+  }
+}
+[pscustomobject]@{ activated = $activated; windows = $out } | ConvertTo-Json -Depth 5 -Compress
+`
+      const result = await shell.exec(script, 20000)
+      if (result.exitCode !== 0) {
+        return { isError: true, content: [{ type: 'text', text: `window_tabs failed: ${result.stderr}` }] }
+      }
+      let parsed: { activated?: string; windows?: unknown }
+      try {
+        parsed = JSON.parse(result.stdout.trim() || '{}')
+      } catch {
+        return { isError: true, content: [{ type: 'text', text: `window_tabs: unparseable output: ${result.stdout.slice(0, 500)}` }] }
+      }
+      // PowerShell collapses single-element arrays; Chrome hover cards append " - Memory usage - 121 MB".
+      const asArray = (v: unknown): any[] => (Array.isArray(v) ? v : v ? [v] : [])
+      const cleanTitle = (s: unknown) => String(s ?? '').replace(/ - [^-]{1,24} - [\d.,]+ ?[KMG]B$/, '')
+      const [status, hwnd, rawName, ...errParts] = (parsed.activated || '').split('\u001f')
+      const switched = status === 'selected' || status === 'invoked'
+      const activatedTitle = cleanTitle(rawName)
+      const windows = asArray(parsed.windows).map(w => ({
+        ...w,
+        tabs: asArray(w.tabs).map((t: { title: string; selected: boolean }) => {
+          const title = cleanTitle(t.title)
+          // Selection states were read mid-loop; after a switch only the activated tab is selected.
+          return { title, selected: switched && String(w.handle) === hwnd ? title === activatedTitle : t.selected }
+        }),
+      }))
+      const lines: string[] = []
+      if (activate) {
+        lines.push(
+          !status ? `activate: no tab matching "${args.activate}" — nothing switched.`
+            : status === 'failed' ? `activate FAILED on "${activatedTitle}" (window ${hwnd}): ${errParts.join(' ')}`
+            : `activate: switched to "${activatedTitle}" in window ${hwnd} (${status}). Next: window_focus(handle=${hwnd}) if it must be in front.`,
+        )
+      }
+      lines.push(windows.length > 0 ? JSON.stringify(windows, null, 2) : 'No browser tab strips found (no Chromium browser window open, or filters matched nothing).')
+      return { content: [{ type: 'text', text: lines.join('\n') }], ...(status === 'failed' ? { isError: true } : {}) }
+    },
+    { title: 'Window Tabs', destructiveHint: false },
   )
 
   // 12. window_focus — success = foreground + visible + non-minimized (P0-3)
@@ -3139,7 +3268,7 @@ Write-Output "closed window(s)"
     'HOW TO USE:\n' +
     '1. From the full screenshot, identify the AREA where your target is\n' +
     '2. Call zoom_screenshot(x, y, width, height) on that area — use generous size (200-400px) to ensure target is captured\n' +
-    '3. Read the zoomed image — the GRID LABELS show absolute screen coordinates\n' +
+    '3. Look at the zoomed image (attached to the result) — the GRID LABELS show absolute screen coordinates\n' +
     '4. Find your target element, read the nearest grid label numbers for its center X,Y\n' +
     '5. Call mouse_click(x, y) with those EXACT coordinates — ONE shot, do NOT repeat\n\n' +
     'GRID LABELS = absolute screen coordinates. Pass them directly to mouse_click. No math or estimation needed.\n' +
@@ -3155,6 +3284,7 @@ Write-Output "closed window(s)"
         scale: { type: 'number', description: 'Upscale factor for tiny regions (2 = 2x zoom). Default: 1 (native). Max: 4' },
         grid: { type: 'boolean', description: 'Overlay coordinate grid with absolute screen coordinates. Default: true' },
         annotate: { type: 'boolean', description: 'Auto-detect elements via UIA + OCR. Default: true. Set false for pure visual verification.' },
+        includeImage: { type: 'boolean', description: 'Attach the image to the tool result. Default: true. Set false only if your model cannot accept images.' },
       },
       required: ['x', 'y'],
       additionalProperties: false,
@@ -3534,6 +3664,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
         }
       }
 
+      const inline = await loadInlineImage(filePath, args.includeImage !== false)
       return {
         content: [{
           type: 'text',
@@ -3545,9 +3676,9 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
               : '',
             grid ? `GRID: Shows absolute screen coordinates. Read the X,Y numbers from grid lines near your target, then use mouse_click(x,y) directly — ONE shot, no estimation.` : '',
             `Use click_element(number) for annotated elements, or read grid coordinates and use mouse_click(x,y).`,
-            `Use the Read tool to view this image.`,
+            inline.note,
           ].filter(Boolean).join('\n') + elementListText,
-        }],
+        }, ...(inline.block ? [inline.block] : [])],
       }
     },
     { title: 'Zoom Screenshot', readOnlyHint: true },
@@ -3559,7 +3690,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
     'Render a sci-fi HUD (heads-up display) overlay onto a screenshot.\n\n' +
     'Draws GDI+ glow borders, scanlines, number badges, info panels and optional pulse/flash ' +
     'highlight onto the screenshot image without modifying the real desktop.\n' +
-    'Returns the path of the new HUD image (PNG). Use the Read tool to view it.\n\n' +
+    'Returns the new HUD image (attached to the result) and its PNG path.\n\n' +
     'Typical use: after screenshot(annotate=true), call render_hud(screenshotPath) to get a ' +
     'sci-fi-styled version. Use highlightNumber to emphasize the element you just clicked.',
     {
@@ -3614,6 +3745,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
           glowColor,
           highlightMode,
         })
+        const inline = await loadInlineImage(hudPath)
         return {
           content: [{
             type: 'text',
@@ -3621,9 +3753,9 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
               `HUD image saved: ${hudPath}`,
               `Elements overlaid: ${elements.length}`,
               highlightNumber > 0 ? `Highlighted element: #${highlightNumber} (mode: ${highlightMode})` : '',
-              `Use the Read tool to view this image.`,
+              inline.note,
             ].filter(Boolean).join('\n'),
-          }],
+          }, ...(inline.block ? [inline.block] : [])],
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)

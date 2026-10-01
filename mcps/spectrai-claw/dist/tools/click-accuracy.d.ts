@@ -71,3 +71,41 @@ export declare function preferLocalSessionOverNetworkSearch(a: SearchAmbiguityFi
  * and multi-monitor virtual-desktop layouts.
  */
 export declare function formatSendMouseCommand(x: number, y: number, flagCsv: string): string;
+/** Virtual-desktop bounds (Left/Top may be negative for monitors above/left of primary). */
+export interface VirtualScreenRect {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+}
+/** Clamped verify-crop rect plus crosshair position relative to the crop origin. */
+export interface CropRect {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    crossX: number;
+    crossY: number;
+}
+/**
+ * Compute the verify-screenshot crop rect for a click at (cx,cy), clamped to the
+ * virtual screen so we never read outside the desktop (which yields black/garbage)
+ * and never draw the crosshair at the wrong offset.
+ *
+ * `half` is the half-size of the desired square (crop is 2*half on a side, shrunk
+ * to fit if the virtual screen is smaller). Coordinates are physical pixels; the
+ * PowerShell verify blocks replicate this exact logic against VirtualScreen.
+ */
+export declare function clampCropRect(cx: number, cy: number, half: number, vs: VirtualScreenRect): CropRect;
+/**
+ * True when `expectText` is found (case-insensitive substring) in any of the
+ * supplied names (hit element Name + ancestor Names). Empty/blank expectText
+ * means "no expectation" → returns true (never blocks the click).
+ */
+export declare function matchesExpectText(names: readonly (string | null | undefined)[], expectText: string | null | undefined): boolean;
+/**
+ * JS mirror of Win32.Normalize (PersistentShell C#): map a virtual-desktop pixel into the
+ * 0..65535 absolute space SendInput expects. Divisor is (span - 1) so 65535 maps to the last
+ * addressable pixel — the MOUSEEVENTF_VIRTUALDESK convention. Keep in sync with the C# copy.
+ */
+export declare function normalizeAbsCoord(value: number, origin: number, span: number): number;

@@ -27,6 +27,12 @@ export declare class PersistentShell {
     private ensureReady;
     private tryResolve;
     private clearTimer;
+    /**
+     * Confirm the command loop is reading stdin before start() resolves. The first line written right
+     * after READY can be swallowed by PowerShell's `-Command -` read-ahead, so retry a cheap ping
+     * (without killing the process on a swallowed try) until one echoes back.
+     */
+    private warmup;
     private execUnlocked;
     /** Execute a script in the persistent process (serialized). */
     exec(script: string, timeout?: number): Promise<ShellResult>;
