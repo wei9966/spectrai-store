@@ -1228,9 +1228,13 @@ try {
         } catch {}
     }
 
-    $allEls = $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+    # Offscreen elements are skipped below anyway; filtering provider-side keeps long Chrome pages from blowing the 45s exec timeout.
+    $onScreenCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::IsOffscreenProperty, $false)
+    $allEls = $window.FindAll([Windows.Automation.TreeScope]::Descendants, $onScreenCond)
+    $uiaSw = [System.Diagnostics.Stopwatch]::StartNew()
     $uiaTotal = 0
     foreach ($el in $allEls) {
+        if ($uiaSw.ElapsedMilliseconds -gt 15000) { Write-Output "UIA_ERROR:element scan exceeded 15s budget, partial results"; break }
         $uiaTotal++
         $rect = $el.Current.BoundingRectangle
         if ($rect.IsEmpty -or $rect.Width -le 2 -or $rect.Height -le 2) { continue }
@@ -1309,8 +1313,9 @@ if ($uiaActionable.Count -lt 5) {
         $psi.CreateNoWindow = $true
         $psi.RedirectStandardError = $true
         $proc = [System.Diagnostics.Process]::Start($psi)
-        $stderr = $proc.StandardError.ReadToEnd()
-        $proc.WaitForExit(8000)
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit(8000)) { try { $proc.Kill(); $proc.WaitForExit(1000) | Out-Null } catch {} }
+        $stderr = if ($stderrTask.Wait(1000)) { $stderrTask.Result } else { '' }
         if ($proc.ExitCode -ne 0) { Write-Output "OCR_PROC_ERR:exit=$($proc.ExitCode),stderr=$stderr" }
 
         $ocrExists = Test-Path $ocrOut
@@ -2013,6 +2018,8 @@ public class FocusProbe38 {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetFocus(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern IntPtr GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
@@ -2049,6 +2056,13 @@ public class FocusProbe38 {
     } finally {
       if (attached) AttachThreadInput(cur, fgTid, false);
     }
+    if (GetForegroundWindow() == hWnd) return true;
+    // Foreground lock (SpectrAI owns foreground): only the process with the last input event may switch.
+    // Tap ALT so this process owns it, then retry. ponytail: same trick AutoHotkey uses; upgrade to SendInput if needed.
+    keybd_event(0x12, 0, 0, UIntPtr.Zero);
+    keybd_event(0x12, 0, 2, UIntPtr.Zero);
+    SetForegroundWindow(hWnd);
+    BringWindowToTop(hWnd);
     return GetForegroundWindow() == hWnd;
   }
 }
@@ -3317,8 +3331,12 @@ $uiaActionable = @()
 $idx = 1
 try {
     if (-not $window) { $window = [Windows.Automation.AutomationElement]::RootElement }
-    $allEls = $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+    # Offscreen elements are skipped below anyway; filtering provider-side keeps long Chrome pages from blowing the 45s exec timeout.
+    $onScreenCond = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::IsOffscreenProperty, $false)
+    $allEls = $window.FindAll([Windows.Automation.TreeScope]::Descendants, $onScreenCond)
+    $uiaSw = [System.Diagnostics.Stopwatch]::StartNew()
     foreach ($el in $allEls) {
+        if ($uiaSw.ElapsedMilliseconds -gt 15000) { Write-Output "UIA_ERROR:element scan exceeded 15s budget, partial results"; break }
         $rect = $el.Current.BoundingRectangle
         if ($rect.IsEmpty -or $rect.Width -le 2 -or $rect.Height -le 2) { continue }
         if ($rect.Width -gt $captureW -or $rect.Height -gt $captureH) { continue }
@@ -3383,8 +3401,9 @@ if ($uiaActionable.Count -lt 5) {
         $psi.CreateNoWindow = $true
         $psi.RedirectStandardError = $true
         $proc = [System.Diagnostics.Process]::Start($psi)
-        $stderr = $proc.StandardError.ReadToEnd()
-        $proc.WaitForExit(8000)
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit(8000)) { try { $proc.Kill(); $proc.WaitForExit(1000) | Out-Null } catch {} }
+        $stderr = if ($stderrTask.Wait(1000)) { $stderrTask.Result } else { '' }
         if ((Test-Path $ocrOut) -and (Get-Item $ocrOut).Length -gt 0) {
             foreach ($ol in (Get-Content $ocrOut -Encoding UTF8)) {
                 $parts = $ol.Split('|')
