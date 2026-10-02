@@ -3081,7 +3081,7 @@ $trees | ConvertTo-Json -Depth ${jsonDepth}
   // 11b. window_tabs — read the desktop browser tab strip via UIA (works on minimized windows)
   registerTool(
     'window_tabs',
-    'List ALL open tabs of desktop browser windows (Chrome/Edge/other Chromium) by reading the tab strip via UI Automation — no screenshot, no CDP, works even when the window is minimized.\n' +
+    'List ALL open tabs of the user\'s EXTERNAL desktop browser windows (Chrome/Edge/other Chromium) via UI Automation — no screenshot, no CDP, works even when minimized. NOT for web browsing/search: use browser_* (SpectrAI built-in browser) unless the user explicitly asks to operate their external browser.\n' +
     'Use this to find which window holds a page before acting. activate="<tab title substring>" switches that tab (UIA select, no mouse); then window_focus(handle) to bring the window up, and e.g. keyboard_hotkey ctrl+r to refresh it.',
     {
       type: 'object',
@@ -3183,7 +3183,7 @@ foreach ($w in $wins) {
   // 12. window_focus — success = foreground + visible + non-minimized (P0-3)
   registerTool(
     'window_focus',
-    'Bring a window to the foreground by title or handle. Success requires the target HWND to be foreground, visible, and not minimized. Returns target_occluded / focus_failed instead of claiming success from SetForeground alone.',
+    'Bring a window to the foreground by title or handle. Do not use it to drive the user\'s external Chrome/Edge for web tasks — use browser_* (SpectrAI built-in browser) unless the user explicitly asks. Success requires the target HWND to be foreground, visible, and not minimized. Returns target_occluded / focus_failed instead of claiming success from SetForeground alone.',
     {
       type: 'object',
       properties: {
