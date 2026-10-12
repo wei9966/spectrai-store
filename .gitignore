@@ -16,3 +16,15 @@ Thumbs.db
 
 # TS build artifacts
 dist/
+
+# SpectrAI session artifacts (screenshots / snapshots / probes)
+.spectrai/plans/*.png
+.spectrai/plans/*.json
+.claude/worktrees/
+tmp/
+.verify/
+.tmp_recon/
+.softseep_showflow/
+.tmp-claw-*.png
+.tmp-claw-*.meta.json
+spectrai-claw-*.tgz
