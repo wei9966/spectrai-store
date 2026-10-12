@@ -56,6 +56,9 @@ param(
     # create the witness with WS_EX_NOACTIVATE, the standard mitigation for
     # "the click activated the target window"
     [switch]$NoActivate,
+    # create it WITHOUT the style and add WS_EX_NOACTIVATE afterwards, to tell
+    # "style must be set at creation" apart from "the app re-activates itself"
+    [switch]$AddStyleLater,
 
     # keep the witness window after the run (default: destroy it)
     [switch]$KeepWindow,
@@ -127,6 +130,12 @@ public static class E3
     [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
     [DllImport("kernel32.dll")] private static extern IntPtr GetModuleHandleW(string name);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern IntPtr GetWindowLongPtr64(IntPtr h, int i);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] private static extern IntPtr SetWindowLongPtr64(IntPtr h, int i, IntPtr v);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong32(IntPtr h, int i);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")] private static extern int SetWindowLong32(IntPtr h, int i, int v);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool AttachThreadInput(uint a, uint b, bool f);
+    [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr h);
 
     // ---- synthetic pointer ----
     [DllImport("user32.dll", SetLastError = true)]
@@ -268,6 +277,20 @@ public static class E3
         }
     }
 
+    private const int GWL_EXSTYLE = -20;
+    private const long WS_EX_NOACTIVATE = 0x08000000L;
+
+    private static long GetExStyle(IntPtr h)
+    {
+        if (IntPtr.Size == 8) return GetWindowLongPtr64(h, GWL_EXSTYLE).ToInt64();
+        return (uint)GetWindowLong32(h, GWL_EXSTYLE);
+    }
+    private static void SetExStyle(IntPtr h, long v)
+    {
+        if (IntPtr.Size == 8) SetWindowLongPtr64(h, GWL_EXSTYLE, new IntPtr(v));
+        else SetWindowLong32(h, GWL_EXSTYLE, (int)v);
+    }
+
     private static void SetDpiAware()
     {
         // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
@@ -280,7 +303,7 @@ public static class E3
     public static string Run(int x, int y, int w, int h, int clickX, int clickY, int clicks,
                             int pointerType, int feedbackMode,
                             bool noPark, string parkProc, string parkClass, string parkTitle,
-                            bool noActivate, bool keepWindow, int settleMs)
+                            bool noActivate, bool addStyleLater, bool keepWindow, int settleMs)
     {
         SetDpiAware();
         var log = new List<string>();
@@ -305,6 +328,15 @@ public static class E3
         if (hwnd == IntPtr.Zero)
             return "{\"ok\":false,\"error\":\"CreateWindowExW failed\",\"err\":" + createErr + ",\"classErr\":" + clsErr + "}";
         _hwnd = hwnd;
+        long exApplied = 0; bool styleReadback = false;
+        if (addStyleLater)
+        {
+            long before = GetExStyle(hwnd);
+            SetExStyle(hwnd, before | WS_EX_NOACTIVATE);
+            exApplied = GetExStyle(hwnd);
+            styleReadback = ((exApplied & WS_EX_NOACTIVATE) != 0);
+            log.Add("created WITHOUT style (0x" + before.ToString("X") + "), added later -> readback 0x" + exApplied.ToString("X") + " ok=" + styleReadback);
+        }
         Refresh();
 
         RECT wr; GetWindowRect(hwnd, out wr);
@@ -421,7 +453,7 @@ public static class E3
         sb.Append(",\"clientSize\":[" + cr.R + "," + cr.B + "]");
         sb.Append(",\"clickAt\":[" + tX + "," + tY + "],\"clicks\":" + clicks);
         sb.Append(",\"pointerType\":" + pointerType + ",\"feedbackMode\":" + feedbackMode
-                  + ",\"exStyle\":\"" + (noActivate ? "WS_EX_NOACTIVATE" : "0") + "\"}");
+                  + ",\"exStyle\":\"" + (noActivate ? "WS_EX_NOACTIVATE@create" : (addStyleLater ? ("WS_EX_NOACTIVATE@later(ok=" + styleReadback + ")") : "0")) + "\"}");
         sb.Append(",\"device\":\"" + devNote + "\",\"inject\":\"" + Esc(injectDetail) + "\"");
         sb.Append(",\"park\":{\"note\":\"" + parkNote + "\",\"hwnd\":" + parked
                   + ",\"witnessWasForeground\":" + (witnessWasFg ? "true" : "false")
@@ -527,7 +559,7 @@ if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Forc
 
 $json = [E3]::Run($X, $Y, $W, $H, $ClickX, $ClickY, $Clicks, $PointerType, $FeedbackMode,
                    $NoPark.IsPresent, $ParkProc, $ParkClass, $ParkTitle,
-                   $NoActivate.IsPresent, $KeepWindow.IsPresent, $SettleMs)
+                   $NoActivate.IsPresent, $AddStyleLater.IsPresent, $KeepWindow.IsPresent, $SettleMs)
 
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $file = Join-Path $OutDir ("e3-result-$stamp.json")

@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>E4-IDLE</title>
+<style>
+  html,body{margin:0;padding:0;background:#ffffff;font-family:Segoe UI,sans-serif}
+  #box{position:absolute;left:0;top:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:30px;color:#333}
+</style>
+</head>
+<body>
+<div id="box">E4 foreign click target</div>
+<script>
+  // Readout channel = window title. screenX/screenY are absolute screen
+  // coordinates, so they can be compared bit-for-bit with the injected point.
+  var c = 0, m = 0, last = '-';
+  function upd() {
+    document.title = 'E4-C' + c + '-M' + m + '-L' + last;
+  }
+  window.addEventListener('pointerdown', function (e) {
+    c++;
+    last = Math.round(e.screenX) + ':' + Math.round(e.screenY) + ':' + e.pointerType;
+    upd();
+  });
+  window.addEventListener('mousedown', function (e) {
+    m++;
+    upd();
+  });
+  upd();
+</script>
+</body>
+</html>
