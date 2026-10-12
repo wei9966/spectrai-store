@@ -18,8 +18,7 @@ Thumbs.db
 dist/
 
 # SpectrAI session artifacts (screenshots / snapshots / probes)
-.spectrai/plans/*.png
-.spectrai/plans/*.json
+.spectrai/plans/
 .claude/worktrees/
 tmp/
 .verify/
@@ -28,3 +27,10 @@ tmp/
 .tmp-claw-*.png
 .tmp-claw-*.meta.json
 spectrai-claw-*.tgz
+
+# 历史会话遗留的零散产物（2026-10 收口）
+/docs/
+/redeem_page.png
+/redeem_page2.png
+/keys_page.png
+/labrador-scooter.html
