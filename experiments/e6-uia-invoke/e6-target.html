@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>E6-START</title>
+<style>
+  html,body{margin:0;padding:0;background:#ffffff;font-family:Segoe UI,sans-serif;font-size:20px}
+  #wrap{padding:30px}
+  button,a,input{font-size:20px;margin:6px}
+  #log{margin-top:18px;padding:10px;border:2px solid #999;min-height:28px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <button id="btnA">E6 Button A</button>
+  <label><input type="checkbox" id="chkA">E6 Check A</label>
+  <input type="text" id="txtA" aria-label="E6 Text A" value="">
+  <a id="lnkA" href="#">E6 Link A</a>
+  <div id="log">idle</div>
+</div>
+<script>
+  // Window title is the readout: browsers update it regardless of focus, and a
+  // foreign process can read it with GetWindowText (no screenshot needed).
+  //   E6-B<button invokes>-C<checkbox 0|1>-V<text length>-L<link invokes>
+  //     -P<pointerdown count>-D<mousedown count>
+  var btn = 0, lnk = 0, ptr = 0, mdown = 0;
+  var el = function (id) { return document.getElementById(id); };
+
+  function upd() {
+    document.title = 'E6-B' + btn + '-C' + (el('chkA').checked ? 1 : 0) +
+                     '-V' + el('txtA').value.length + '-L' + lnk +
+                     '-P' + ptr + '-D' + mdown;
+  }
+
+  el('btnA').addEventListener('click', function () { btn++; el('log').textContent = 'button click ' + btn; upd(); });
+  el('lnkA').addEventListener('click', function (e) { lnk++; e.preventDefault(); el('log').textContent = 'link click ' + lnk; upd(); });
+  el('chkA').addEventListener('change', function () { el('log').textContent = 'check change -> ' + el('chkA').checked; upd(); });
+  el('txtA').addEventListener('input', function () { el('log').textContent = 'text input len ' + el('txtA').value.length; upd(); });
+
+  window.addEventListener('pointerdown', function (e) {
+    ptr++; el('log').textContent = 'pointerdown ' + e.pointerType + ' ' + Math.round(e.screenX) + ':' + Math.round(e.screenY); upd();
+  });
+  window.addEventListener('mousedown', function () { mdown++; upd(); });
+
+  upd();
+</script>
+</body>
+</html>
