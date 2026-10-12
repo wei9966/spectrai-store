@@ -84,25 +84,58 @@ ServiceBinary = %12%\UMDF\MttVDD.dll
 - **没有启用已有的三个孤儿适配器**：同样需要提升权限；且它们的用户态组件缺失，启用设备节点大概率也产生不了显示器。
 - **没有下 71 MB 的控制端**：在"能不能装"还没确定之前，先不往用户磁盘上放东西。
 
-## 4. 三条可行路径（需要你选一条）
+## 4. 官方支持的安装方式（控制端已下到本机）
 
-### A. 你把 UAC 点掉，我来装（推荐）
-我会写一个**只做这几件事**的提升权限脚本，然后触发 UAC：
+查了项目的 README，**官方只支持用自带的 `VDD Control` 控制端安装**（driver-only 包不是受支持的安装路径）。所以我把控制端下到了你的下载目录：
 
-1. 校验当前进程确实已提升，否则立刻退出并说明；
-2. 把驱动拷到固定目录（便于回滚）；
-3. `pnputil /add-driver <dir>\MttVDD.inf /install`；
-4. 创建 `Root\MttVDD` 设备节点（这一步的具体命令我会先用 `pnputil /enum-devices` 验证结果，失败就原样报告，不反复试）；
-5. 打印**新的显示器列表**，确认多出来一块；
-6. 脚本本身**不做任何删除操作**，回滚命令写在脚本注释里。
+| 项 | 值 |
+|---|---|
+| 文件 | `C:\Users\魏斌\Downloads\VDD.Control.25.7.23.zip`（71,225,903 字节） |
+| sha256 | `a701f2272e9fcf382849b24f913c6dd07597b3b1116525f2e90182f019609154` |
+| 来源 | `https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VDD.Control.25.7.23.zip` |
 
-装完我会立刻跑 E3/E4 的笔点击测试，把窗口放到那块看不见的屏上，验证"无遮挡 + 后台命中 + 前台不变"。
+解压后的关键内容（这就是为什么它比 driver-only 包可靠）：
 
-### B. 你自己跑（我只给命令）
-我把上面那一段写成 `Install-Vdd.ps1` 放进仓库，你开一个**管理员 PowerShell** 执行一次即可。我这边不触发任何 UAC。
+```
+VDD Control.exe                        (171 MB，带 UAC 清单的控制端)
+Dependencies/devcon.exe                <- 创建 Root\MttVDD 设备节点用它
+SignedDrivers/x86/VDD/{MttVDD.dll, mttvdd.cat, MttVDD.inf, vdd_settings.xml}
+SignedDrivers/ARM64/VDD/{...}
+SignedDrivers/x86/VAD/{VirtualAudioDriver.sys, .inf, .cat}   <- 配套虚拟音频驱动
+```
 
-### C. 不装，用现有副屏
-E3 已经用真实副屏测过跨屏路由。差别是：真实屏**你看得见**，而且屏上的窗口仍会被遮挡（E4 就是被 SodaMusic 挡住了）。虚拟屏的核心价值正是这两点，所以这个选项等于放弃 E5 的验证。
+注意两点：
+
+1. `Dependencies/devcon.exe` 的存在**印证**了第 2.4 节的判断：`pnputil` 装不了 root 设备节点，必须用能造 root 设备的工具。
+2. `SignedDrivers/x86/` 里的 `MttVDD.*` 和我单独下的 driver-only 包**是同一份文件**（`mttvdd.cat` 13,017 字节、日期 2024-12-25），所以这个项目里的 "x86" 就是指 x86-64。
+
+### 你要做的（大约 2 分钟）
+
+```powershell
+# 1) 解压
+Expand-Archive -Path "$env:USERPROFILE\Downloads\VDD.Control.25.7.23.zip" -DestinationPath "$env:USERPROFILE\Downloads\VDD-Control"
+
+# 2) 双击运行 VDD Control.exe（它会自己弹 UAC），按界面里的 Install / Add display 操作
+```
+
+装完后告诉我，我会立刻接着做 E5 的第二步：把目标窗口放到那块看不见的屏上，跑 E3/E4 的笔点击测试，验证「无遮挡 + 后台命中 + 光标零位移 + 前台不变」。
+
+### 备选：不用控制端
+
+如果你想手动来，`Dependencies/devcon.exe` 就是官方自带的那一个：
+
+```powershell
+# 管理员 PowerShell，在解压目录下
+.\Dependencies\devcon.exe install .\SignedDrivers\x86\VDD\MttVDD.inf Root\MttVDD
+```
+
+我不在正文里替你跑这条：它需要管理员，而且我还没在这台机器上验证过 `devcon` 的实际输出，不适合在没有你确认的情况下动你的驱动仓库。
+
+### 我为什么不自己硬装
+
+- 当前会话 `isAdmin=False`（`bcdedit` 也印证），`pnputil`/`devcon` 都会失败；
+- 触发 UAC 需要你本人在场点确认，你没在的这 10 分钟里弹窗只会超时；
+- 装显示驱动是系统级改动（会进驱动仓库、多一个显示设备），我不想在没有人盯着的情况下自作主张。
 
 ## 5. 回滚方式（三条路通用）
 
