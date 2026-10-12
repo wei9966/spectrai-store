@@ -144,7 +144,7 @@ const actionSchema = {
     additionalProperties: true,
 };
 export function registerBrowserComputerUseTools() {
-    registerTool('browser_list_targets', 'Browser Computer Use: list Chrome/Edge/Brave CDP page targets from a remote debugging endpoint. This is DOM/CDP-based and does not use screenshots.', {
+    registerTool('browser_list_targets', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): list Chrome/Edge/Brave CDP page targets from a remote debugging endpoint. This is DOM/CDP-based and does not use screenshots.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -155,7 +155,7 @@ export function registerBrowserComputerUseTools() {
         const targets = await provider.listTargets();
         return json({ targets });
     }, { title: 'Browser list targets', readOnlyHint: true, destructiveHint: false, idempotentHint: true });
-    registerTool('browser_list_windows', 'Browser Computer Use: list browser page targets as canonical Computer Use windows.', {
+    registerTool('browser_list_windows', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): list browser page targets as canonical Computer Use windows.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -166,7 +166,7 @@ export function registerBrowserComputerUseTools() {
         const windows = await provider.listWindows();
         return json({ windows });
     }, { title: 'Browser list windows', readOnlyHint: true, destructiveHint: false, idempotentHint: true });
-    registerTool('browser_get_app_state', 'Browser Computer Use: read a DOM snapshot/tree from a CDP page target using selector-capable DOM semantics. Use this instead of screenshot/OCR for browser content when CDP is available.', {
+    registerTool('browser_get_app_state', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): read a DOM snapshot/tree from a CDP page target using selector-capable DOM semantics. Use this instead of screenshot/OCR for browser content when CDP is available.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -180,7 +180,7 @@ export function registerBrowserComputerUseTools() {
         const snapshot = await provider.readDomSnapshot(normalizeBrowserSelector(readObject(args.selector)), Number(args.maxElements ?? 200), readObject(args.target));
         return json(snapshot);
     }, { title: 'Browser DOM state', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_find_element', 'Browser Computer Use: find one DOM element by css/xpath/text/role/aria-label/testId/framePath/url/title/bounds selector and return a canonical element with DOM metadata.', {
+    registerTool('browser_find_element', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): find one DOM element by css/xpath/text/role/aria-label/testId/framePath/url/title/bounds selector and return a canonical element with DOM metadata.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -194,7 +194,7 @@ export function registerBrowserComputerUseTools() {
         const element = await provider.findElement(normalizeBrowserSelector(readObject(args.selector)) ?? {}, readObject(args.target));
         return json({ element });
     }, { title: 'Browser find element', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_execute_action', 'Browser Computer Use: execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover, contextMenu, navigate, reload, back and forward. Page-level reload/back/forward use background CDP (Page.reload / Page.getNavigationHistory), not DOM click or HID. To open a page, use action.type=navigate (aliases: goto/open/load) with action.url — do not click the address bar or type into omnibox. Do not use desktop screenshot, followForeground or HID.', {
+    registerTool('browser_execute_action', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover, contextMenu, navigate, reload, back and forward. Page-level reload/back/forward use background CDP (Page.reload / Page.getNavigationHistory), not DOM click or HID. To open a page, use action.type=navigate (aliases: goto/open/load) with action.url — do not click the address bar or type into omnibox. Do not use desktop screenshot, followForeground or HID.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -210,7 +210,7 @@ export function registerBrowserComputerUseTools() {
         const result = await provider.executeAction(action, readObject(args.target));
         return json(result);
     }, { title: 'Browser execute action', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_navigate', 'Browser Computer Use: open a page with CDP Page.navigate (or /json/new). Pass url. Do not click the address bar.', {
+    registerTool('browser_navigate', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): open a page with CDP Page.navigate (or /json/new). Pass url. Do not click the address bar.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -225,7 +225,7 @@ export function registerBrowserComputerUseTools() {
         const result = await provider.executeAction(action, readObject(args.target));
         return json(result);
     }, { title: 'Browser navigate', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_screenshot', 'Browser Computer Use: capture a background page screenshot via CDP Page.captureScreenshot. The response includes a saved file path — Read that PNG first, then operate. Do not use desktop screenshot, window_focus, or HID — this stays on the CDP page target even when the browser is in the background.', {
+    registerTool('browser_screenshot', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): capture a background page screenshot via CDP Page.captureScreenshot. The response includes a saved file path — Read that PNG first, then operate. Do not use desktop screenshot, window_focus, or HID — this stays on the CDP page target even when the browser is in the background.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -252,7 +252,7 @@ export function registerBrowserComputerUseTools() {
             structuredContent: persisted.meta,
         };
     }, { title: 'Browser page screenshot', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_reload', 'Browser Computer Use: reload the current CDP page with Page.reload (background, no desktop screenshot / followForeground / HID / json/activate).', {
+    registerTool('browser_reload', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): reload the current CDP page with Page.reload (background, no desktop screenshot / followForeground / HID / json/activate).', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -265,7 +265,7 @@ export function registerBrowserComputerUseTools() {
         const result = await provider.executeAction({ type: 'reload', timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined }, readObject(args.target));
         return json(result);
     }, { title: 'Browser reload', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_back', 'Browser Computer Use: go back via CDP Page.getNavigationHistory + Page.navigateToHistoryEntry. Background CDP only — do not use history.back(), desktop screenshot, followForeground, HID or /json/activate.', {
+    registerTool('browser_back', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): go back via CDP Page.getNavigationHistory + Page.navigateToHistoryEntry. Background CDP only — do not use history.back(), desktop screenshot, followForeground, HID or /json/activate.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -278,7 +278,7 @@ export function registerBrowserComputerUseTools() {
         const result = await provider.executeAction({ type: 'back', timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined }, readObject(args.target));
         return json(result);
     }, { title: 'Browser back', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_forward', 'Browser Computer Use: go forward via CDP Page.getNavigationHistory + Page.navigateToHistoryEntry. Background CDP only — do not use history.forward(), desktop screenshot, followForeground, HID or /json/activate.', {
+    registerTool('browser_forward', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): go forward via CDP Page.getNavigationHistory + Page.navigateToHistoryEntry. Background CDP only — do not use history.forward(), desktop screenshot, followForeground, HID or /json/activate.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -291,7 +291,7 @@ export function registerBrowserComputerUseTools() {
         const result = await provider.executeAction({ type: 'forward', timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined }, readObject(args.target));
         return json(result);
     }, { title: 'Browser forward', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_wait', 'Browser Computer Use: poll /json URL/title plus document.readyState (and optional body text) until a condition matches. Does not subscribe to CDP events. Background CDP — no desktop screenshot / followForeground / HID.', {
+    registerTool('browser_wait', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): poll /json URL/title plus document.readyState (and optional body text) until a condition matches. Does not subscribe to CDP events. Background CDP — no desktop screenshot / followForeground / HID.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -312,7 +312,7 @@ export function registerBrowserComputerUseTools() {
         }, readObject(args.target));
         return json(result);
     }, { title: 'Browser wait for page', readOnlyHint: true, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_get_page_text', 'Browser Computer Use: read location.href / document.title / document.body.innerText via Runtime.evaluate. Background CDP — no desktop screenshot / followForeground / HID.', {
+    registerTool('browser_get_page_text', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): read location.href / document.title / document.body.innerText via Runtime.evaluate. Background CDP — no desktop screenshot / followForeground / HID.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -325,7 +325,7 @@ export function registerBrowserComputerUseTools() {
         const result = await provider.getPageText(readObject(args.target), typeof args.maxChars === 'number' ? args.maxChars : undefined);
         return json(result);
     }, { title: 'Browser get page text', readOnlyHint: true, destructiveHint: false, idempotentHint: true });
-    registerTool('browser_new_tab', 'Browser Computer Use: open a new tab via HTTP /json/new (default about:blank). Background CDP — do not use /json/activate, window_focus, desktop screenshot, followForeground or HID.', {
+    registerTool('browser_new_tab', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): open a new tab via HTTP /json/new (default about:blank). Background CDP — do not use /json/activate, window_focus, desktop screenshot, followForeground or HID.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -337,7 +337,7 @@ export function registerBrowserComputerUseTools() {
         const result = await provider.openTab(typeof args.url === 'string' ? args.url : undefined);
         return json(result);
     }, { title: 'Browser new tab', readOnlyHint: false, destructiveHint: false, idempotentHint: false });
-    registerTool('browser_close_tab', 'Browser Computer Use: close a tab via HTTP GET /json/close/<targetId>. Background CDP — do not use /json/activate, desktop screenshot, followForeground or HID.', {
+    registerTool('browser_close_tab', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): close a tab via HTTP GET /json/close/<targetId>. Background CDP — do not use /json/activate, desktop screenshot, followForeground or HID.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
@@ -349,7 +349,7 @@ export function registerBrowserComputerUseTools() {
         const result = await provider.closeTab(readObject(args.target));
         return json(result);
     }, { title: 'Browser close tab', readOnlyHint: false, destructiveHint: true, idempotentHint: false });
-    registerTool('browser_get_capabilities', 'Browser Computer Use: report DOM/CDP background read/invoke/type capability, limitations, frame/permission/userGesture constraints and fallback order.', {
+    registerTool('browser_get_capabilities', 'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): report DOM/CDP background read/invoke/type capability, limitations, frame/permission/userGesture constraints and fallback order.', {
         type: 'object',
         properties: {
             connection: connectionSchema,
