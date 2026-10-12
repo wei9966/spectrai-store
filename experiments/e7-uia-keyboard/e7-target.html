@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>E7-START</title>
+<style>
+  body{font-family:Segoe UI,sans-serif;font-size:20px;padding:20px;background:#fff}
+  input{font-size:20px;display:block;margin:8px 0;width:420px;padding:4px}
+  button{font-size:20px;margin:8px 0}
+  #log{margin-top:16px;padding:10px;border:2px solid #999;min-height:28px}
+</style>
+</head>
+<body>
+<input id="t1" autofocus aria-label="E7 Text A">
+<input id="t2" aria-label="E7 Text B">
+<button id="b1">E7 Button A</button>
+<div id="log">idle</div>
+<script>
+  // Window title is the readout. It carries:
+  //   F<id>  = which element currently has DOM focus
+  //   T1:<n> = character count of the first input
+  //   T2:<n> = character count of the second input
+  //   B:<n>  = button click count
+  // A slow poll is added on purpose so focus changes are picked up even if an
+  // event is missed, and so a foreign reader always sees a fresh title.
+  var btn = 0;
+  var t1 = document.getElementById('t1');
+  var t2 = document.getElementById('t2');
+  var log = document.getElementById('log');
+
+  function upd() {
+    var a = document.activeElement;
+    var id = (a && a.id) ? a.id : '-';
+    document.title = 'E7 F:' + id + ' T1:' + t1.value.length + ' T2:' + t2.value.length + ' B:' + btn;
+  }
+
+  ['focus', 'blur', 'input', 'keydown', 'keyup'].forEach(function (ev) {
+    window.addEventListener(ev, function (e) {
+      var a = document.activeElement;
+      log.textContent = ev + ' target=' + ((e && e.target && e.target.id) || '-') +
+                        ' active=' + ((a && a.id) || '-') + ' key=' + ((e && e.key) || '-');
+      upd();
+    }, true);
+  });
+
+  document.getElementById('b1').addEventListener('click', function () { btn++; upd(); });
+
+  setInterval(upd, 200);
+  upd();
+</script>
+</body>
+</html>
