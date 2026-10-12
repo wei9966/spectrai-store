@@ -46,7 +46,7 @@ let daemonLifecycle: DaemonLifecycle | null = null
 export let daemonClient: DaemonClient | null = null
 
 export async function getDaemonClient(): Promise<DaemonClient> {
-  if (daemonClient) {
+  if (daemonClient?.connected) {
     return daemonClient
   }
 

@@ -39,7 +39,7 @@ function findDaemonHelperBinary() {
 let daemonLifecycle = null;
 export let daemonClient = null;
 export async function getDaemonClient() {
-    if (daemonClient) {
+    if (daemonClient?.connected) {
         return daemonClient;
     }
     if (!daemonLifecycle) {

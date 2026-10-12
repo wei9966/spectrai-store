@@ -28,6 +28,10 @@ public final class SocketHost: @unchecked Sendable {
     public func start(dispatcher: Dispatcher) throws {
         try ensureParentDirectory(for: path)
 
+        // A live daemon on this socket would be orphaned (still burning CPU) once we unlink it,
+        // so terminate it first. Must finish before unlink: its stop() unlinks the path too.
+        evictExistingDaemon(at: path)
+
         // Remove stale socket file
         Darwin.unlink(path)
 
@@ -206,6 +210,43 @@ private final class ConnectionHandler: @unchecked Sendable {
 
 private enum SocketHostError: Error {
     case pathTooLong
+}
+
+/// Connect to `path`; if a process is listening, SIGTERM it (SIGKILL after ~2s) and wait for exit.
+private func evictExistingDaemon(at path: String) {
+    let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { return }
+    defer { Darwin.close(fd) }
+
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathLen = MemoryLayout.size(ofValue: addr.sun_path)
+    guard path.utf8.count < pathLen else { return }
+    path.withCString { cStr in
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: pathLen) {
+                _ = Darwin.strncpy($0, cStr, pathLen - 1)
+            }
+        }
+    }
+    let rc = withUnsafePointer(to: addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    guard rc == 0 else { return }  // stale file or nobody listening
+
+    var pid: pid_t = 0
+    var len = socklen_t(MemoryLayout<pid_t>.size)
+    guard Darwin.getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) == 0,
+          pid > 0, pid != Darwin.getpid() else { return }
+
+    Darwin.kill(pid, SIGTERM)
+    for i in 0..<40 {
+        if Darwin.kill(pid, 0) != 0 { return }
+        if i == 20 { Darwin.kill(pid, SIGKILL) }
+        Darwin.usleep(100_000)
+    }
 }
 
 private func posixError(_ op: String) -> Error {
