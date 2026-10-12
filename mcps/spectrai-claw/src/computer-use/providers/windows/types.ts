@@ -139,6 +139,18 @@ export interface CapabilityActionEntry {
   action: WindowsActionKind
   background: boolean
   requiresForeground: boolean
+  /**
+   * Whether running this action moves the foreground window to the target.
+   *
+   * `background` / `requiresForeground` only describe whether the action can be
+   * *initiated* without activating the window first - neither says anything about
+   * the side effect on the user's focus. Driving a control through UIA dispatches
+   * into the app, and the app activates its own window.
+   *
+   * Measured on Chromium, UWP Calculator and this repo's own WinForms fixture:
+   * see tests/windows-invoke-foreground-side-effect.test.mjs.
+   */
+  changesForeground?: boolean
   primaryMechanism: string
   fallbackMechanisms: string[]
   unsupportedReason?: string

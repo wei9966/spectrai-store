@@ -170,11 +170,17 @@ function toLegacyActionMethod(method: string | undefined, action: WindowsActionK
 }
 
 function actionMatrix(): CapabilityActionEntry[] {
+  // `changesForeground` records what actually happens to the user's focus. It is
+  // measured (E6/E7 experiments + tests/windows-invoke-foreground-side-effect.test.mjs)
+  // for the UIA invoke/toggle/value and SetFocus paths, on Chromium, UWP Calculator
+  // and this repo's own WinForms fixture. SelectionItem and ExpandCollapse are marked
+  // by analogy and have NOT been measured separately - see `limitations` below.
   return [
     {
       action: 'invoke',
       background: true,
       requiresForeground: false,
+      changesForeground: true,
       primaryMechanism: 'UIA InvokePattern',
       fallbackMechanisms: ['UIA TogglePattern', 'UIA SelectionItemPattern', 'UIA ExpandCollapsePattern', 'Win32 BM_CLICK', 'HID click when explicitly allowed'],
     },
@@ -182,6 +188,7 @@ function actionMatrix(): CapabilityActionEntry[] {
       action: 'click',
       background: true,
       requiresForeground: false,
+      changesForeground: true,
       primaryMechanism: 'UIA semantic pattern dispatch',
       fallbackMechanisms: ['Win32 BM_CLICK', 'clickFallback/HID when explicitly allowed'],
     },
@@ -189,6 +196,7 @@ function actionMatrix(): CapabilityActionEntry[] {
       action: 'clickFallback',
       background: false,
       requiresForeground: true,
+      changesForeground: true,
       primaryMechanism: 'HID mouse_event at element bounds center',
       fallbackMechanisms: ['vision/OCR selector refresh'],
     },
@@ -196,6 +204,7 @@ function actionMatrix(): CapabilityActionEntry[] {
       action: 'setValue',
       background: true,
       requiresForeground: false,
+      changesForeground: true,
       primaryMechanism: 'UIA ValuePattern.SetValue',
       fallbackMechanisms: ['Win32 WM_SETTEXT for HWND-backed edit controls', 'foreground SendKeys via legacy keyboard_type path'],
     },
@@ -203,6 +212,7 @@ function actionMatrix(): CapabilityActionEntry[] {
       action: 'type',
       background: true,
       requiresForeground: false,
+      changesForeground: true,
       primaryMechanism: 'UIA ValuePattern.SetValue or Win32 WM_SETTEXT',
       fallbackMechanisms: ['foreground SendKeys when explicitly allowed'],
     },
@@ -210,6 +220,7 @@ function actionMatrix(): CapabilityActionEntry[] {
       action: 'select',
       background: true,
       requiresForeground: false,
+      changesForeground: true,
       primaryMechanism: 'UIA SelectionItemPattern.Select',
       fallbackMechanisms: ['UIA focus', 'HID click when explicitly allowed'],
     },
@@ -217,6 +228,7 @@ function actionMatrix(): CapabilityActionEntry[] {
       action: 'focus',
       background: true,
       requiresForeground: false,
+      changesForeground: true,
       primaryMechanism: 'UIA AutomationElement.SetFocus',
       fallbackMechanisms: ['window_focus foreground activation'],
     },
@@ -224,6 +236,7 @@ function actionMatrix(): CapabilityActionEntry[] {
       action: 'hotkey',
       background: false,
       requiresForeground: true,
+      changesForeground: true,
       primaryMechanism: 'foreground WScript.Shell.SendKeys',
       fallbackMechanisms: [],
       unsupportedReason: 'Windows global hotkeys target foreground focus; background hotkey is intentionally not faked.',
@@ -232,6 +245,7 @@ function actionMatrix(): CapabilityActionEntry[] {
       action: 'toggle',
       background: true,
       requiresForeground: false,
+      changesForeground: true,
       primaryMechanism: 'UIA TogglePattern.Toggle',
       fallbackMechanisms: ['UIA InvokePattern', 'HID click when explicitly allowed'],
     },
@@ -239,6 +253,7 @@ function actionMatrix(): CapabilityActionEntry[] {
       action: 'expandCollapse',
       background: true,
       requiresForeground: false,
+      changesForeground: true,
       primaryMechanism: 'UIA ExpandCollapsePattern.Expand/Collapse',
       fallbackMechanisms: ['UIA InvokePattern', 'HID click when explicitly allowed'],
     },
@@ -379,6 +394,8 @@ Write-Output ('${JSON_MARKER}' + $json)
         'Win32 BM_CLICK and WM_SETTEXT are only used for HWND-backed controls and return unsupported when no native handle is available.',
         'foreground SendKeys, raw mouse_event and OCR/vision remain explicit fallbacks and are not reported as background-safe.',
         'Elevated or integrity-isolated applications may block UIA/Win32 messages and will return requires_foreground or capability failure.',
+        'background/requiresForeground describe whether an action can be initiated without activating the window first. They do NOT mean the user will not be disturbed: driving a control through UIA (invoke/toggle/setValue/focus) moves the foreground window to the target. See the changesForeground flag on each actionMatrix entry.',
+        'changesForeground is measured for UIA invoke/toggle/ValuePattern.SetValue/SetFocus (Chromium, UWP Calculator, WinForms fixture). SelectionItem.Select and ExpandCollapse.Expand/Collapse are marked by analogy and are not independently measured.',
       ] : ['Windows provider is unavailable on non-win32 platforms.'],
       generatedAt: new Date().toISOString(),
     }

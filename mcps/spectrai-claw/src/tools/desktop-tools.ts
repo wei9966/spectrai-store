@@ -3078,6 +3078,97 @@ $trees | ConvertTo-Json -Depth ${jsonDepth}
     { title: 'Window List', readOnlyHint: true },
   )
 
+  // 11a. list_monitors — enumerate displays, plus how crowded each one is.
+  // Written for the "park the target somewhere the user is not looking" workflow:
+  // a virtual display shows up here as just another non-primary monitor with an
+  // empty windowCount.
+  registerTool(
+    'list_monitors',
+    'List displays (monitors): index, device name, bounds, primary flag, and how many visible non-minimized top-level windows are centred on each. Use it to find a screen the user is not looking at (e.g. a virtual display) before parking a target there with move_window_to_monitor.',
+    { type: 'object', properties: {}, additionalProperties: false },
+    async () => {
+      const script = `
+Add-Type -AssemblyName System.Windows.Forms
+$screens = @([System.Windows.Forms.Screen]::AllScreens)
+$wins = @()
+try { [Win32]::ListWindows(); $wins = @([Win32]::windows) } catch { }
+$out = @()
+for ($i = 0; $i -lt $screens.Count; $i++) {
+  $b = $screens[$i].Bounds
+  $n = 0
+  foreach ($win in $wins) {
+    # minimized/hidden windows park at about -32000,0x0 — they sit on no monitor
+    if ($win.X -le -30000 -or $win.Y -le -30000) { continue }
+    if ($win.Width -le 0 -or $win.Height -le 0) { continue }
+    $cx = $win.X + [int]($win.Width / 2)
+    $cy = $win.Y + [int]($win.Height / 2)
+    if ($cx -ge $b.X -and $cx -lt ($b.X + $b.Width) -and $cy -ge $b.Y -and $cy -lt ($b.Y + $b.Height)) { $n++ }
+  }
+  $out += [pscustomobject]@{
+    index = $i
+    deviceName = $screens[$i].DeviceName
+    x = $b.X
+    y = $b.Y
+    width = $b.Width
+    height = $b.Height
+    primary = $screens[$i].Primary
+    windowCount = $n
+  }
+}
+$out | ConvertTo-Json -Depth 3 -Compress
+`
+      const result = await shell.exec(script, 15000)
+      if (result.exitCode !== 0) {
+        return { isError: true, content: [{ type: 'text', text: `Monitor list failed: ${result.stderr}` }] }
+      }
+      return { content: [{ type: 'text', text: result.stdout.trim() || '[]' }] }
+    },
+    { title: 'List Monitors', readOnlyHint: true },
+  )
+
+  // 11a-bis. move_window_to_monitor — park a window on a chosen display.
+  // SWP_NOACTIVATE is deliberate: moving the window must not steal the foreground,
+  // which is the whole point of parking it somewhere the user is not looking.
+  registerTool(
+    'move_window_to_monitor',
+    'Move a window to the top-left of a given monitor, keeping its size and NOT activating it (SWP_NOACTIVATE). Pair with list_monitors to park a target on a screen the user is not looking at, then drive it there.',
+    {
+      type: 'object',
+      properties: {
+        handle: { type: 'number', description: 'Window handle (from window_list)' },
+        monitor: { type: 'number', description: 'Monitor index from list_monitors' },
+      },
+      required: ['handle', 'monitor'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const handle = Math.trunc(sn(args.handle))
+      const monitor = Math.trunc(sn(args.monitor))
+      const script = `
+Add-Type -AssemblyName System.Windows.Forms
+$screens = @([System.Windows.Forms.Screen]::AllScreens)
+$i = ${monitor}
+if ($i -lt 0 -or $i -ge $screens.Count) { Write-Output ("monitor index out of range: " + $i + " (have 0.." + ($screens.Count - 1) + ")"); exit 1 }
+Add-Type -Namespace ClawMove -Name W -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+'@
+$b = $screens[$i].Bounds
+$h = [IntPtr]${handle}
+if ($h -eq [IntPtr]::Zero) { Write-Output 'handle is required'; exit 1 }
+# SWP_NOSIZE 0x1 | SWP_NOZORDER 0x4 | SWP_NOACTIVATE 0x10
+$ok = [ClawMove.W]::SetWindowPos($h, [IntPtr]::Zero, $b.X, $b.Y, 0, 0, 0x1 -bor 0x4 -bor 0x10)
+if (-not $ok) { Write-Output 'SetWindowPos failed'; exit 1 }
+Write-Output ("moved to monitor " + $i + " at " + $b.X + "," + $b.Y)
+`
+      const result = await shell.exec(script, 10000)
+      if (result.exitCode !== 0) {
+        return { isError: true, content: [{ type: 'text', text: `move_window_to_monitor failed: ${result.stdout.trim()} ${result.stderr.trim()}` }] }
+      }
+      return { content: [{ type: 'text', text: result.stdout.trim() }] }
+    },
+    { title: 'Move Window To Monitor' },
+  )
+
   // 11b. window_tabs — read the desktop browser tab strip via UIA (works on minimized windows)
   registerTool(
     'window_tabs',
