@@ -1,0 +1,64 @@
+﻿[16:34:10] === E5 VDD install start ===
+[16:34:10] ps version : 5.1.19041.6456
+[16:34:10] user       : DESKTOP-7ULP06H\魏斌
+[16:34:10] elevated   : True
+[16:34:10] src dir    : F:\e5vdd\SignedDrivers\x86\VDD
+[16:34:10] inf        : F:\e5vdd\SignedDrivers\x86\VDD\MttVDD.inf  exists=True
+[16:34:10] dll        : F:\e5vdd\SignedDrivers\x86\VDD\MttVDD.dll  exists=True
+[16:34:10] cat        : F:\e5vdd\SignedDrivers\x86\VDD\mttvdd.cat  exists=True
+[16:34:10] devcon     : F:\e5vdd\Dependencies\devcon.exe  exists=True
+[16:34:10] --- BEFORE ---
+[16:34:10] video controllers : 4
+[16:34:10]    GameViewer Virtual Display Adapter  [OK]
+[16:34:10]    MuMu Virtual Display Adapter  [OK]
+[16:34:10]    OrayIddDriver Device  [OK]
+[16:34:10]    NVIDIA GeForce RTX 5060 Ti  [OK]
+[16:34:10] screens           : 2
+[16:34:10]    \\.\DISPLAY1 bounds={X=0,Y=0,Width=1536,Height=864} primary=True
+[16:34:10]    \\.\DISPLAY2 bounds={X=1920,Y=0,Width=1920,Height=1080} primary=False
+[16:34:11] display class devs: 4
+[16:34:11]    OK  GameViewer Virtual Display Adapter  ROOT\DISPLAY\0000  problem=CM_PROB_NONE
+[16:34:11]    OK  MuMu Virtual Display Adapter  ROOT\DISPLAY\0001  problem=CM_PROB_NONE
+[16:34:11]    OK  OrayIddDriver Device  ROOT\DISPLAY\0002  problem=CM_PROB_NONE
+[16:34:11]    OK  NVIDIA GeForce RTX 5060 Ti  PCI\VEN_10DE&DEV_2D04&SUBSYS_21007377&REV_A1\4&1D81E16&0&0019  problem=CM_PROB_NONE
+[16:34:11] --- pnputil /add-driver ---
+[16:39:32]    Microsoft PnP 工具
+[16:39:32]    
+[16:39:32]    正在添加驱动程序包:  MttVDD.inf
+[16:39:32]    已成功添加驱动程序程序包。
+[16:39:32]    发布名称:         oem22.inf
+[16:39:32]    
+[16:39:32]    驱动程序包总数:  1
+[16:39:32]    已添加驱动程序包数:  1
+[16:39:32] pnputil exit = 0
+[16:39:32] --- devcon install (no -r: never auto-reboot) ---
+[16:39:32]    Device node created. Install is complete when drivers are installed...
+[16:39:32]    Updating drivers for Root\MttVDD from F:\e5vdd\SignedDrivers\x86\VDD\MttVDD.inf.
+[16:39:32]    Drivers installed successfully.
+[16:39:32] devcon exit  = 0
+[16:39:35] settle 1/6: MttVDD devices = 0
+[16:39:37] settle 2/6: MttVDD devices = 0
+[16:39:39] settle 3/6: MttVDD devices = 0
+[16:39:41] settle 4/6: MttVDD devices = 0
+[16:39:43] settle 5/6: MttVDD devices = 0
+[16:39:45] settle 6/6: MttVDD devices = 0
+[16:39:45] --- AFTER ---
+[16:39:45] video controllers : 5
+[16:39:45]    GameViewer Virtual Display Adapter  [OK]
+[16:39:45]    MuMu Virtual Display Adapter  [OK]
+[16:39:45]    OrayIddDriver Device  [OK]
+[16:39:45]    NVIDIA GeForce RTX 5060 Ti  [OK]
+[16:39:45]    Virtual Display Driver  [OK]
+[16:39:45] screens           : 2
+[16:39:45]    \\.\DISPLAY1 bounds={X=0,Y=0,Width=1536,Height=864} primary=True
+[16:39:45]    \\.\DISPLAY2 bounds={X=1920,Y=0,Width=1920,Height=1080} primary=False
+[16:39:46] display class devs: 5
+[16:39:46]    OK  GameViewer Virtual Display Adapter  ROOT\DISPLAY\0000  problem=CM_PROB_NONE
+[16:39:46]    OK  MuMu Virtual Display Adapter  ROOT\DISPLAY\0001  problem=CM_PROB_NONE
+[16:39:46]    OK  OrayIddDriver Device  ROOT\DISPLAY\0002  problem=CM_PROB_NONE
+[16:39:46]    OK  Virtual Display Driver  ROOT\DISPLAY\0003  problem=CM_PROB_NONE
+[16:39:46]    OK  NVIDIA GeForce RTX 5060 Ti  PCI\VEN_10DE&DEV_2D04&SUBSYS_21007377&REV_A1\4&1D81E16&0&0019  problem=CM_PROB_NONE
+[16:39:46] --- rollback recipe (NOT executed) ---
+[16:39:46]    driver-store hit: 原始名称:      mttvdd.inf
+[16:39:46]    then: pnputil /delete-driver <oemNN.inf> /uninstall
+[16:39:46] === E5 VDD install done ===

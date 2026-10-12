@@ -1,155 +1,134 @@
-# E5 虚拟显示器：环境侦察结果与阻塞点
+# E5 虚拟显示器：安装实录与验证结果
 
 - 日期：2026-10-12
-- 探针：`Recon.ps1`（只读；除 `net session` 外不改动任何东西）
-- 目标：装一个 IddCx 虚拟显示器，把目标窗口放到"用户看不见、也不会被遮挡"的屏上，再跑 E3/E4 的笔点击测试
+- 工具：`Recon.ps1`（只读侦察）、`Install-Vdd.ps1`（提升权限安装）、`ClickInstallDialog.ps1`（提升权限处理安全对话框）、`SecureDialog.ps1`（对话框结构查看）
+- 证据：`install-log.txt`、`click-log.txt`（本次安装的原始日志）
 
-## 1. 结论先行：**当前会话没有管理员权限，装不了**
+## 1. 结论：**装上了，并在它上面完成了验证**
 
 ```
-isAdmin : False
-bcdedit : exit=1（非提升权限）
+screens  : 2  ->  3
+新增      : \\.\DISPLAY35  {X=3840, Y=0, 800x600}   无任何物理输出覆盖这块区域
+设备      : Virtual Display Driver / ROOT\DISPLAY\0003 / status=OK / problem=CM_PROB_NONE
+驱动发布名 : oem22.inf
 ```
 
-安装显示驱动（`pnputil /add-driver ... /install`，以及创建 root 设备节点）**必须提升权限**。因此本轮**没有安装任何驱动**，也就**没有得到虚拟屏的实测结果**。下面是我已经查清、可以直接拿来执行的全部事实与步骤。
+三条验证结论：
 
-## 2. 已查清的事实
-
-### 2.1 本机显示拓扑
-
-| 项 | 值 |
+| 结论 | 证据 |
 |---|---|
-| 显示器 | 2 块：主屏 `0,0–1536,864`（工作区到 824）；副屏 `1920,0–3840,1080` |
-| 坐标空隙 | x=1536…1920 之间没有屏；鼠标长期停在 (1845,725) 的空隙里 |
-| 显示适配器 | NVIDIA RTX 5060 Ti + **3 个虚拟显示适配器** |
+| **虚拟屏彻底解决了遮挡问题** | 同一套点击逻辑，副屏上的 `preflight.receiver` 是 `SodaMusic (isTarget=false)` 导致点击丢失；虚拟屏上是 `chrome (isTarget=true)`，点击必中 |
+| **自建窗口在虚拟屏上可以做到完全零干扰** | `L4200:300` 精确命中、光标 `0×0`、前台 `distinctDuringRun=1` 全程不变 |
+| **Chromium 依然会抢前台（E4 结论复现）** | 虚拟屏上对照组与缓解组表现相同：`fgStable=false`、`distinct=2`、前台 SpectrAI → Chrome。但因为窗口在**用户看不见的屏**上，不会遮挡用户 |
 
-### 2.2 已有的三个虚拟显示适配器（都是孤儿）
+## 2. 安装实录（以及一个把安装卡住的 UIPI 边界）
 
-| 设备 | 驱动版本 | 状态 | 配套软件 |
+安装本身很简单：`pnputil /add-driver` + `devcon install ... Root\MttVDD`。真正花时间的是中间被一个安全对话框卡住：
+
+```
+setupapi.dev.log:
+  sig: Error 0x800b0109: A certificate chain processed, but terminated in a root
+       certificate which is not trusted by the trust provider.
+  sig: Error 0xe0000242: The publisher of an Authenticode(tm) signed catalog has
+       not yet been established as trusted.
+```
+
+非 WHQL 驱动会弹「Windows 安全中心」对话框要求用户确认发布者。这个对话框由**提升的 `rundll32`** 拥有，`pnputil` 因此一直阻塞。这里撞上了两次边界：
+
+1. **`SendMessage` / `BM_CLICK` 直接被 UIPI 拒绝**（低完整性进程不能给高完整性窗口发消息）。
+2. **合成笔也不行。** 我用 E3 的合成笔点「安装」按钮，`down=true, up=true`、坐标精确（877,424，按钮矩形中心），**对话框毫无反应**。原因是 UIPI 同样约束输入注入 —— 输入只能注入到同等或更低完整性级别的目标，而那个对话框是提升的。
+
+> 这条对研究方向的边界条件比安装本身更重要：**合成笔/合成触控不是"万能后台输入"**，它受 UIPI 约束，对提升权限的窗口无效。E3 当时的目标都是同完整性级别的，所以没暴露出来。
+
+解决方式是让**提升的进程**去做这次点击 —— 从同等完整性级别出发，`BM_CLICK` 与 `GetWindowText` 都可用了，于是可以直接读按钮标题、按文本而不是靠猜来选：
+
+```
+[16:39:32] dialogs seen: dialog hwnd=37880842 title='Windows 安全中心'
+              buttons: [id=0 '安装(&I)'] [id=0 '不安装(&N)']
+[16:39:32] round 1: CLICKED '安装(&I)'
+[16:39:32] 已成功添加驱动程序程序包。发布名: oem22.inf      pnputil exit = 0
+[16:39:32] Device node created. Drivers installed successfully.  devcon exit = 0
+```
+
+点击后安装一次通过，无需重启（`devcon` 特意没加 `-r`）。
+
+## 3. 验证结果
+
+### 3.1 遮挡对比（同一套点击逻辑）
+
+| 目标所在屏 | preflight `receiver` | `isTarget` | 点击 |
 |---|---|---|---|
-| `GameViewer Virtual Display Adapter` (`ROOT\DISPLAY\0000`) | 15.6.5.199 | OK / `CM_PROB_NONE` | GameViewer 服务**未安装** |
-| `MuMu Virtual Display Adapter` (`ROOT\DISPLAY\0001`) | 20.36.41.498 | OK / `CM_PROB_NONE` | MuMu 服务**未安装** |
-| `OrayIddDriver Device` (`ROOT\DISPLAY\0002`) | 17.50.19.949 | OK / `CM_PROB_NONE` | Oray/向日葵 服务**未安装** |
+| 副屏（E4 早期） | `SodaMusic` | **false** | **丢失**（目标什么都没收到） |
+| **虚拟屏** | `chrome`（就是目标） | **true** | **命中** `L4230:290:pen` |
 
-驱动本体在，"用户态组件"（IddCx 里负责请求拓扑、真正创建监视器的那一半）随其宿主软件一起被卸载了，所以它们**当前都不会产生显示器**（实测只有 2 个 monitor）。想复用它们需要装回各自的宿主软件，或提升权限去操作设备节点——两条路都比直接装一个干净的 IddCx 驱动更麻烦。
+虚拟屏的意义在这里最直接：它是一块**没有其他窗口的空屏**，点击不会被任何东西截走。E3/E4 反复撞到的"遮挡"硬限制，在虚拟屏上不存在。
 
-### 2.3 选定的驱动（已下载并校验）
+### 3.2 虚拟屏上的干扰测量
 
-- 项目：`itsmikethetech/Virtual-Display-Driver`（GitHub 现重定向到 `VirtualDrivers/Virtual-Display-Driver`）
-- 最新 release：`25.7.23`（发布 2025-07-23）
-- 取的文件：`VirtualDisplayDriver-x86.Driver.Only.zip`，**132,118 字节**
-- `sha256 = e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a`
-- （同 release 的 `VDD.Control.25.7.23.zip` 是 71 MB 的 GUI 控制端，本次没下。）
+| 运行 | 目标 | 样式 | 命中 | 光标 | 前台 |
+|---|---|---|---|---|---|
+| E5-A | 真实 Chrome（进程外） | 无 | ✅ `L4230:290:pen` | `0×0` | **被抢**（`distinct=2`） |
+| E5-B | 真实 Chrome（进程外） | 跨进程 `WS_EX_NOACTIVATE` | ✅ `L4230:290:pen` | `0×0` | **被抢**（`distinct=2`，与对照完全相同） |
+| **E5-C** | 自建见证窗口 | 创建时带 `WS_EX_NOACTIVATE` | ✅ `L4200:300` | `0×0` | **全程不变**（`distinct=1`） |
 
-包内容与签名核验：
+所有运行都是合法后台态（`targetWasForeground=false`、`conclusive=true`）。
 
-| 文件 | 大小 | 签名 |
-|---|---|---|
-| `MttVDD.dll` | 251,640 | `Valid`，签发者 `CN=SignPath Foundation` |
-| `mttvdd.cat` | 13,017 | `Valid`，签发者 `CN=SignPath Foundation` |
-| `MttVDD.inf` | 4,132 | — |
-| `vdd_settings.xml` | 2,779 | — |
+## 4. 对研究方向的影响
 
-INF 关键内容：
+1. **虚拟屏是"遮挡"这一硬限制的正解，已实测**。此前只能把目标窗口放到真实副屏，而副屏上全是用户自己的窗口（E4 被 SodaMusic 挡住、E3 被 SpectrAI 挡住）。
+2. **虚拟屏不能消除"Chromium 抢前台"**。E4 的结论在虚拟屏上原样复现。但它把伤害降了一个量级：窗口在用户看不见的屏上，抢前台时**不会有任何窗口跳到用户脸上**，用户只会感觉到自己原来的窗口失去焦点。
+3. **合成笔受 UIPI 约束**（新发现）。对提升权限的窗口无效。设计"零干扰操作"时要按完整性级别分类：
+   - 同级别或更低：合成笔可用；
+   - 更高（提升的应用，例如以管理员身份跑的程序）：合成笔会被静默丢弃，必须走别的路径。
+4. **默认分辨率 800×600 偏小**。`vdd_settings.xml` 里预置了 800×600 / 1366×768 等多档，当前生效的是 800×600。
 
-```
-Class     = Display          ClassGUID = {4D36E968-...}
-DriverVer = 12/24/2024,11.30.4.434
-CatalogFile = MttVDD.cat
-[Standard.NTamd64]
-  %DeviceName% = MyDevice_Install, Root\MttVDD
-  %DeviceName% = MyDevice_Install, MttVDD
-[MyDevice_HardwareDeviceSettings]
-  HKR,, "UpperFilters", %REG_MULTI_SZ%, "IndirectKmd"
-  HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "MttVDDGroup"
-UmdfService = MttVDD,MttVDD_Install
-ServiceBinary = %12%\UMDF\MttVDD.dll
-```
-
-要点：这是一个 **UMDF / IddCx 驱动**，"x86" 在这个项目的命名里指 x86-64（与 ARM64 并列），**不是** 32 位。签名是标准代码签名证书链（不是测试签名），所以**不需要开 `testsigning`、不需要重启进测试模式**。
-
-### 2.4 为什么不能只靠一条 `pnputil` 命令
-
-它是 **root 枚举（`Root\MttVDD`）的 UMDF 设备**：`pnputil /add-driver MttVDD.inf /install` 只能把驱动装进驱动仓库，**不会自动创建那个 root 设备节点**，因此不会产生显示器。真正的创建需要一个能造 root 设备的途径，常见三种：
-
-1. 项目自带的控制端（`VDD.Control`，71 MB）——最省事，但要多下一个大包；
-2. WDK 的 `devcon install MttVDD.inf Root\MttVDD`（本机没装 WDK）；
-3. 设备管理器里的"添加过时硬件"手动选 INF（纯 GUI，需要人点）。
-
-所以这一步**不只是"要管理员"，还需要人在场**（无论是点 UAC 还是点设备管理器）。
-
-## 3. 我没有做的（以及为什么）
-
-- **没有安装驱动**：需要提升权限，且这是对用户日常机器的系统级改动（内核可见的显示设备 + 驱动程序仓库条目），不适合在没有明确授权路径的情况下硬闯。
-- **没有启用已有的三个孤儿适配器**：同样需要提升权限；且它们的用户态组件缺失，启用设备节点大概率也产生不了显示器。
-- **没有下 71 MB 的控制端**：在"能不能装"还没确定之前，先不往用户磁盘上放东西。
-
-## 4. 官方支持的安装方式（控制端已下到本机）
-
-查了项目的 README，**官方只支持用自带的 `VDD Control` 控制端安装**（driver-only 包不是受支持的安装路径）。所以我把控制端下到了你的下载目录：
+## 5. 环境事实（侦察，安装前的原始状态）
 
 | 项 | 值 |
 |---|---|
-| 文件 | `C:\Users\魏斌\Downloads\VDD.Control.25.7.23.zip`（71,225,903 字节） |
+| 显示器 | 安装前 2 块：主屏 `0,0–1536,864`；副屏 `1920,0–3840,1080` |
+| 坐标空隙 | x=1536…1920 之间没有屏 |
+| 已有虚拟显示适配器 | 3 个，且都是**孤儿**（宿主软件均已卸载，不会产生显示器）：`GameViewer Virtual Display Adapter`、`MuMu Virtual Display Adapter`、`OrayIddDriver Device` |
+| 安装前权限 | `isAdmin=False`（`bcdedit` 同样返回非提升） |
+
+安装所用驱动（项目：`VirtualDrivers/Virtual-Display-Driver`，release `25.7.23`）：
+
+| 项 | 值 |
+|---|---|
+| 包 | `VDD.Control.25.7.23.zip`（71,225,903 字节） |
 | sha256 | `a701f2272e9fcf382849b24f913c6dd07597b3b1116525f2e90182f019609154` |
-| 来源 | `https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VDD.Control.25.7.23.zip` |
+| 实际安装的驱动 | `SignedDrivers/x86/VDD/{MttVDD.dll, mttvdd.cat, MttVDD.inf}` |
+| 签名 | `MttVDD.dll` / `mttvdd.cat` 均为 `Valid`，签发者 `CN=SignPath Foundation` |
+| 类型 | UMDF / IddCx，`Class=Display`，硬件 ID `Root\MttVDD` |
+| 是否需要测试签名 | **不需要**（标准签名链；但因为是第三方签名，必须用户确认一次发布者） |
 
-解压后的关键内容（这就是为什么它比 driver-only 包可靠）：
+> "x86" 是该项目的命名习惯，指 x86-64（与 ARM64 并列），不是 32 位。
 
-```
-VDD Control.exe                        (171 MB，带 UAC 清单的控制端)
-Dependencies/devcon.exe                <- 创建 Root\MttVDD 设备节点用它
-SignedDrivers/x86/VDD/{MttVDD.dll, mttvdd.cat, MttVDD.inf, vdd_settings.xml}
-SignedDrivers/ARM64/VDD/{...}
-SignedDrivers/x86/VAD/{VirtualAudioDriver.sys, .inf, .cat}   <- 配套虚拟音频驱动
-```
-
-注意两点：
-
-1. `Dependencies/devcon.exe` 的存在**印证**了第 2.4 节的判断：`pnputil` 装不了 root 设备节点，必须用能造 root 设备的工具。
-2. `SignedDrivers/x86/` 里的 `MttVDD.*` 和我单独下的 driver-only 包**是同一份文件**（`mttvdd.cat` 13,017 字节、日期 2024-12-25），所以这个项目里的 "x86" 就是指 x86-64。
-
-### 你要做的（大约 2 分钟）
+## 6. 回滚
 
 ```powershell
-# 1) 解压
-Expand-Archive -Path "$env:USERPROFILE\Downloads\VDD.Control.25.7.23.zip" -DestinationPath "$env:USERPROFILE\Downloads\VDD-Control"
-
-# 2) 双击运行 VDD Control.exe（它会自己弹 UAC），按界面里的 Install / Add display 操作
+# 1) 删除设备节点（管理员）
+pnputil /remove-device "ROOT\DISPLAY\0003"
+# 2) 从驱动仓库删除驱动包（管理员）
+pnputil /delete-driver oem22.inf /uninstall
+# 3) 确认显示器回到 2 块
 ```
 
-装完后告诉我，我会立刻接着做 E5 的第二步：把目标窗口放到那块看不见的屏上，跑 E3/E4 的笔点击测试，验证「无遮挡 + 后台命中 + 光标零位移 + 前台不变」。
-
-### 备选：不用控制端
-
-如果你想手动来，`Dependencies/devcon.exe` 就是官方自带的那一个：
-
-```powershell
-# 管理员 PowerShell，在解压目录下
-.\Dependencies\devcon.exe install .\SignedDrivers\x86\VDD\MttVDD.inf Root\MttVDD
-```
-
-我不在正文里替你跑这条：它需要管理员，而且我还没在这台机器上验证过 `devcon` 的实际输出，不适合在没有你确认的情况下动你的驱动仓库。
-
-### 我为什么不自己硬装
-
-- 当前会话 `isAdmin=False`（`bcdedit` 也印证），`pnputil`/`devcon` 都会失败；
-- 触发 UAC 需要你本人在场点确认，你没在的这 10 分钟里弹窗只会超时；
-- 装显示驱动是系统级改动（会进驱动仓库、多一个显示设备），我不想在没有人盯着的情况下自作主张。
-
-## 5. 回滚方式（三条路通用）
-
-```powershell
-# 1) 删除设备节点
-pnputil /remove-device "<InstanceId，从 pnputil /enum-devices /class Display 里取>"
-# 2) 从驱动仓库删除驱动（oemNN.inf 编号同上一步输出）
-pnputil /delete-driver oemNN.inf /uninstall
-# 3) 确认显示器数量回到 2
-```
-
-## 6. 复现侦察
+## 7. 复现
 
 ```bash
 cd experiments/e5-virtual-display
+
+# 只读侦察
 powershell -NoProfile -ExecutionPolicy Bypass -File Recon.ps1
+
+# 安装（会弹 UAC；若出现“Windows 安全中心”对话框，用 ClickInstallDialog.ps1 处理）
+powershell -NoProfile -Command "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','<abs>\Install-Vdd.ps1','-SrcDir','F:\e5vdd\SignedDrivers\x86\VDD','-Devcon','F:\e5vdd\Dependencies\devcon.exe','-LogPath','F:\e5vdd\install-log.txt'"
+powershell -NoProfile -Command "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','<abs>\ClickInstallDialog.ps1'"
+
+# 在虚拟屏上验证
+cd ../e3-pen-click
+powershell -NoProfile -ExecutionPolicy Bypass -File E3PenClick.ps1 -Mode run -X 3900 -Y 100 -W 600 -H 400 -ParkProc SpectrAI -NoActivate
 ```
+
+安装材料（驱动包已解压 + 脚本自带的 `devcon.exe`）留在 `F:\e5vdd\`，不在 git 仓库里。

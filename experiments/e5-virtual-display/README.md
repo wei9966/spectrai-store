@@ -2,40 +2,45 @@
 
 目标：装一个 IddCx 虚拟显示器，把目标窗口移到"用户看不见、且不会被遮挡"的屏上，再跑 E3/E4 的合成笔点击测试。
 
-## 状态：**未完成 — 当前会话没有管理员权限**
+## 状态：**已完成 ✅**
 
-安装显示驱动必须提升权限。本轮只完成了**只读侦察**、**驱动包的下载与签名核验**，以及把**官方控制端下到本机下载目录**（等你有空双击安装）。没有任何安装动作。
+虚拟显示器已装好并验证：
 
-**下一步（你来做，约 2 分钟）**：解压 `C:\Users\魏斌\Downloads\VDD.Control.25.7.23.zip` → 运行里面的 `VDD Control.exe` → 它会自己弹 UAC。装完告诉我，我接着跑虚拟屏上的笔点击测试。
+```
+screens  : 2 -> 3
+新增      : \\.\DISPLAY35  {X=3840, Y=0, 800x600}   无物理输出覆盖
+设备      : Virtual Display Driver / ROOT\DISPLAY\0003 / OK
+驱动发布名 : oem22.inf
+```
 
-完整事实、已校验的驱动信息、安装步骤与回滚方式都在 [`REPORT.md`](REPORT.md)。
+**三条结论**：① 虚拟屏彻底解决了"目标被别的窗口遮挡"这个硬限制（副屏上 preflight 指向 SodaMusic、点击丢失；虚拟屏上指向目标本身、点击必中）；② 自建窗口 + 创建时带 `WS_EX_NOACTIVATE` 可以做到命中精确、光标零位移、前台全程不变；③ **Chromium 抢前台的问题依然存在**，但窗口在看不见的屏上，不会遮挡用户。
+
+**顺带发现一条重要边界**：合成笔输入**受 UIPI 约束** —— 对提升权限的窗口无效（安装驱动时那个"Windows 安全中心"对话框就是提升的，合成笔点了没反应）。这一点 E3 没暴露出来，因为当时的目标都是同完整性级别的。
+
+完整实录与数据见 [`REPORT.md`](REPORT.md)。
 
 ## 文件
 
 | 文件 | 作用 |
 |---|---|
-| `Recon.ps1` | 只读侦察：管理员权限、OS、显示类设备、显示器设备、虚拟显示驱动归属、bcdedit 测试签名状态 |
-| `REPORT.md` | 结论、已查清的事实、阻塞点、三条可行路径、回滚命令 |
+| `Recon.ps1` | 只读侦察：管理员权限、OS、显示类设备、显示器、虚拟显示驱动归属、bcdedit 测试签名状态 |
+| `Install-Vdd.ps1` | 提升权限安装（`pnputil /add-driver` + `devcon install`），全程写日志，打印回滚命令 |
+| `ClickInstallDialog.ps1` | 提升权限处理"Windows 安全中心"对话框（按**按钮文本**匹配，不是靠坐标猜） |
+| `SecureDialog.ps1` | 对话框结构查看 + 合成笔点击（用于证明 UIPI 会拦合成输入） |
+| `install-log.txt` | 本次安装的原始日志（含 before/after 快照） |
+| `click-log.txt` | 处理安全对话框的原始日志（含读到的按钮文本） |
 
-## 快速复现
+## 回滚
 
 ```powershell
-# 只读侦察
-.\Recon.ps1
-
-# 手动看显示器数量（应为 2）
-powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object Name,Status"
+# 需要管理员
+pnputil /remove-device "ROOT\DISPLAY\0003"
+pnputil /delete-driver oem22.inf /uninstall
 ```
 
-## 已核验的驱动（尚未安装）
+## 安装材料位置
 
-| 项 | 值 |
-|---|---|
-| release | `VirtualDisplayDriver-x86.Driver.Only.zip`（132,118 字节） |
-| 来源 | `https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/` |
-| sha256 | `e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a` |
-| 签名 | `MttVDD.dll` / `mttvdd.cat` 均为 `Valid`，签发者 `CN=SignPath Foundation` |
-| 类型 | UMDF / IddCx，`Class=Display`，硬件 ID `Root\MttVDD` |
-| 是否需要测试签名 | **不需要**（标准签名链） |
+- 官方控制端：`C:\Users\魏斌\Downloads\VDD.Control.25.7.23.zip`
+- 已解压的驱动 + `devcon.exe`：`F:\e5vdd\`（不在 git 仓库里）
 
 > "x86" 是该项目的命名习惯，指 x86-64（与 ARM64 并列），不是 32 位。

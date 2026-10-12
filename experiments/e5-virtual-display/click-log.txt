@@ -1,0 +1,14 @@
+﻿[16:39:31] elevated = True
+[16:39:32] looking for the install button (label starts with 安装)
+[16:39:32] dialogs seen: dialog hwnd=37880842 title='Windows 安全中心' buttons: [id=0 '安装(&I)'] [id=0 '不安装(&N)'] | dialog hwnd=5052054 title='no_active_wnd' buttons: | 
+[16:39:32] round 1: CLICKED '安装(&I)'
+[16:39:34] round 2: no matching dialog
+[16:39:36] round 3: no matching dialog
+[16:39:38] round 4: no matching dialog
+[16:39:40] round 5: no matching dialog
+[16:39:42] round 6: no matching dialog
+[16:39:44] round 7: no matching dialog
+[16:39:46] round 8: no matching dialog
+[16:39:48] install log reports DONE, stopping
+[16:39:48] final dialogs: dialog hwnd=5052054 title='no_active_wnd' buttons: | 
+[16:39:48] click helper done
