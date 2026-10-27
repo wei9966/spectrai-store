@@ -506,8 +506,18 @@ function wrapBrowserExpression(task: 'snapshot' | 'find' | 'action' | 'state', p
             break;
           }
           case 'upload': {
-            method = 'not-supported';
-            return { ok: false, before, after: before, element, method, warnings: warningsBefore, failure: { code: 'permission_required', message: 'File upload requires DOM.setFileInputFiles via nodeId; use provider fallback path with explicit local file permission.' } };
+            // Sites usually hide input[type=file] behind a styled button: accept the input itself, a descendant, or one near an ancestor.
+            const isFileInput = (node) => node && node.tagName && node.tagName.toLowerCase() === 'input' && lower(node.type) === 'file';
+            let input = isFileInput(el) ? el : null;
+            for (let scope = el; !input && scope && scope !== document.documentElement; scope = scope.parentElement) {
+              input = scope.querySelector ? scope.querySelector('input[type=file]') : null;
+            }
+            if (!input) {
+              return { ok: false, before, after: before, element, method: 'not-supported', warnings: warningsBefore, failure: { code: 'element_not_found', message: 'No input[type=file] at or around the selected element.', details: { fileInputsOnPage: document.querySelectorAll('input[type=file]').length } } };
+            }
+            const token = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+            input.setAttribute('data-spectrai-upload', token);
+            return { ok: true, before, after: before, element, method: 'cdp-dom', uploadToken: token, warnings: warnings.slice() };
           }
           default:
             method = 'not-supported';

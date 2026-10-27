@@ -239,7 +239,7 @@ export function registerBrowserComputerUseTools(): void {
 
   registerTool(
     'browser_execute_action',
-    'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover, contextMenu, navigate, reload, back and forward. Page-level reload/back/forward use background CDP (Page.reload / Page.getNavigationHistory), not DOM click or HID. To open a page, use action.type=navigate (aliases: goto/open/load) with action.url — do not click the address bar or type into omnibox. Do not use desktop screenshot, followForeground or HID.',
+    'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): execute DOM/CDP semantic browser actions such as click, setValue/type, select, scroll, hover, contextMenu, upload, navigate, reload, back and forward. upload: action.files = absolute local paths, selector = the file input or the visible upload button around it (no OS file dialog; never use python/pyautogui for uploads). Page-level reload/back/forward use background CDP (Page.reload / Page.getNavigationHistory), not DOM click or HID. To open a page, use action.type=navigate (aliases: goto/open/load) with action.url — do not click the address bar or type into omnibox. Do not use desktop screenshot, followForeground or HID.',
     {
       type: 'object',
       properties: {
@@ -443,6 +443,38 @@ export function registerBrowserComputerUseTools(): void {
       return json(result)
     },
     { title: 'Browser get page text', readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  )
+
+  registerTool(
+    'browser_eval',
+    'Browser Computer Use (SpectrAI built-in browser by default — use browser_* for all web tasks): run a JavaScript function body in the page (await allowed; use `return` to send back a JSON-serializable value). Prefer this for multi-step page work — query several elements, fill a whole form, click, wait for DOM changes, extract data — in ONE call instead of many single actions. Do not drive the browser with python/playwright/selenium scripts. For file uploads use browser_execute_action type=upload.',
+    {
+      type: 'object',
+      properties: {
+        connection: connectionSchema,
+        target: targetSchema,
+        script: { type: 'string', description: 'Function body, e.g. "const b=document.querySelector(\'#save\'); b.click(); await new Promise(r=>setTimeout(r,500)); return document.title"' },
+        timeoutMs: { type: 'number', description: 'Defaults to 30000, max 120000.' },
+        maxChars: { type: 'number', description: 'Truncate the JSON result to this many characters. Defaults to 20000.' },
+      },
+      required: ['script'],
+      additionalProperties: false,
+    },
+    async (args) => {
+      const provider = await createProvider(args)
+      const result = await provider.evaluateScript(
+        String(args.script ?? ''),
+        readObject<BrowserTargetQuery>(args.target),
+        typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
+      )
+      const limit = typeof args.maxChars === 'number' && args.maxChars > 0 ? Math.floor(args.maxChars) : 20_000
+      const valueText = JSON.stringify(result.value) ?? ''
+      if (valueText.length > limit) {
+        return json({ ...result, value: valueText.slice(0, limit), truncated: true, charCount: valueText.length })
+      }
+      return json(result)
+    },
+    { title: 'Browser evaluate script', readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   )
 
   registerTool(

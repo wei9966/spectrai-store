@@ -1,4 +1,4 @@
-import type { BrowserAction, BrowserActionResult, BrowserCapabilityReport, BrowserCloseTabResult, BrowserComputerUseProvider, BrowserConnectionOptions, BrowserDomSnapshot, BrowserElement, BrowserOpenTabResult, BrowserPageTextResult, BrowserScreenshotOptions, BrowserScreenshotResult, BrowserSelector, BrowserTarget, BrowserTargetQuery, BrowserWaitForPageOptions, BrowserWaitForPageResult, BrowserWindow } from './types.js';
+import type { BrowserAction, BrowserActionResult, BrowserCapabilityReport, BrowserCloseTabResult, BrowserComputerUseProvider, BrowserConnectionOptions, BrowserDomSnapshot, BrowserElement, BrowserEvalResult, BrowserOpenTabResult, BrowserPageTextResult, BrowserScreenshotOptions, BrowserScreenshotResult, BrowserSelector, BrowserTarget, BrowserTargetQuery, BrowserWaitForPageOptions, BrowserWaitForPageResult, BrowserWindow } from './types.js';
 export declare class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     private readonly http;
     private readonly defaultTimeoutMs;
@@ -20,6 +20,9 @@ export declare class BrowserDomCdpProvider implements BrowserComputerUseProvider
     getPageText(target?: BrowserTargetQuery, maxChars?: number): Promise<BrowserPageTextResult>;
     openTab(url?: string): Promise<BrowserOpenTabResult>;
     closeTab(target?: BrowserTargetQuery): Promise<BrowserCloseTabResult>;
+    /** Run a JS function body (await/return allowed) in the page and return the JSON-serializable result. */
+    evaluateScript(script: string, target?: BrowserTargetQuery, timeoutMs?: number): Promise<BrowserEvalResult>;
+    private setFileInputFiles;
     private navigateUrl;
     private pageNavigate;
     private reloadPage;

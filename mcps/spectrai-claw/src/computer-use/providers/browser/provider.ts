@@ -1,3 +1,6 @@
+import { stat } from 'node:fs/promises'
+import { resolve as resolvePath } from 'node:path'
+
 import { CdpError, CdpHttpClient, CdpSession } from './cdp-client.js'
 import { buildActionExpression, buildDomSnapshotExpression, buildElementStateExpression, buildFindElementExpression } from './dom-scripts.js'
 import { ensureDebugBrowser } from './ensure-debug-browser.js'
@@ -14,6 +17,7 @@ import type {
   BrowserDomSnapshot,
   BrowserElement,
   BrowserElementState,
+  BrowserEvalResult,
   BrowserFallbackSuggestion,
   BrowserOpenTabResult,
   BrowserPageTextResult,
@@ -61,6 +65,7 @@ interface RawActionPayload {
   method?: BrowserActionResult['method']
   warnings?: string[]
   failure?: BrowserActionFailure
+  uploadToken?: string
 }
 
 export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
@@ -133,10 +138,25 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     if (normalizedInput.type === 'back' || normalizedInput.type === 'forward') {
       return await this.navigateHistory(normalizedInput, target)
     }
+    let uploadFiles: string[] = []
+    if (normalizedInput.type === 'upload') {
+      const checked = await checkUploadFiles(normalizedInput.files)
+      if (!checked.ok) {
+        return { ok: false, provider: 'browser', action: 'upload', method: 'not-supported', warnings: [], failure: checked.failure }
+      }
+      uploadFiles = checked.files
+    }
     const resolvedTarget = await this.resolveTarget(target ?? normalizedInput.selector)
     const actionWithSelector = await this.normalizeAction(normalizedInput, resolvedTarget)
     const before = actionWithSelector.selector ? await this.safeElementState(resolvedTarget, actionWithSelector.selector) : undefined
     const raw = await this.evaluate<RawActionPayload>(resolvedTarget, buildActionExpression(actionWithSelector))
+    if (raw.ok === true && raw.uploadToken) {
+      const uploaded = await this.setFileInputFiles(resolvedTarget, raw.uploadToken, uploadFiles)
+      if (!uploaded.ok) {
+        raw.ok = false
+        raw.failure = uploaded.failure
+      }
+    }
     const targetElement = raw.element ? this.withTargetMetadata(raw.element, resolvedTarget, actionWithSelector.selector) : actionWithSelector.element
     const beforeState = raw.before ?? before
     const verified = await this.verifyAction(resolvedTarget, actionWithSelector, beforeState, raw.after)
@@ -243,7 +263,7 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
         hover: 'thin',
         menu: 'thin',
         contextMenu: 'thin',
-        upload: 'fallback',
+        upload: 'native',
         navigate: 'native',
         reload: 'native',
         back: 'native',
@@ -260,13 +280,14 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
         ],
         permissions: [
           'Chrome/Edge/Brave must expose a remote debugging endpoint such as --remote-debugging-port=9222.',
-          'File upload requires explicit local file permission and DOM.setFileInputFiles; the current provider returns a fallback suggestion.',
+          'File upload uses DOM.setFileInputFiles on the input[type=file] at/around the selector; files must be existing local paths.',
         ],
         userGesture: [
           'DOM click/input runs with Runtime.evaluate userGesture=true, but browser-gated flows such as clipboard, popups, downloads or passkeys may still require foreground or a Playwright/CDP Input fallback.',
         ],
         upload: [
-          'Thin interface is modeled as action=upload with files[], but the safe implementation is intentionally deferred to a permission-aware path.',
+          // ponytail: inputs created only on click need Page.setInterceptFileChooserDialog; add when a real site needs it.
+          'action=upload with files[] sets files directly (no OS file dialog). Inputs created only on click (no input[type=file] in DOM) are not supported yet.',
         ],
       },
       fallbackOrder: ['browser-dom-cdp', 'playwright-with-existing-cdp-session', 'desktop-vision-hid'],
@@ -467,6 +488,95 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
           message: error instanceof Error ? error.message : String(error),
         },
       }
+    }
+  }
+
+  /** Run a JS function body (await/return allowed) in the page and return the JSON-serializable result. */
+  async evaluateScript(script: string, target?: BrowserTargetQuery, timeoutMs = EVAL_DEFAULT_TIMEOUT_MS): Promise<BrowserEvalResult> {
+    const started = Date.now()
+    const limitMs = Math.min(Math.max(timeoutMs, 1_000), EVAL_MAX_TIMEOUT_MS)
+    try {
+      const resolved = await this.resolveTarget(target)
+      if (!resolved.webSocketDebuggerUrl) {
+        throw new CdpError('target_not_found', 'Target has no webSocketDebuggerUrl', { target: resolved })
+      }
+      const session = new CdpSession(resolved.webSocketDebuggerUrl, limitMs)
+      try {
+        const payload = await session.send<RuntimeEvaluateResult>(
+          'Runtime.evaluate',
+          {
+            expression: `(async () => {\n${script}\n})()`,
+            awaitPromise: true,
+            returnByValue: true,
+            userGesture: true,
+            timeout: limitMs,
+          },
+          limitMs + 1_000,
+        )
+        const meta = await this.pageUrlTitle(session, resolved)
+        const base = { provider: 'browser' as const, url: meta.url, title: meta.title, targetId: resolved.targetId, elapsedMs: Date.now() - started }
+        if (payload.exceptionDetails) {
+          const message = payload.exceptionDetails.exception?.description ?? payload.exceptionDetails.text ?? 'Runtime.evaluate exception'
+          return { ...base, ok: false, failure: { code: 'internal_error', message } }
+        }
+        return { ...base, ok: true, value: payload.result?.value, valueType: payload.result?.type }
+      } finally {
+        session.close()
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        provider: 'browser',
+        url: '',
+        title: '',
+        targetId: '',
+        elapsedMs: Date.now() - started,
+        failure: {
+          code: error instanceof CdpError && error.code === 'target_not_found' ? 'target_not_found' : 'cdp_unavailable',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }
+    }
+  }
+
+  private async setFileInputFiles(
+    target: BrowserTarget,
+    token: string,
+    files: string[],
+  ): Promise<{ ok: true } | { ok: false; failure: BrowserActionFailure }> {
+    if (!target.webSocketDebuggerUrl) {
+      return { ok: false, failure: { code: 'target_not_found', message: 'Target has no webSocketDebuggerUrl' } }
+    }
+    const session = new CdpSession(target.webSocketDebuggerUrl, this.defaultTimeoutMs)
+    try {
+      // Same-origin frames included so framePath selectors still resolve.
+      const marker = JSON.stringify(`[data-spectrai-upload="${token}"]`)
+      const found = await session.send<{ result?: { objectId?: string } }>('Runtime.evaluate', {
+        expression: `(function f(d){const n=d.querySelector(${marker});if(n)return n;for(const fr of d.querySelectorAll('iframe,frame')){try{const r=fr.contentDocument&&f(fr.contentDocument);if(r)return r}catch(e){}}return null})(document)`,
+        returnByValue: false,
+      })
+      const objectId = found?.result?.objectId
+      if (!objectId) {
+        return { ok: false, failure: { code: 'element_not_found', message: 'File input disappeared before files could be set.' } }
+      }
+      await session.send('DOM.setFileInputFiles', { files, objectId })
+      const counted = await session.send<RuntimeEvaluateResult>('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: 'function(){this.removeAttribute("data-spectrai-upload");return this.files?this.files.length:0}',
+        returnByValue: true,
+      })
+      const count = Number(counted?.result?.value ?? 0)
+      if (count < files.length) {
+        return {
+          ok: false,
+          failure: { code: 'verification_failed', message: `File input holds ${count} file(s), expected ${files.length} (single-file input?).`, details: { count, expected: files.length } },
+        }
+      }
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, failure: { code: 'internal_error', message: error instanceof Error ? error.message : String(error) } }
+    } finally {
+      session.close()
     }
   }
 
@@ -1057,6 +1167,25 @@ const FORWARD_ALIASES = new Set(['forward', 'goforward', 'page.goforward'])
 
 const PAGE_TEXT_EXPRESSION = '({url: location.href, title: document.title, text: document.body ? document.body.innerText : ""})'
 const PAGE_TEXT_MAX_CHARS = 50_000
+const EVAL_DEFAULT_TIMEOUT_MS = 30_000
+const EVAL_MAX_TIMEOUT_MS = 120_000
+
+async function checkUploadFiles(input: unknown): Promise<{ ok: true; files: string[] } | { ok: false; failure: BrowserActionFailure }> {
+  const raw = Array.isArray(input) ? input.filter((item): item is string => typeof item === 'string' && item.trim() !== '') : []
+  if (raw.length === 0) {
+    return { ok: false, failure: { code: 'invalid_arguments', message: 'upload requires action.files: absolute local file paths.' } }
+  }
+  const files: string[] = []
+  for (const item of raw) {
+    const absolute = resolvePath(item.trim())
+    const info = await stat(absolute).catch(() => null)
+    if (!info?.isFile()) {
+      return { ok: false, failure: { code: 'invalid_arguments', message: `Upload file not found or not a regular file: ${absolute}` } }
+    }
+    files.push(absolute)
+  }
+  return { ok: true, files }
+}
 const WAIT_PAGE_DEFAULT_MS = 15_000
 
 const FILE_URL_RE = /^file:\/\//i

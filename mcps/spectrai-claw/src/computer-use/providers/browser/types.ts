@@ -274,9 +274,21 @@ export interface BrowserFallbackSuggestion {
 }
 
 export interface BrowserActionFailure {
-  code: 'target_not_found' | 'element_not_found' | 'cdp_unavailable' | 'unsupported_action' | 'verification_failed' | 'permission_required' | 'cross_origin_frame' | 'internal_error'
+  code: 'target_not_found' | 'element_not_found' | 'cdp_unavailable' | 'unsupported_action' | 'verification_failed' | 'permission_required' | 'cross_origin_frame' | 'invalid_arguments' | 'internal_error'
   message: string
   details?: Record<string, unknown>
+}
+
+export interface BrowserEvalResult {
+  ok: boolean
+  provider: 'browser'
+  url: string
+  title: string
+  targetId: string
+  elapsedMs: number
+  value?: unknown
+  valueType?: string
+  failure?: BrowserActionFailure
 }
 
 export interface BrowserActionResult {

@@ -53,7 +53,7 @@ test('BrowserDomCdpProvider smoke: capability report marks debug endpoint availa
     assert.equal(report.requiresForeground, false)
     assert.equal(report.visionFallbackNeeded, false)
     assert.ok(report.selectorSupport.includes('css'))
-    assert.equal(report.actions.upload, 'fallback')
+    assert.equal(report.actions.upload, 'native')
     assert.equal(report.actions.navigate, 'native')
     assert.equal(report.actions.screenshot, 'native')
   } finally {
