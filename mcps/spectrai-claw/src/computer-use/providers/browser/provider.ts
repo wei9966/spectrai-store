@@ -162,6 +162,21 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     const verified = await this.verifyAction(resolvedTarget, actionWithSelector, beforeState, raw.after)
     const { after: verifiedAfter, ...verification } = verified
     const afterState = verifiedAfter ?? raw.after
+    const warnings = raw.warnings ?? []
+    // A click that dispatched but changed nothing observable (async XHR, toggles outside the hash) is not a failure;
+    // reporting it as one pushed agents into retries and desktop-vision fallbacks.
+    if (
+      raw.ok === true &&
+      !verification.ok &&
+      actionWithSelector.type === 'click' &&
+      !actionWithSelector.verify &&
+      verification.checks.every((check) => check.name === 'mutation')
+    ) {
+      verification.ok = true
+      verification.status = 'best_effort'
+      verification.message = 'Click dispatched; no DOM/URL change observed yet.'
+      warnings.push('Click had no observable effect yet — re-read the page (browser_eval / browser_get_page_text) instead of retrying or switching to desktop tools.')
+    }
     const ok = raw.ok === true && verification.ok
     const failure = ok ? undefined : this.toFailure(raw.failure, verification, beforeState, afterState)
 
@@ -176,7 +191,7 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
       verification,
       failure,
       fallback: ok ? undefined : this.fallbackForFailure(failure, actionWithSelector),
-      warnings: raw.warnings ?? [],
+      warnings,
       raw,
     }
   }
@@ -456,7 +471,7 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     }
     await this.ensureReady()
     let opened = await this.http.openUrl(parsed.url)
-    opened = await this.waitForTargetLoad(opened, parsed.url, this.defaultTimeoutMs)
+    opened = await this.waitForTargetLoad(opened, parsed.url, this.defaultTimeoutMs, 'about:blank')
     return {
       ...opened,
       ok: true,
@@ -614,11 +629,11 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
         } catch (error) {
           warnings.push(error instanceof Error ? error.message : String(error))
           navigated = await this.http.openUrl(parsed.url, timeoutMs)
-          navigated = await this.waitForTargetLoad(navigated, parsed.url, timeoutMs)
+          navigated = await this.waitForTargetLoad(navigated, parsed.url, timeoutMs, 'about:blank')
         }
       } else {
         navigated = await this.http.openUrl(parsed.url, timeoutMs)
-        navigated = await this.waitForTargetLoad(navigated, parsed.url, timeoutMs)
+        navigated = await this.waitForTargetLoad(navigated, parsed.url, timeoutMs, 'about:blank')
       }
     } catch (error) {
       return {
@@ -646,6 +661,13 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     const verified = await this.verifyAction(navigated, { ...action, type: 'navigate', url: parsed.url }, undefined, after)
     const { after: verifiedAfter, ...verification } = verified
     const afterState = verifiedAfter ?? after
+    // Server/JS redirects (www.bing.com → cn.bing.com, login hops) land on a real page with a different URL.
+    if (!verification.ok && !action.verify && verification.checks.every((check) => check.name === 'urlIncludes') && isLoadedPageUrl(afterState.url)) {
+      verification.ok = true
+      verification.status = 'best_effort'
+      verification.message = `Redirected to ${afterState.url}`
+      warnings.push(`Requested ${parsed.url} but landed on ${afterState.url} (redirect).`)
+    }
     const ok = verification.ok
     const failure = ok ? undefined : this.toFailure(undefined, verification, undefined, afterState)
 
@@ -673,7 +695,7 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     } finally {
       session.close()
     }
-    return await this.waitForTargetLoad(target, url, timeoutMs)
+    return await this.waitForTargetLoad(target, url, timeoutMs, target.url)
   }
 
   private async reloadPage(action: BrowserAction, targetQuery?: BrowserTargetQuery): Promise<BrowserActionResult> {
@@ -799,7 +821,7 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
     }
   }
 
-  private async waitForTargetLoad(target: BrowserTarget, expectedUrl: string, timeoutMs: number): Promise<BrowserTarget> {
+  private async waitForTargetLoad(target: BrowserTarget, expectedUrl: string, timeoutMs: number, previousUrl?: string): Promise<BrowserTarget> {
     const needle = urlIncludesToken(expectedUrl) ?? expectedUrl
     const deadline = Date.now() + timeoutMs
     let current = target
@@ -818,6 +840,9 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
         const ready = await this.safeReadyState(current)
         // ponytail: CdpSession drops events; missing readyState still counts if URL already moved.
         if (ready !== 'loading') return current
+      } else if (previousUrl !== undefined && current.url !== previousUrl && isLoadedPageUrl(current.url)) {
+        // Redirected away from the requested URL: done once the landing page finished loading, not at the deadline.
+        if ((await this.safeReadyState(current)) === 'complete') return current
       }
       await sleep(200)
     }
@@ -1138,6 +1163,8 @@ export class BrowserDomCdpProvider implements BrowserComputerUseProvider {
 
   private fallbackForFailure(failure: BrowserActionFailure | undefined, action: BrowserAction): BrowserFallbackSuggestion | undefined {
     if (!failure) return undefined
+    // Page-level navigation never gets better through screenshots + HID.
+    if (['navigate', 'reload', 'back', 'forward'].includes(action.type) && failure.code === 'verification_failed') return undefined
     if (failure.code === 'cdp_unavailable' || failure.code === 'target_not_found') {
       return { provider: 'playwright', action: action.type, reason: 'Attach Playwright to the same CDP endpoint or start the browser with --remote-debugging-port.' }
     }
@@ -1217,6 +1244,10 @@ export function isAppOwnTargetUrl(url: string): boolean {
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (devUrl && url.startsWith(devUrl)) return true
   return /\/out\/renderer\/[^?#]*\.html/i.test(url)
+}
+
+function isLoadedPageUrl(url: string | undefined): boolean {
+  return Boolean(url) && url !== 'about:blank' && !/^chrome-error:/i.test(url ?? '')
 }
 
 export function looksLikeUrl(value: string): boolean {

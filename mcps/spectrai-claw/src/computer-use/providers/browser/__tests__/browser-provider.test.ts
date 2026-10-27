@@ -102,6 +102,21 @@ test('BrowserDomCdpProvider click: same-page control still verifies via mutation
   }
 })
 
+test('BrowserDomCdpProvider click: no observable change is best_effort, not a vision fallback (regression)', async () => {
+  const fake = await startFakeCdpServer({ mode: 'noop-click' })
+  try {
+    const provider = new BrowserDomCdpProvider({ browserURL: fake.url, defaultTimeoutMs: 1_500 })
+    const result = await provider.executeAction({ type: 'click', selector: { css: '#noop' }, timeoutMs: 50 })
+
+    assert.equal(result.ok, true)
+    assert.equal(result.verification?.status, 'best_effort')
+    assert.equal(result.fallback, undefined)
+    assert.equal(result.warnings.length > 0, true)
+  } finally {
+    await fake.close()
+  }
+})
+
 test('BrowserDomCdpProvider navigate: Page.navigate updates the page URL', async () => {
   const fake = await startFakeCdpServer()
   try {
@@ -395,7 +410,7 @@ test('BrowserDomCdpProvider capabilities: reload/back/forward/wait/newTab/closeT
 })
 
 interface FakeCdpServerOptions {
-  mode?: 'form' | 'link-navigation' | 'same-page-toggle'
+  mode?: 'form' | 'link-navigation' | 'same-page-toggle' | 'noop-click'
   emptyTargets?: boolean
   /** 模拟 Electron 把 SpectrAI 自身窗口也暴露成 target（列在最前，最容易被误选） */
   appTargetUrl?: string
@@ -647,6 +662,13 @@ function fakeRuntimeEvaluate(
           },
         },
       }
+    }
+
+    if (mode === 'noop-click') {
+      // Click dispatched, nothing observable changed (async XHR / toggle outside the hash).
+      page.mutationHash = 'idle'
+      const state = fakeState('', { url: page.url, title: page.title, mutationHash: 'idle' })
+      return { result: { type: 'object', value: { ok: true, method: 'dom', before: state, after: state, element: fakeElement(''), warnings: [] } } }
     }
 
     if (mode === 'same-page-toggle') {

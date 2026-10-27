@@ -8,6 +8,8 @@ import { BrowserDomCdpProvider, looksLikeUrl } from './provider.js'
 import { normalizeBrowserSelector } from './selector-normalize.js'
 import type {
   BrowserAction,
+  BrowserActionResult,
+  BrowserElementState,
   BrowserConnectionOptions,
   BrowserScreenshotResult,
   BrowserSelector,
@@ -247,6 +249,7 @@ export function registerBrowserComputerUseTools(): void {
         target: targetSchema,
         action: actionSchema,
         url: { type: 'string', description: 'Optional page URL; used when action.url is missing (navigate).' },
+        verbose: verboseSchema,
       },
       required: ['action'],
       additionalProperties: false,
@@ -255,7 +258,7 @@ export function registerBrowserComputerUseTools(): void {
       const provider = await createProvider(args)
       const action = normalizeBrowserAction(readObject<BrowserAction>(args.action) ?? {}, typeof args.url === 'string' ? args.url : undefined)
       const result = await provider.executeAction(action, readObject<BrowserTargetQuery>(args.target))
-      return json(result)
+      return json(compactActionResult(result, args.verbose === true))
     },
     { title: 'Browser execute action', readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   )
@@ -269,6 +272,7 @@ export function registerBrowserComputerUseTools(): void {
         connection: connectionSchema,
         target: targetSchema,
         url: { type: 'string', description: 'http(s) URL, file:// URL, local absolute path (F:\\dir\\a.html), or host/path (https:// is added).' },
+        verbose: verboseSchema,
       },
       required: ['url'],
       additionalProperties: false,
@@ -277,7 +281,7 @@ export function registerBrowserComputerUseTools(): void {
       const provider = await createProvider(args)
       const action = normalizeBrowserAction({ type: 'navigate' }, typeof args.url === 'string' ? args.url : undefined)
       const result = await provider.executeAction(action, readObject<BrowserTargetQuery>(args.target))
-      return json(result)
+      return json(compactActionResult(result, args.verbose === true))
     },
     { title: 'Browser navigate', readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   )
@@ -331,6 +335,7 @@ export function registerBrowserComputerUseTools(): void {
         connection: connectionSchema,
         target: targetSchema,
         timeoutMs: { type: 'number' },
+        verbose: verboseSchema,
       },
       additionalProperties: false,
     },
@@ -340,7 +345,7 @@ export function registerBrowserComputerUseTools(): void {
         { type: 'reload', timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined },
         readObject<BrowserTargetQuery>(args.target),
       )
-      return json(result)
+      return json(compactActionResult(result, args.verbose === true))
     },
     { title: 'Browser reload', readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   )
@@ -354,6 +359,7 @@ export function registerBrowserComputerUseTools(): void {
         connection: connectionSchema,
         target: targetSchema,
         timeoutMs: { type: 'number' },
+        verbose: verboseSchema,
       },
       additionalProperties: false,
     },
@@ -363,7 +369,7 @@ export function registerBrowserComputerUseTools(): void {
         { type: 'back', timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined },
         readObject<BrowserTargetQuery>(args.target),
       )
-      return json(result)
+      return json(compactActionResult(result, args.verbose === true))
     },
     { title: 'Browser back', readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   )
@@ -377,6 +383,7 @@ export function registerBrowserComputerUseTools(): void {
         connection: connectionSchema,
         target: targetSchema,
         timeoutMs: { type: 'number' },
+        verbose: verboseSchema,
       },
       additionalProperties: false,
     },
@@ -386,7 +393,7 @@ export function registerBrowserComputerUseTools(): void {
         { type: 'forward', timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined },
         readObject<BrowserTargetQuery>(args.target),
       )
-      return json(result)
+      return json(compactActionResult(result, args.verbose === true))
     },
     { title: 'Browser forward', readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   )
@@ -623,6 +630,38 @@ function normalizeBrowserAction(action: BrowserAction | Record<string, unknown>,
     type,
     selector,
     ...(url ? { url } : {}),
+  }
+}
+
+const verboseSchema = { type: 'boolean', description: 'Return the full result (raw payload, before/after state, all checks). Default: compact.' }
+
+function clip(value: unknown, max: number): unknown {
+  return typeof value === 'string' && value.length > max ? `${value.slice(0, max)}…` : value
+}
+
+function compactState(state: BrowserElementState | undefined) {
+  if (!state) return undefined
+  return { url: state.url, title: state.title, ...(state.value !== undefined ? { value: clip(state.value, 200) } : {}), text: clip(state.text, 300) }
+}
+
+// Every round-trip re-reads the result; ~2.5KB per click was slowing agents down. verbose=true restores the full payload.
+function compactActionResult(result: BrowserActionResult, verbose: boolean) {
+  if (verbose) return result
+  const { raw: _raw, before: _before, after, target, verification, ...rest } = result
+  return {
+    ...rest,
+    target: target
+      ? { id: target.id, role: target.role, tagName: target.tagName, label: clip(target.label, 80), text: clip(target.text, 120), ...(target.value !== undefined ? { value: clip(target.value, 200) } : {}) }
+      : undefined,
+    after: compactState(after),
+    verification: verification
+      ? {
+          ok: verification.ok,
+          status: verification.status,
+          message: verification.message,
+          failedChecks: verification.checks.filter((check) => !check.ok).map((check) => ({ ...check, actual: clip(typeof check.actual === 'string' ? check.actual : JSON.stringify(check.actual), 300) })),
+        }
+      : undefined,
   }
 }
 
