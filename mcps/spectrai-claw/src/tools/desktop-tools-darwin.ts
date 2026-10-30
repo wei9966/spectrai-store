@@ -241,12 +241,14 @@ async function handleHotkey(
   client: DaemonClient,
   args: ToolInput<'hotkey'>,
 ): Promise<CallToolResult> {
-  const params: Record<string, unknown> = { keys: args.keys }
+  const raw = args.keys as unknown
+  const keys = (typeof raw === 'string' ? raw.split(/[+\s,]+/) : (raw as string[])).filter(Boolean)
+  const params: Record<string, unknown> = { keys }
   if (args.hold_ms != null) params.holdMs = args.hold_ms
 
   await client.call('hotkey', params as any)
   return {
-    content: [textContent(`Pressed hotkey: ${args.keys.join('+')}.`)],
+    content: [textContent(`Pressed hotkey: ${keys.join('+')}.`)],
   }
 }
 

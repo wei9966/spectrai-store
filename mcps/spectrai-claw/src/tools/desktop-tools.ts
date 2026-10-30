@@ -2873,7 +2873,11 @@ Write-Output "pressed"
       additionalProperties: false,
     },
     async (args) => {
-      const keys = args.keys as string[]
+      // 模型常传 "ctrl+a" 字符串；按 + / 空格 / 逗号拆成数组，避免逐字符迭代误发按键
+      const keys = (typeof args.keys === 'string' ? args.keys.split(/[+\s,]+/) : (args.keys as string[]) ?? []).filter(Boolean)
+      if (keys.length === 0) {
+        return { isError: true, content: [{ type: 'text', text: 'keys is required, e.g. ["ctrl", "c"] or "ctrl+c"' }] }
+      }
       let prefix = ''
       let mainKey = ''
       const modifierMap: Record<string, string> = { ctrl: '^', control: '^', shift: '+', alt: '%' }

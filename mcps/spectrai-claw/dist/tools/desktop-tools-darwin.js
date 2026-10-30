@@ -192,12 +192,14 @@ async function handleTypeText(client, args) {
     };
 }
 async function handleHotkey(client, args) {
-    const params = { keys: args.keys };
+    const raw = args.keys;
+    const keys = (typeof raw === 'string' ? raw.split(/[+\s,]+/) : raw).filter(Boolean);
+    const params = { keys };
     if (args.hold_ms != null)
         params.holdMs = args.hold_ms;
     await client.call('hotkey', params);
     return {
-        content: [textContent(`Pressed hotkey: ${args.keys.join('+')}.`)],
+        content: [textContent(`Pressed hotkey: ${keys.join('+')}.`)],
     };
 }
 async function handleScroll(client, args) {
