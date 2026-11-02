@@ -8,6 +8,7 @@ import { registerShellTools } from './tools/shell-tools.js'
 import { registerFileTools } from './tools/file-tools.js'
 import { registerBrowserComputerUseTools } from './computer-use/providers/browser/index.js'
 import { shell } from './helpers/PersistentShell.js'
+import { contextFromMeta, runWithToolCallContext } from './tools/call-context.js'
 
 const server = new Server(
   { name: 'spectrai-claw', version: '0.1.0' },
@@ -34,8 +35,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 })
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params
-  return await callTool(name, (args ?? {}) as Record<string, unknown>) as any
+  const { name, arguments: args, _meta } = request.params
+  return await runWithToolCallContext(contextFromMeta(_meta), () =>
+    callTool(name, (args ?? {}) as Record<string, unknown>),
+  ) as any
 })
 
 async function main() {

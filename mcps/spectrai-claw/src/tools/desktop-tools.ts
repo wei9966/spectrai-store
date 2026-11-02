@@ -60,6 +60,20 @@ import {
   parseAnnotatedSource,
   scoreSearchAmbiguity,
 } from './click-accuracy.js'
+import { resolveCallPath, SessionStateStore } from './call-context.js'
+import {
+  ANNOTATE_WINDOW_OUTPUT_PS,
+  CLAW_WIN_TYPE_PS,
+  classifyClickGuard,
+  clickProbeScript,
+  formatClickGuardRefusal,
+  isSelfHostWindow,
+  parseClickProbe,
+  parseForegroundLine,
+  parseWindowLine,
+  type ClickGuardResult,
+  type WindowIdentity,
+} from './window-identity.js'
 import {
   AUTO_SCALE_MAX_LONG_EDGE,
   AUTO_SCALE_MAX_PIXELS,
@@ -84,9 +98,13 @@ const sp = PolicyEngine.sanitizeForPowerShell.bind(PolicyEngine)
 // Screenshot metadata store — maps normalized file path to capture region info
 // Used by screenshot_click / click_element; miss path hydrates sibling .meta.json
 const screenshotMetaMap = new Map<string, ScreenshotMeta>()
-let lastScreenshotPath = ''
-let lastAnnotatedPath = ''
-let lastActionableElement: AnnotatedElement | null = null
+// One Claw process serves every SpectrAI session, so "the last screenshot" belongs to the caller.
+const desktopSessionState = new SessionStateStore(() => ({
+  lastScreenshotPath: '',
+  lastAnnotatedPath: '',
+  lastActionableElement: null as AnnotatedElement | null,
+}))
+const ds = () => desktopSessionState.current()
 
 // Attach the image itself to the tool result: providers whose file tool can't view images
 // (e.g. read_file) previously only got a PNG path and acted blind.
@@ -130,6 +148,50 @@ function getMouseClickFlags(button: string, clickType: string): string {
     case 'middle': return clickType === 'double' ? '0x0020;0x0040;0x0020;0x0040' : '0x0020;0x0040'
     default: return clickType === 'double' ? '0x0002;0x0004;0x0002;0x0004' : '0x0002;0x0004'
   }
+}
+
+function bindElementsToWindows(
+  elements: AnnotatedElement[],
+  windows: Map<number, WindowIdentity>,
+  foreground: { start: number; end: number } | null,
+): void {
+  for (const el of elements) {
+    el.window = el.rootHwnd ? windows.get(el.rootHwnd) : undefined
+    el.foregroundAtCapture = foreground?.end
+  }
+}
+
+/** Tell the model which surface it is looking at, so a wrong capture is caught before any click. */
+function describeCaptureContext(
+  windows: Map<number, WindowIdentity>,
+  foreground: { start: number; end: number } | null,
+): string {
+  const list = [...windows.values()]
+  const lines = list.length > 0
+    ? [`Elements belong to: ${list.slice(0, 3).map(w => `"${w.title}" hwnd=${w.hwnd} pid=${w.pid}`).join('; ')}`]
+    : []
+  if (list.some(w => isSelfHostWindow(w.title))) {
+    lines.push('WARNING: this is the SpectrAI window itself, not the app being driven. Get the handle with window_list, then screenshot({followHandle:<handle>}).')
+  }
+  if (foreground && foreground.start !== foreground.end) {
+    lines.push('WARNING: the foreground window changed during this capture, so numbers may not match the image. Take a new screenshot before acting.')
+  }
+  return lines.join('\n')
+}
+
+async function guardElementInput(element: AnnotatedElement): Promise<ClickGuardResult> {
+  const rootHwnd = element.rootHwnd ?? 0
+  const probe = rootHwnd
+    ? await shell.exec(clickProbeScript(rootHwnd, element.screenX, element.screenY), 4000)
+        .then(r => parseClickProbe(r.stdout))
+        .catch(() => null)
+    : null
+  return classifyClickGuard({
+    rootHwnd,
+    identity: element.window,
+    foregroundAtCapture: element.foregroundAtCapture,
+    probe,
+  })
 }
 
 // Rank an annotated element by how confidently it can be acted on natively.
@@ -834,7 +896,7 @@ export async function registerDesktopTools(): Promise<void> {
       // Determine save path
       let outPath: string
       if (args.savePath) {
-        outPath = resolve(args.savePath as string)
+        outPath = resolveCallPath(args.savePath as string)
         const dir = dirname(outPath)
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
       } else {
@@ -869,6 +931,7 @@ export async function registerDesktopTools(): Promise<void> {
         Boolean(followWindowTitle && followWindowTitle.trim())
       const allowPwLit = allowPwFallback ? '$true' : '$false'
       const hwndResolve = `
+${CLAW_WIN_TYPE_PS}
 $hwndCapture = [IntPtr]::Zero
 $allowPwFallback = ${allowPwLit}
 if (-not ("CaptureHwnd38" -as [type])) {
@@ -894,10 +957,12 @@ if (${handleLit} -ne 0) { $hwndCapture = [IntPtr]::new(${handleLit}) }
 if ($hwndCapture -eq [IntPtr]::Zero -and ${pidLit} -ne 0) {
   $pCap = Get-Process -Id ${pidLit} -ErrorAction SilentlyContinue
   if ($pCap -and $pCap.MainWindowHandle -ne [IntPtr]::Zero) { $hwndCapture = $pCap.MainWindowHandle }
+  else { $hwndCapture = [IntPtr]::new([ClawWin1]::Find(${pidLit}, '')) }
 }
 if ($hwndCapture -eq [IntPtr]::Zero -and '${titleEsc}' -ne '') {
   $pCap = Get-Process | Where-Object { $_.MainWindowTitle -like '*${titleEsc}*' -and $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
   if ($pCap) { $hwndCapture = $pCap.MainWindowHandle }
+  else { $hwndCapture = [IntPtr]::new([ClawWin1]::Find(0, '${titleEsc}')) }
 }
 if ($hwndCapture -eq [IntPtr]::Zero -and ${useFg}) {
   $hwndCapture = [CaptureHwnd38]::GetForegroundWindow()
@@ -1171,11 +1236,14 @@ $hwndOut = if ($hwndCapture -ne [IntPtr]::Zero) { $hwndCapture.ToInt64() } else 
         imageW, imageH,
       }
       setScreenshotMeta(screenshotMetaMap, filePath, meta)
-      lastScreenshotPath = filePath
+      ds().lastScreenshotPath = filePath
 
       // UIA annotation: detect interactive elements and draw numbered markers
       let elementListText = ''
+      let contextNotice = ''
       if (annotate) {
+        // Numbers from an older image must not survive a capture that produced none.
+        ds().lastAnnotatedPath = ''
         try {
           const cw = meta.captureW, ch = meta.captureH
           const cx = meta.captureX, cy = meta.captureY
@@ -1183,20 +1251,30 @@ $hwndOut = if ($hwndCapture -ne [IntPtr]::Zero) { $hwndCapture.ToInt64() } else 
           const annotateScript = `
 $captureX = ${cx}; $captureY = ${cy}; $captureW = ${cw}; $captureH = ${ch}
 $imgPath = '${imgPathEscaped}'
+${CLAW_WIN_TYPE_PS}
+$clawFgStart = [ClawWin1]::ForegroundRoot()
+$followedHwnd = ${captureMode === 'followWindow' ? (hwndOut || 0) : 0}
 
 # ====== Phase 0: Force Chrome/Electron accessibility tree ======
 $chromeForced = $false
 try {
+    $window = $null
+    # follow*: annotate the requested window, even if something else covers the image centre.
+    if ($followedHwnd -ne 0) { try { $window = [Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($followedHwnd)) } catch { $window = $null } }
+    if (-not $window) {
     $centerPt = New-Object System.Windows.Point(($captureX + $captureW/2), ($captureY + $captureH/2))
     $targetEl = [Windows.Automation.AutomationElement]::FromPoint($centerPt)
-    $window = $null
     $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
     $cur = $targetEl
+    $topLevel = $null
     while ($cur -ne $null -and $cur -ne [Windows.Automation.AutomationElement]::RootElement) {
         if ($cur.Current.ControlType -eq [Windows.Automation.ControlType]::Window) { $window = $cur; break }
+        $topLevel = $cur
         $cur = $walker.GetParent($cur)
     }
-    if (-not $window) { $window = [Windows.Automation.AutomationElement]::RootElement }
+    # Pane-typed top-level dialogs have no Window ancestor: scan that surface, not the whole desktop.
+    if (-not $window) { $window = if ($topLevel) { $topLevel } else { [Windows.Automation.AutomationElement]::RootElement } }
+    }
 
     # Detect Chrome/Electron/Edge — check ClassName of the window
     $winClass = $window.Current.ClassName
@@ -1434,18 +1512,25 @@ if ($filtered.Count -gt 0) {
 }
 
 # Output element list
-foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.CX)|$($el.CY)|$($el.AID)|$($el.CLS)|$($el.PID)|$($el.X)|$($el.Y)|$($el.W)|$($el.H)|$($el.Src)|$($el.EN)|$($el.OFF)|$($el.PAT)" }
+${ANNOTATE_WINDOW_OUTPUT_PS}
+foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name -replace '[\\r\\n|]',' ')|$($el.CT)|$($el.CX)|$($el.CY)|$($el.AID)|$($el.CLS)|$($el.PID)|$($el.X)|$($el.Y)|$($el.W)|$($el.H)|$($el.Src)|$($el.EN)|$($el.OFF)|$($el.PAT)|$($el.R)" }
 `
           const annotateResult = await shell.exec(annotateScript, 45000)
           const elements: AnnotatedElement[] = []
           const rawLines = annotateResult.stdout.trim().split('\n')
           const debugLines: string[] = []
+          const windows = new Map<number, WindowIdentity>()
+          let foreground: { start: number; end: number } | null = null
           const parseNum = (v: string | undefined): number => {
             const n = parseInt(v ?? '', 10)
             return Number.isFinite(n) ? n : 0
           }
           for (const line of rawLines) {
             const trimmed = line.trim()
+            const win = parseWindowLine(trimmed)
+            if (win) { windows.set(win.hwnd, win); continue }
+            foreground = parseForegroundLine(trimmed) ?? foreground
+            if (trimmed.startsWith('__FG__|')) continue
             if (trimmed.startsWith('UIA_ERROR:') || trimmed.startsWith('UIA_STATS:') || trimmed.startsWith('CHROME_FORCE_ERR:') || trimmed.startsWith('OCR_ERROR:') || trimmed.startsWith('OCR_DEBUG:') || trimmed.startsWith('OCR_DIAG:') || trimmed.startsWith('OCR_PROC_ERR:')) {
               debugLines.push(trimmed)
               continue
@@ -1473,14 +1558,17 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                 isEnabled: p[13] === undefined || p[13] === '' ? undefined : p[13] === 'True',
                 isOffscreen: p[14] === 'True',
                 patterns: p[15] ? p[15].split(';').filter(Boolean) : [],
+                rootHwnd: parseNum(p[16]),
               })
             }
           }
+          bindElementsToWindows(elements, windows, foreground)
           if (elements.length > 0) {
             meta.elements = elements
             setScreenshotMeta(screenshotMetaMap, filePath, meta)
-            lastAnnotatedPath = filePath
+            ds().lastAnnotatedPath = filePath
           }
+          contextNotice = describeCaptureContext(windows, foreground)
           const uiaCount = elements.filter(e => e.source === 'UIA' || e.source === 'OCR_UIA').length
           const ocrCount = elements.filter(e => e.source === 'OCR').length
           const debugSuffix = debugLines.length > 0 ? `\n[debug: ${debugLines.join('; ')}]` : ''
@@ -1512,18 +1600,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
           imageW: meta.imageW,
           imageH: meta.imageH,
           elementCount: meta.elements?.length ?? 0,
-          elements: (meta.elements ?? []).map(e => ({
-            number: e.number,
-            name: e.name,
-            controlType: e.controlType,
-            screenX: e.screenX,
-            screenY: e.screenY,
-            rectX: e.rectX,
-            rectY: e.rectY,
-            rectW: e.rectW,
-            rectH: e.rectH,
-            source: e.source,
-          })),
+          elements: meta.elements ?? [],
         }, null, 2)
         await writeFile(metaOut, metaPayload, 'utf8')
       } catch {
@@ -1532,7 +1609,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
 
       const wasScaled = imageW > 0 && capW > 0 && (imageW !== capW || imageH !== capH)
       const scalingNotice = wasScaled
-        ? `SCALED: image=${imageW}x${imageH} downscaled from capture ${capW}x${capH}. IMAGE PIXELS ≠ SCREEN COORDINATES. To click: prefer click_element(number); or screenshot_click(imageX,imageY) which auto-converts image pixels back to screen; or read a grid label (absolute screen coords) and pass it to mouse_click(x,y). Grid labels and numbered markers already use absolute screen coordinates.`
+        ? `SCALED: image=${imageW}x${imageH} downscaled from capture ${capW}x${capH}. IMAGE PIXELS ≠ SCREEN COORDINATES. To click: prefer click_element(number); otherwise read a grid label (absolute screen coords) and pass it to mouse_click(x,y). Grid labels and numbered markers already use absolute screen coordinates.`
         : ''
       const inline = await loadInlineImage(filePath, args.includeImage !== false)
       return {
@@ -1541,6 +1618,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
           text: [
             `Screenshot saved: ${filePath}`,
             `Capture region: origin=(${originX},${originY}), size=${capturedSize}, image=${imageW}x${imageH}, file=${fileSize} bytes`,
+            contextNotice,
             scalingNotice,
             `NEXT: ${inline.note}`,
             annotate && meta.elements && meta.elements.length > 0
@@ -1575,7 +1653,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
       additionalProperties: false,
     },
     async (args) => {
-      const ssPath = (args.screenshotPath as string) || lastScreenshotPath
+      const ssPath = (args.screenshotPath as string) || ds().lastScreenshotPath
       if (!ssPath) {
         return { isError: true, content: [{ type: 'text', text: 'No screenshot taken yet. Take a screenshot first.' }] }
       }
@@ -1620,7 +1698,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
         }
       }
 
-      lastActionableElement = null // focus moves here; keyboard_type must not re-click a stale target
+      ds().lastActionableElement = null // focus moves here; keyboard_type must not re-click a stale target
       try { presenceMark('click', screenX, screenY) } catch { /* overlay must never fail click */ }
 
       const script = `
@@ -2154,7 +2232,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
   // 1c. click_element — click annotated element by number (100% precise)
   registerTool(
     'click_element',
-    '★ STEP 2 (BEST): Click an annotated element by its NUMBER from screenshot. This is the MOST PRECISE click method — uses exact element center coordinates, zero estimation.\n\nTake a screenshot first, then use the element number shown on the image.\nUses UIA native action first (Invoke/Toggle/Selection/ExpandCollapse/Focus), and falls back to HID click + verification screenshot if native action is not applicable or fails.',
+    '★ STEP 2 (BEST): Click an annotated element by its NUMBER from screenshot. This is the MOST PRECISE click method — uses exact element center coordinates, zero estimation.\n\nTake a screenshot first, then use the element number shown on the image. Pass the screenshot path as screenshotPath when other windows or sessions may capture in between. The click is refused (nothing sent) if that window closed, moved, was covered or lost the foreground; the error names the one next step — follow it instead of retrying.\nUses UIA native action first (Invoke/Toggle/Selection/ExpandCollapse/Focus), and falls back to HID click + verification screenshot if native action is not applicable or fails.',
     {
       type: 'object',
       properties: {
@@ -2169,26 +2247,15 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
     async (args) => {
       const elemNum = sn(args.number)
       const requestedPath = typeof args.screenshotPath === 'string' ? args.screenshotPath.trim() : ''
-      let ssPath = requestedPath || lastAnnotatedPath
-      let usedLastAnnotated = false
+      const ssPath = requestedPath || ds().lastAnnotatedPath
       if (!ssPath) {
-        return { isError: true, content: [{ type: 'text', text: 'No annotated screenshot available. Take a screenshot with annotate=true first.' }] }
+        return { isError: true, content: [{ type: 'text', text: "No annotated screenshot in this session (none taken yet, the latest one found no elements, or the Claw process restarted). NEXT: screenshot(annotate=true), then use its numbers." }] }
       }
-      let meta = getScreenshotMeta(screenshotMetaMap, ssPath)
-      // Last resort: requested path miss, but session lastAnnotated still has elements.
-      // Prefer hydrate of the requested path; do not silently click a different image unless noted.
-      if ((!meta || !meta.elements || meta.elements.length === 0) && requestedPath && lastAnnotatedPath) {
-        const lastMeta = getScreenshotMeta(screenshotMetaMap, lastAnnotatedPath)
-        if (lastMeta?.elements && lastMeta.elements.length > 0) {
-          meta = lastMeta
-          ssPath = lastAnnotatedPath
-          usedLastAnnotated = true
-        }
-      }
+      // A number only means something on its own image: never fall back to a different one.
+      const meta = getScreenshotMeta(screenshotMetaMap, ssPath)
       if (!meta || !meta.elements || meta.elements.length === 0) {
         return { isError: true, content: [{ type: 'text', text: `No annotated elements found for: ${ssPath}. Take a new screenshot with annotate=true, then click by element number. For a text-only target (Canvas/Electron/RDP with no UIA tree), use vision_click.` }] }
       }
-      const usedLastAnnotatedNote = usedLastAnnotated ? ' usedLastAnnotated=true' : ''
       const element = meta.elements.find(e => e.number === elemNum)
       if (!element) {
         const available = meta.elements.map(e => `[${e.number}] "${e.name}"`).join(', ')
@@ -2199,97 +2266,15 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
       let clickY = element.screenY
       const button = (args.button === 'right' || args.button === 'middle') ? args.button as string : 'left'
       const clickType = args.clickType === 'double' ? 'double' : 'single'
-      lastActionableElement = element
+      const guard = await guardElementInput(element)
+      if (!guard.ok) {
+        return { isError: true, content: [{ type: 'text', text: formatClickGuardRefusal('Click', guard) }] }
+      }
+      ds().lastActionableElement = element
       const activatableItem = isActivatableSelectionItem(element)
       const beforeTitles = activatableItem
         ? await readActivationTitles(element.processId).catch(() => ({ windowTitle: '', foregroundTitle: '' }))
         : { windowTitle: '', foregroundTitle: '' }
-
-      // Fail-fast: refuse to click when owning process window is not usable foreground.
-      if (element.processId) {
-        try {
-          const pid = sn(element.processId)
-          if (pid > 0) {
-            const focusScript = `
-$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue
-if (-not $p -or $p.MainWindowHandle -eq [IntPtr]::Zero) { Write-Output '__SPECTRAI_FOCUS_JSON__{"targetHwnd":0,"foregroundHwnd":0,"visible":false,"iconic":false,"foregroundTitle":""}'; return }
-$hwnd = $p.MainWindowHandle
-if (-not ("FocusProbePid38" -as [type])) {
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public class FocusProbePid38 {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll")] public static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
-  [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-  const uint RDW_AFTER_RESTORE = 0x0001 | 0x0004 | 0x0400 | 0x0080 | 0x0100;
-  public static string TitleOf(IntPtr h) { var sb = new StringBuilder(512); GetWindowText(h, sb, sb.Capacity); return sb.ToString(); }
-  public static void RepaintAfterRestore(IntPtr hWnd) {
-    InvalidateRect(hWnd, IntPtr.Zero, true);
-    RedrawWindow(hWnd, IntPtr.Zero, IntPtr.Zero, RDW_AFTER_RESTORE);
-    System.Threading.Thread.Sleep(80);
-  }
-}
-"@
-}
-$didRestorePid = $false
-# Restore iconic OR tray/hidden (!IsWindowVisible); do not SW_SHOW(5) already-visible windows.
-if ([FocusProbePid38]::IsIconic($hwnd) -or -not [FocusProbePid38]::IsWindowVisible($hwnd)) {
-  [FocusProbePid38]::ShowWindow($hwnd, 9) | Out-Null
-  $didRestorePid = $true
-}
-if ($didRestorePid) { [FocusProbePid38]::RepaintAfterRestore($hwnd) }
-[FocusProbePid38]::SetForegroundWindow($hwnd) | Out-Null
-Start-Sleep -Milliseconds 40
-$fg = [FocusProbePid38]::GetForegroundWindow()
-$probe = @{
-  targetHwnd = $hwnd.ToInt64()
-  foregroundHwnd = $fg.ToInt64()
-  visible = [bool]([FocusProbePid38]::IsWindowVisible($hwnd))
-  iconic = [bool]([FocusProbePid38]::IsIconic($hwnd))
-  foregroundTitle = [FocusProbePid38]::TitleOf($fg)
-}
-Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
-`
-            const focusOut = await shell.exec(focusScript, 4000)
-            const marker = '__SPECTRAI_FOCUS_JSON__'
-            const line = focusOut.stdout.split('\n').map(l => l.trim()).filter(Boolean).reverse().find(l => l.startsWith(marker))
-            if (line) {
-              try {
-                const probe = JSON.parse(line.slice(marker.length)) as {
-                  targetHwnd?: number
-                  foregroundHwnd?: number
-                  visible?: boolean
-                  iconic?: boolean
-                  foregroundTitle?: string
-                }
-                const classified = classifyForegroundResult({
-                  targetHwnd: Number(probe.targetHwnd || 0),
-                  foregroundHwnd: Number(probe.foregroundHwnd || 0),
-                  visible: probe.visible === true,
-                  iconic: probe.iconic === true,
-                  foregroundTitle: typeof probe.foregroundTitle === 'string' ? probe.foregroundTitle : '',
-                })
-                if (!classified.ok) {
-                  return {
-                    isError: true,
-                    content: [{
-                      type: 'text',
-                      text: `Click aborted: ${classified.reason}. Target window is not usable foreground (refusing to click occluded/wrong surface). fgTitle=${probe.foregroundTitle || ''}`,
-                    }],
-                  }
-                }
-              } catch { /* ignore probe parse; continue */ }
-            }
-          }
-        } catch { /* focus probe best-effort */ }
-      }
 
       let uiaFallbackReason = ''
       let uiaTitleDetail = ''
@@ -2307,7 +2292,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
           }
           const needFallback = shouldFallbackClickAfterUia(uiaResult, activatableItem)
           if (!needFallback && uiaResult.ok) {
-            lastActionableElement = {
+            ds().lastActionableElement = {
               ...element,
               screenX: uiaResult.screenX || element.screenX,
               screenY: uiaResult.screenY || element.screenY,
@@ -2320,7 +2305,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
             return {
               content: [{
                 type: 'text',
-                text: `Clicked [${elemNum}] "${element.name}" via method=${uiaResult.method} (native UIA, cursor unchanged).${verifyText}${usedLastAnnotatedNote}`,
+                text: `Clicked [${elemNum}] "${element.name}" via method=${uiaResult.method} (native UIA, cursor unchanged).${verifyText}`,
               }],
             }
           }
@@ -2384,7 +2369,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
         return {
           content: [{
             type: 'text',
-            text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${hidClickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};fgTitle=${after.foregroundTitle};elementGone=${localProbe.elementGone};outsideName=${localProbe.targetNameOutsideSelection})${beforeHint}${usedLastAnnotatedNote}\n\nVerification image: ${verifyImgPath}`,
+            text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${hidClickType}${fallbackReasonText}) verify=verified (afterTitle=${after.windowTitle};fgTitle=${after.foregroundTitle};elementGone=${localProbe.elementGone};outsideName=${localProbe.targetNameOutsideSelection})${beforeHint}\n\nVerification image: ${verifyImgPath}`,
           }],
         }
       }
@@ -2394,7 +2379,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
       return {
         content: [{
           type: 'text',
-          text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText})${uiaTitleDetail}${usedLastAnnotatedNote}\n\nVerification image: ${verifyImgPath}\nShows 300x300 region centered on click with RED crosshair. Confirm it hit the right target. ${verify.note}`,
+          text: `Clicked [${elemNum}] "${element.name}" at screen(${clickX},${clickY}) — method=hidMouse (${button} ${clickType}${fallbackReasonText})${uiaTitleDetail}\n\nVerification image: ${verifyImgPath}\nShows 300x300 region centered on click with RED crosshair. Confirm it hit the right target. ${verify.note}`,
         }, ...(verify.block ? [verify.block] : [])],
       }
     },
@@ -2435,7 +2420,7 @@ Write-Output "__SPECTRAI_FOCUS_JSON__$($probe | ConvertTo-Json -Compress)"
       const clickType = args.clickType === 'double' ? 'double' : 'single'
 
       // Determine screenshot to use
-      let ssPath: string = (args.screenshotPath as string) || lastAnnotatedPath || lastScreenshotPath
+      let ssPath: string = (args.screenshotPath as string) || ds().lastAnnotatedPath || ds().lastScreenshotPath
       if (!ssPath) {
         // Take a fresh screenshot
         try {
@@ -2488,7 +2473,7 @@ Write-Output $outPath
       }
 
       let verifyImg: string
-      lastActionableElement = null
+      ds().lastActionableElement = null
       try {
         verifyImg = await hidClickAndVerify(loc.x, loc.y, button, clickType, `vision:"${targetText}"@(${loc.x},${loc.y})`)
       } catch (err: unknown) {
@@ -2601,7 +2586,7 @@ if (-not $prim) { $prim = $mons[0] }
         }
       }
 
-      lastActionableElement = null // focus moves here; keyboard_type must not re-click a stale target
+      ds().lastActionableElement = null // focus moves here; keyboard_type must not re-click a stale target
       try { presenceMark('click', px, py) } catch { /* overlay must never fail click */ }
 
       const script = `
@@ -2734,9 +2719,9 @@ Write-Output "scrolled"
 
       if (args.number != null) {
         const targetNum = sn(args.number)
-        const ssPath = (args.screenshotPath as string) || lastAnnotatedPath
+        const ssPath = (args.screenshotPath as string) || ds().lastAnnotatedPath
         if (!ssPath) {
-          return { isError: true, content: [{ type: 'text', text: 'No annotated screenshot available for keyboard target. Take screenshot(annotate=true) first or click_element before typing.' }] }
+          return { isError: true, content: [{ type: 'text', text: "No annotated screenshot in this session (none taken yet, the latest one found no elements, or the Claw process restarted). NEXT: screenshot(annotate=true), then use its numbers." }] }
         }
         const meta = getScreenshotMeta(screenshotMetaMap, ssPath)
         if (!meta?.elements || meta.elements.length === 0) {
@@ -2747,8 +2732,8 @@ Write-Output "scrolled"
           const available = meta.elements.map(e => `[${e.number}] "${e.name}"`).join(', ')
           return { isError: true, content: [{ type: 'text', text: `Element #${targetNum} not found. Available: ${available}` }] }
         }
-      } else if (lastActionableElement) {
-        targetElement = lastActionableElement
+      } else if (ds().lastActionableElement) {
+        targetElement = ds().lastActionableElement
       }
 
       let uiaFallbackReason = ''
@@ -2756,7 +2741,7 @@ Write-Output "scrolled"
         try {
           const uiaResult = await tryUiaAction(targetElement, 'setValue', text)
           if (uiaResult.ok && uiaResult.verify === 'verified') {
-            lastActionableElement = {
+            ds().lastActionableElement = {
               ...targetElement,
               screenX: uiaResult.screenX || targetElement.screenX,
               screenY: uiaResult.screenY || targetElement.screenY,
@@ -2781,6 +2766,13 @@ Write-Output "scrolled"
         uiaFallbackReason = 'uia_target_not_set'
       }
 
+      // Fallback sends real input at the element's coordinates: same proof required as a click.
+      if (targetElement) {
+        const guard = await guardElementInput(targetElement)
+        if (!guard.ok) {
+          return { isError: true, content: [{ type: 'text', text: formatClickGuardRefusal('Type', guard) }] }
+        }
+      }
       // Fallback: focus known target via center click (cheap) + SendInput unicode (IME-proof).
       try {
         if (targetElement) presenceMark('type', targetElement.screenX, targetElement.screenY)
@@ -3291,7 +3283,7 @@ foreach ($w in $wins) {
       if (!args.title && !args.handle) {
         return { isError: true, content: [{ type: 'text', text: 'Provide either title or handle' }] }
       }
-      lastActionableElement = null
+      ds().lastActionableElement = null
       const focusResult = await ensureTargetForeground({
         title: typeof args.title === 'string' ? args.title : undefined,
         handle: args.handle != null ? sn(args.handle) : undefined,
@@ -3518,14 +3510,17 @@ Write-Output "$outFile|$imgW|$imgH|$rawFile"
         imageW, imageH,
       }
       setScreenshotMeta(screenshotMetaMap, filePath, meta)
-      lastScreenshotPath = filePath
+      ds().lastScreenshotPath = filePath
 
       let elementListText = ''
+      let contextNotice = ''
       if (annotate) {
         try {
           const annotateScript = `
 $captureX = ${zx}; $captureY = ${zy}; $captureW = ${zw}; $captureH = ${zh}
 $imgPath = '${sp(filePath.replace(/\\/g, '\\\\'))}'
+${CLAW_WIN_TYPE_PS}
+$clawFgStart = [ClawWin1]::ForegroundRoot()
 $ocrSrcPath = '${sp(ocrSourcePath.replace(/\\/g, '\\\\'))}'
 
 # Force Chrome accessibility if needed
@@ -3535,11 +3530,14 @@ try {
     $window = $null
     $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
     $cur = $targetEl
+    $topLevel = $null
     while ($cur -ne $null -and $cur -ne [Windows.Automation.AutomationElement]::RootElement) {
         if ($cur.Current.ControlType -eq [Windows.Automation.ControlType]::Window) { $window = $cur; break }
+        $topLevel = $cur
         $cur = $walker.GetParent($cur)
     }
-    if (-not $window) { $window = [Windows.Automation.AutomationElement]::RootElement }
+    # Pane-typed top-level dialogs have no Window ancestor: scan that surface, not the whole desktop.
+    if (-not $window) { $window = if ($topLevel) { $topLevel } else { [Windows.Automation.AutomationElement]::RootElement } }
     $winClass = $window.Current.ClassName
     if ($winClass -match 'Chrome_WidgetWin|Electron') {
         $wh = $window.Current.NativeWindowHandle
@@ -3707,7 +3705,8 @@ if ($filtered.Count -gt 0) {
     $bmp.Save($imgPath, [System.Drawing.Imaging.ImageFormat]::Png)
     $bmp.Dispose(); $ms.Dispose()
 }
-foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.CX)|$($el.CY)|$($el.AID)|$($el.CLS)|$($el.PID)|$($el.X)|$($el.Y)|$($el.W)|$($el.H)|$($el.Src)|$($el.EN)|$($el.OFF)|$($el.PAT)" }
+${ANNOTATE_WINDOW_OUTPUT_PS}
+foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name -replace '[\\r\\n|]',' ')|$($el.CT)|$($el.CX)|$($el.CY)|$($el.AID)|$($el.CLS)|$($el.PID)|$($el.X)|$($el.Y)|$($el.W)|$($el.H)|$($el.Src)|$($el.EN)|$($el.OFF)|$($el.PAT)|$($el.R)" }
 `
           const annotateResult = await shell.exec(annotateScript, 45000)
           const elements: AnnotatedElement[] = []
@@ -3715,7 +3714,13 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
             const n = parseInt(v ?? '', 10)
             return Number.isFinite(n) ? n : 0
           }
+          const windows = new Map<number, WindowIdentity>()
+          let foreground: { start: number; end: number } | null = null
           for (const line of annotateResult.stdout.trim().split('\n')) {
+            const win = parseWindowLine(line.trim())
+            if (win) { windows.set(win.hwnd, win); continue }
+            foreground = parseForegroundLine(line.trim()) ?? foreground
+            if (line.trim().startsWith('__FG__|')) continue
             const p = line.trim().split('|')
             if (p.length >= 5 && p[0] && p[3] && p[4]) {
               const number = parseNum(p[0])
@@ -3739,14 +3744,17 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
                 isEnabled: p[13] === undefined || p[13] === '' ? undefined : p[13] === 'True',
                 isOffscreen: p[14] === 'True',
                 patterns: p[15] ? p[15].split(';').filter(Boolean) : [],
+                rootHwnd: parseNum(p[16]),
               })
             }
           }
+          bindElementsToWindows(elements, windows, foreground)
           if (elements.length > 0) {
             meta.elements = elements
             setScreenshotMeta(screenshotMetaMap, filePath, meta)
-            lastAnnotatedPath = filePath
+            ds().lastAnnotatedPath = filePath
           }
+          contextNotice = describeCaptureContext(windows, foreground)
           const uiaCount = elements.filter(e => e.source === 'UIA' || e.source === 'OCR_UIA').length
           const ocrCount = elements.filter(e => e.source === 'OCR').length
           elementListText = elements.length > 0
@@ -3766,6 +3774,7 @@ foreach ($el in $filtered) { Write-Output "$($el.N)|$($el.Name)|$($el.CT)|$($el.
           text: [
             `Zoom screenshot saved: ${filePath}`,
             `Region: (${zx},${zy}) ${zw}x${zh}, image=${imageW}x${imageH}${scale > 1 ? `, scale=${scale}x` : ''}`,
+            contextNotice,
             imageW > 0 && imageW !== zw
               ? `NOTE: image pixels ≠ screen coordinates (output resized to fit model vision limits). Rely on the GRID labels below (absolute screen coords) or click_element(number), not raw image pixels.`
               : '',

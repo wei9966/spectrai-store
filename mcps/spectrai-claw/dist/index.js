@@ -8,6 +8,7 @@ import { registerShellTools } from './tools/shell-tools.js';
 import { registerFileTools } from './tools/file-tools.js';
 import { registerBrowserComputerUseTools } from './computer-use/providers/browser/index.js';
 import { shell } from './helpers/PersistentShell.js';
+import { contextFromMeta, runWithToolCallContext } from './tools/call-context.js';
 const server = new Server({ name: 'spectrai-claw', version: '0.1.0' }, { capabilities: { tools: {} } });
 // Register built-in ping tool for connectivity verification
 registerTool('ping', 'Connectivity check — returns pong', {
@@ -21,8 +22,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     return { tools: listTools() };
 });
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    return await callTool(name, (args ?? {}));
+    const { name, arguments: args, _meta } = request.params;
+    return await runWithToolCallContext(contextFromMeta(_meta), () => callTool(name, (args ?? {})));
 });
 async function main() {
     // Register all tool modules (desktop tools is async for cross-platform dynamic import)
