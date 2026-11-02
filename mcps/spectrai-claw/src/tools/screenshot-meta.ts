@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from 'fs'
 import { normalize, resolve } from 'path'
 import type { AnnotatedSource } from './click-accuracy.js'
+import type { WindowIdentity } from './window-identity.js'
 
 export interface AnnotatedElement {
   number: number
@@ -23,6 +24,10 @@ export interface AnnotatedElement {
   isEnabled?: boolean
   isOffscreen?: boolean
   patterns?: string[]
+  /** Top-level window hit at this element's centre during capture (works when UIA reports hwnd 0). */
+  rootHwnd?: number
+  window?: WindowIdentity
+  foregroundAtCapture?: number
 }
 
 export interface ScreenshotMeta {
@@ -137,6 +142,11 @@ function coerceElement(raw: unknown): AnnotatedElement | null {
   if (Array.isArray(o.patterns)) {
     el.patterns = o.patterns.filter((x): x is string => typeof x === 'string')
   }
+  const rootHwnd = asFiniteNumber(o.rootHwnd)
+  if (rootHwnd != null) el.rootHwnd = rootHwnd
+  if (o.window && typeof o.window === 'object') el.window = o.window as WindowIdentity
+  const foregroundAtCapture = asFiniteNumber(o.foregroundAtCapture)
+  if (foregroundAtCapture != null) el.foregroundAtCapture = foregroundAtCapture
   return el
 }
 

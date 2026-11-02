@@ -2,6 +2,7 @@ import { exec } from 'child_process';
 import { registerTool } from './registry.js';
 import { runPowerShell } from '../helpers/PowerShellRunner.js';
 import { PolicyEngine } from '../security/PolicyEngine.js';
+import { currentToolCallContext } from './call-context.js';
 const DEFAULT_TIMEOUT = 30000;
 function textResult(data) {
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
@@ -22,7 +23,7 @@ export function registerShellTools() {
         required: ['command'],
     }, async (args) => {
         const command = args.command;
-        const cwd = args.cwd || undefined;
+        const cwd = args.cwd || currentToolCallContext().cwd;
         const timeout = args.timeout || DEFAULT_TIMEOUT;
         const validation = PolicyEngine.validateCommand(command);
         if (!validation.allowed) {
@@ -59,7 +60,7 @@ export function registerShellTools() {
             required: ['script'],
         }, async (args) => {
             const script = args.script;
-            const cwd = args.cwd || undefined;
+            const cwd = args.cwd || currentToolCallContext().cwd;
             const timeout = args.timeout || DEFAULT_TIMEOUT;
             const validation = PolicyEngine.validatePowerShellScript(script);
             if (!validation.allowed) {

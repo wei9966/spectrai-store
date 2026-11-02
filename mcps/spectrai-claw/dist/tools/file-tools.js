@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { registerTool } from './registry.js';
 import { PolicyEngine } from '../security/PolicyEngine.js';
+import { resolveCallPath } from './call-context.js';
 function textResult(data) {
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
 }
@@ -24,7 +25,7 @@ export function registerFileTools() {
         const validation = PolicyEngine.validateFilePath(filePath, 'read');
         if (!validation.allowed)
             return errorResult(`Read blocked: ${validation.reason}`);
-        const resolved = path.resolve(filePath);
+        const resolved = resolveCallPath(filePath);
         try {
             const stat = await fs.promises.stat(resolved);
             if (!stat.isFile())
@@ -59,7 +60,7 @@ export function registerFileTools() {
         const validation = PolicyEngine.validateFilePath(filePath, 'write');
         if (!validation.allowed)
             return errorResult(`Write blocked: ${validation.reason}`);
-        const resolved = path.resolve(filePath);
+        const resolved = resolveCallPath(filePath);
         try {
             await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
             await fs.promises.writeFile(resolved, content, { encoding });
@@ -85,7 +86,7 @@ export function registerFileTools() {
         const validation = PolicyEngine.validateFilePath(dirPath, 'read');
         if (!validation.allowed)
             return errorResult(`List blocked: ${validation.reason}`);
-        const resolved = path.resolve(dirPath);
+        const resolved = resolveCallPath(dirPath);
         try {
             const stat = await fs.promises.stat(resolved);
             if (!stat.isDirectory())

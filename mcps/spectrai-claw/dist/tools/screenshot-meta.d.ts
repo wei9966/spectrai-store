@@ -1,4 +1,5 @@
 import type { AnnotatedSource } from './click-accuracy.js';
+import type { WindowIdentity } from './window-identity.js';
 export interface AnnotatedElement {
     number: number;
     name: string;
@@ -16,6 +17,10 @@ export interface AnnotatedElement {
     isEnabled?: boolean;
     isOffscreen?: boolean;
     patterns?: string[];
+    /** Top-level window hit at this element's centre during capture (works when UIA reports hwnd 0). */
+    rootHwnd?: number;
+    window?: WindowIdentity;
+    foregroundAtCapture?: number;
 }
 export interface ScreenshotMeta {
     captureX: number;

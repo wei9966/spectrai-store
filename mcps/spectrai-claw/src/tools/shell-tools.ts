@@ -3,6 +3,7 @@ import { registerTool } from './registry.js'
 import { runPowerShell } from '../helpers/PowerShellRunner.js'
 import { PolicyEngine } from '../security/PolicyEngine.js'
 import type { CallToolResult } from '../types/index.js'
+import { currentToolCallContext } from './call-context.js'
 
 const DEFAULT_TIMEOUT = 30000
 
@@ -31,7 +32,7 @@ export function registerShellTools(): void {
     },
     async (args): Promise<CallToolResult> => {
       const command = args.command as string
-      const cwd = (args.cwd as string) || undefined
+      const cwd = (args.cwd as string) || currentToolCallContext().cwd
       const timeout = (args.timeout as number) || DEFAULT_TIMEOUT
 
       const validation = PolicyEngine.validateCommand(command)
@@ -81,7 +82,7 @@ export function registerShellTools(): void {
       },
       async (args): Promise<CallToolResult> => {
         const script = args.script as string
-        const cwd = (args.cwd as string) || undefined
+        const cwd = (args.cwd as string) || currentToolCallContext().cwd
         const timeout = (args.timeout as number) || DEFAULT_TIMEOUT
 
         const validation = PolicyEngine.validatePowerShellScript(script)

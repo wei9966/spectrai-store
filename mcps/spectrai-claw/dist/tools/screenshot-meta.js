@@ -103,6 +103,14 @@ function coerceElement(raw) {
     if (Array.isArray(o.patterns)) {
         el.patterns = o.patterns.filter((x) => typeof x === 'string');
     }
+    const rootHwnd = asFiniteNumber(o.rootHwnd);
+    if (rootHwnd != null)
+        el.rootHwnd = rootHwnd;
+    if (o.window && typeof o.window === 'object')
+        el.window = o.window;
+    const foregroundAtCapture = asFiniteNumber(o.foregroundAtCapture);
+    if (foregroundAtCapture != null)
+        el.foregroundAtCapture = foregroundAtCapture;
     return el;
 }
 /** Parse disk .meta.json into ScreenshotMeta; require elements for hydrate. */
